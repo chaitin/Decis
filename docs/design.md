@@ -147,17 +147,21 @@ def render(value, indent=0) -> str:
 ```python
 def to_answer(kind: str, keys: Sequence[str], probs: Sequence[float], legend=None) -> dict:
     if kind == "noul":
-        return {"type": "noul", "noul": r2(probs[1])}          # 标量，无 confidence
+        return {"type": "noul", "noul": r2(probs[1])}  # 标量，无 confidence
     if kind == "choice":
-        return {"type": "choice",
-                "choice": keys[argmax(probs)],
-                "confidence": r2(choice_confidence(probs)),
-                "probabilities": {k: r2(p) for k, p in zip(keys, probs)}}
-    return {"type": "score",
-            "score": r2(sum(i * p for i, p in enumerate(probs))),
-            "confidence": r2(score_confidence(probs)),
-            "legend": {str(i): t for i, t in enumerate(legend)},
-            "probabilities": {str(i): r2(p) for i, p in enumerate(probs)}}
+        return {
+            "type": "choice",
+            "choice": keys[argmax(probs)],
+            "confidence": r2(choice_confidence(probs)),
+            "probabilities": {k: r2(p) for k, p in zip(keys, probs)},
+        }
+    return {
+        "type": "score",
+        "score": r2(sum(i * p for i, p in enumerate(probs))),
+        "confidence": r2(score_confidence(probs)),
+        "legend": {str(i): t for i, t in enumerate(legend)},
+        "probabilities": {str(i): r2(p) for i, p in enumerate(probs)},
+    }
 ```
 
 `keys` 的决定规则（`question_keys`）：
@@ -168,12 +172,14 @@ def to_answer(kind: str, keys: Sequence[str], probs: Sequence[float], legend=Non
 | `choice` | `list(criteria.keys())`，**顺序即请求中的顺序** |
 | `score` | `["0", "1", …]` |
 
-`confidence` 的定义（Decis 自有、公开、跨引擎统一）：
+`confidence` 的定义（Decis 自有、公开、跨引擎统一）。两者口径一致：**0 = 模型没有倾向（均匀分布），1 = 模型确定**。
 
 - Choice：`(p_max − 1/K) / (1 − 1/K)`，`K = 1` 时为 `1.0`
-- Score：`1 − E|level − mode| / (L − 1)`
+- Score：`1 − H(p) / ln(L)`（归一化熵），`L = 1` 时为 `1.0`
 
-理由见 [api-compatibility.md §7](api-compatibility.md)。引擎原生置信度不丢弃，放进 `decis.engine.confidence` 扩展字段。
+Score 用归一化熵而不是"到众数的平均距离"，因为后者的可达区间不是 `[0,1]`：加上众数约束后，`L=3` 的均匀分布算出来是 `0.5` 而非 `0`——"没有倾向"却报出中等置信度，无法向用户解释。实现见 `src/decis/answers.py` 的 `score_confidence`。
+
+理由见 [api-compatibility.md §7](api-compatibility.md)。引擎原生置信度不丢弃，放进响应的 `decis.native_confidence` 扩展字段。
 
 ### 4.3 `schema.py` —— 线格式 ⇄ 域模型
 
@@ -184,8 +190,9 @@ Pydantic 模型**手写**，字段名与 `typesafe_sdk/_schemas/models.py`（由
 ```python
 @dataclass(frozen=True)
 class Option:
-    key: str      # 线格式键
-    text: str     # 模型可见文本
+    key: str  # 线格式键
+    text: str  # 模型可见文本
+
 
 @dataclass(frozen=True)
 class PreparedQuestion:
@@ -193,6 +200,7 @@ class PreparedQuestion:
     kind: Literal["noul", "choice", "score"]
     instructions: str
     options: tuple[Option, ...]
+
 
 @dataclass(frozen=True)
 class PreparedRequest:
@@ -211,28 +219,31 @@ class PreparedRequest:
 ```python
 @dataclass(frozen=True)
 class EngineInfo:
-    id: str                          # "laya-multilingual" / "kev-0.8b"
-    version: str                     # 上游包/权重版本，用于拼响应 model 字段
-    primitives: frozenset[str]       # {"noul","choice","score"}
-    max_options: int                 # 单问选项上限
+    id: str  # "laya-multilingual" / "kev-0.8b"
+    version: str  # 上游包/权重版本，用于拼响应 model 字段
+    primitives: frozenset[str]  # {"noul","choice","score"}
+    max_options: int  # 单问选项上限
     max_state_tokens: int
     max_question_tokens: int
-    languages: str                   # "en" / "100+" / "multilingual"
-    device: str                      # "cpu" / "cuda" / "mps"
+    languages: str  # "en" / "100+" / "multilingual"
+    device: str  # "cpu" / "cuda" / "mps"
     dtype: str
-    description: str                 # 用于 GET /v1/models
-    release_date: str                # YYYY-MM-DD
+    description: str  # 用于 GET /v1/models
+    release_date: str  # YYYY-MM-DD
+
 
 @dataclass(frozen=True)
 class WorkItem:
     """一个 state 上的一个问题。调度器的最小工作单位。"""
-    request_id: str                  # 回填用；不发给模型
-    state_text: str                  # 已完成渲染（render.py）
-    question: PreparedQuestion       # 已完成渲染
+
+    request_id: str  # 回填用；不发给模型
+    state_text: str  # 已完成渲染（render.py）
+    question: PreparedQuestion  # 已完成渲染
+
 
 class DecisionEngine(Protocol):
     def info(self) -> EngineInfo: ...
-    def load(self) -> None: ...      # 幂等；冷启动在服务就绪前完成
+    def load(self) -> None: ...  # 幂等；冷启动在服务就绪前完成
     def predict(self, items: Sequence[WorkItem]) -> list[ProbDist]: ...
     def close(self) -> None: ...
 ```
@@ -290,9 +301,9 @@ def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) 
   ```python
   # (engine, device) -> dtype；未列出的组合用引擎默认值
   DTYPE_DEFAULTS = {
-      ("kev", "cpu"):  "fp32",   # bf16 on CPU is ~83x slower (measured)
+      ("kev", "cpu"): "fp32",  # bf16 on CPU is ~83x slower (measured)
       ("kev", "cuda"): "bf16",
-      ("laya", "cpu"): "fp32",   # 上游 Agent 自身也会在 cpu/mps 上强制 fp32
+      ("laya", "cpu"): "fp32",  # 上游 Agent 自身也会在 cpu/mps 上强制 fp32
       ("laya", "cuda"): "fp16",
   }
   DEGRADED = {("kev", "cpu", "bf16"): "kev bf16 on CPU is ~83x slower than fp32 (measured); use fp32"}
@@ -314,11 +325,11 @@ def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) 
 ```python
 # registry.py
 ENGINES: dict[str, tuple[str, str]] = {
-    "laya":              ("decis.engines.laya:LayaEngine",  "laya"),
-    "laya-multilingual": ("decis.engines.laya:LayaEngine",  "laya"),
-    "kev-0.8b":          ("decis.engines.kev:KevEngine",    "kev"),
-    "remote":            ("decis.engines.remote:RemoteEngine", None),
-    "mock":              ("decis.engines.mock:MockEngine",  None),
+    "laya": ("decis.engines.laya:LayaEngine", "laya"),
+    "laya-multilingual": ("decis.engines.laya:LayaEngine", "laya"),
+    "kev-0.8b": ("decis.engines.kev:KevEngine", "kev"),
+    "remote": ("decis.engines.remote:RemoteEngine", None),
+    "mock": ("decis.engines.mock:MockEngine", None),
 }
 ```
 
@@ -683,31 +694,40 @@ Decis/
 
 ## 12. 里程碑
 
-**Stage 0 — 契约冻结（2–3 天）**
-交付 `docs/api-compatibility.md`（含 L 级证据）与 `schema.py`、`auth.py`、`errors.py`；不接任何模型，用 `MockEngine` 跑通官方 SDK。此阶段结束的标志：
+**Stage 0 — 契约冻结（2–3 天）— ✅ 已完成**
 
-1. `typesafe_sdk` 的 `TypeSafeClient` 与 `AsyncTypeSafeClient` 都能对着 Decis 跑通文档示例；
-2. **L3b 错误契约测试全绿**（403/401 分工、认证先于校验、request-id 格式、422 形状）；
-3. **L0 现在就能加，因为没有它上面的契约会漂**：`test_contract_openapi.py` 断言 `schema.py` 的键集合/required/`const`/`minItems` 与 `docs/contract/typesafe-openapi-0.2.0.json` 同源；
-4. 认证与不安全默认值的测试全绿（未配 key + 非回环地址 → 拒绝启动）。
+交付 `docs/api-compatibility.md`（含 L 级证据）与 `schema.py`、`auth.py`、`errors.py`；不接任何模型，用 `MockEngine` 跑通官方 SDK。结束标志与实际结果：
 
-**Stage 1 — Laya 引擎闭环（3–5 天）**
-`render.py` → `answers.py` → `engines/laya.py` → `decis serve`；单进程、无批处理；`decis download` 可用；Dockerfile 可用（含非 root、OCI 标签、构建期 smoke test）。此阶段结束的标志：`docker run` 后官方 SDK 拿到真实 Laya 答案，且 `/readyz` 在 warmup 完成后才转绿。
+1. ✅ `typesafe_sdk` 的 `TypeSafeClient` 对着 Decis 跑通三种原语（`tests/test_contract_sdk.py`，走真实 uvicorn socket）。
+2. ✅ **L3b 错误契约测试全绿**（403/401 分工、认证先于校验、request-id 格式、422 形状；`tests/test_contract_errors.py`）。
+3. ✅ **L0 同源测试**：`test_contract_openapi.py` 断言 `schema.py` 的键集合/required/`const`/`minItems`/`minProperties` 与 `docs/contract/typesafe-openapi-0.2.0.json` 一致；CI 另有一个 job 校验快照版本未被无意 bump。
+4. ✅ 认证与不安全默认值的测试全绿（未配 key + 非回环地址 → 拒绝启动）。
 
-**Stage 2 — kev 引擎 + 抽象验证（3–5 天）**
+实现时新增/偏离设计的两点，均已回写文档：
+
+- 为打破 `schema ↔ render` 的循环依赖，抽出 `domain.py` 作为各层共享的领域类型（`Option`/`PreparedQuestion`/`PreparedRequest`/`ProbDist`）。分层见 `AGENTS.md §4`。
+- 加入 `service.py` 作为 HTTP 与引擎之间的编排层，使全部业务判断可以脱离 HTTP 测试；`routes.py` 因此没有分支逻辑。
+- 请求容量校验落在 `schema.validate_capacity`，接受一个 `count_tokens` 回调，从而不必 import 引擎层（`AGENTS.md §2` 已同步）。
+- 认证放在 ASGI 中间件而非 FastAPI 依赖，使"认证先于请求体校验"成为结构性质而非框架内部顺序的副产品。
+- `score` 的 `confidence` 由 kev 的"到众数平均距离"改为归一化熵，理由见 `api-compatibility.md §7`。
+
+**Stage 1 — Laya 引擎闭环（3–5 天）** — ⬜ 未开始
+`engines/laya.py` → `decis serve`；单进程、无批处理；`decis download` 可用；带权重的镜像可用。此阶段结束的标志：`docker run` 后官方 SDK 拿到真实 Laya 答案，且 `/readyz` 在 warmup 完成后才转绿。
+
+**Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — ⬜ 未开始
 vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是证伪/证实 §2 的抽象**：如果接 kev 需要改动 `answers.py` 或路由层，说明抽象错了，必须回去改。同时验证 §5.1 的 `WorkItem` 签名对 `rows` 与 `prefix` 两种模式都成立。
 
-**Stage 3 — 性能（5–7 天）**
+**Stage 3 — 性能（5–7 天）** — ⬜ 未开始
 攒批器 + 进程池 + 指标 + `benchmarks/`；产出各引擎 × 设备 × 批大小的延迟/吞吐表。用数据决定 `DECIS_BATCH_MODE` 与 `DECIS_BATCH_MAX_WAIT_MS` 的默认值。**本阶段有三个必须先做的验证**（前两个可能推翻设计假设）：
 
 1. **跨 state 批处理的真实收益**（§6.2）——这是整个吞吐论点的基石，目前**完全未实测**；
 2. **批不变性**（§6.6）——若 batch 变化会翻转 argmax，批处理的价值要重新评估；
 3. `DECIS_BATCH_MODE=rows|prefix|auto` 的默认值与判据。
 
-**Stage 4 — 发布工程（3–5 天）**
+**Stage 4 — 发布工程（3–5 天）** — ⬜ 未开始
 CI 三段式多架构多引擎镜像；GHCR + Docker Hub；`docker-compose.yml`；SBOM 与 provenance（`--provenance`）；README 定稿；`AGENTS.md` 定稿；首个 release。
 
-**Stage 5（可选）— 扩展**
+**Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
 
 ---
@@ -722,8 +742,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | Q4 | CPU 上 `torch.set_num_threads` 与进程数的组合 | 影响吞吐 2–3× | 部分完成（单进程线程扫描已完成）；多进程组合 Stage 3 实测 |
 | Q5 | 是否需要支持 Qwen3 世代的 kev 模型作为回退 | Qwen3.5 混合架构在 CUDA 上需要 `flash-linear-attention`+triton，是部署脆弱点；**CPU 上实测 1.66 s/请求（fp32）**，已不适合"轻量高频"定位 | 先支持 0.8b；CPU 镜像把它标为"功能可用、性能不达标"；CUDA 实测后再定 |
 | Q6 | README 用英文还是中文 | 影响受众 | **已决定**：英文为默认 + `README.zh-CN.md`，互链切换 |
-| Q7 | 认证方案（单 key / 多 key / 是否需要 JWT 或按 key 的配额） | 影响多租户可用性 | Stage 0 先做 `DECIS_API_KEY`/`DECIS_API_KEYS`；多租户配额留到有真实需求时 |
-| Q8 | `confidence` 是否要提供"引擎原生"与"统一"两个可选口径 | 影响可移植性与标定准确性（api-compatibility §7） | Stage 0 固定统一口径 + 始终暴露原生值；若用户反馈强烈再加开关 |
+| Q7 | 认证方案（单 key / 多 key / 是否需要 JWT 或按 key 的配额） | 影响多租户可用性 | ✅ Stage 0 已做 `DECIS_API_KEY`/`DECIS_API_KEYS`（常数时间比较、401/403 分工）；多租户配额留到有真实需求时 |
+| Q8 | `confidence` 是否要提供"引擎原生"与"统一"两个可选口径 | 影响可移植性与标定准确性（api-compatibility §7） | ✅ Stage 0 固定统一口径 + 始终暴露 `decis.native_confidence`；若用户反馈强烈再加开关 |
 | Q7 | 是否接受 `laya` 作为硬依赖（而非 vendor） | 上游 API 稳定性 | 先用 PyPI + 契约测试守卫 |
 
 ---

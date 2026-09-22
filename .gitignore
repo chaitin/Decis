@@ -35,6 +35,11 @@ models/
 hf/
 uv-cache/
 
+# Secrets — the API token lives here, never in git
+.env
+.env.local
+.env.*.local
+
 # Local scratch (probes, benchmark runs, downloads)
 .scratch/
 benchmarks/results/*.tmp.json

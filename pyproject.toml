@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "decis"
+version = "0.1.0"
+description = "One API to run all light-weight decision models."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Decis contributors" }]
+keywords = ["decision-models", "inference-server", "system-one", "laya", "kev"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "fastapi>=0.115",
+  "pydantic>=2.9",
+  "python-dotenv>=1.0",
+  "uvicorn>=0.32",
+]
+
+[project.optional-dependencies]
+# Engine dependencies live here, never in [project.dependencies]: an image that
+# installs decis[laya] has no peft, and vice versa. See AGENTS.md §6.
+laya = ["laya>=0.3.5,<0.4", "torch>=2.4"]
+kev = ["torch>=2.4", "transformers>=4.44", "peft>=0.13", "accelerate>=1.0", "safetensors>=0.4"]
+remote = ["httpx>=0.27"]
+metrics = ["prometheus-client>=0.20"]
+dev = [
+  "httpx>=0.27",
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "typesafe-sdk>=0.7.1",
+]
+all = ["decis[laya,kev,remote,metrics]"]
+
+[project.urls]
+Homepage = "https://github.com/kingfs/Decis"
+Issues = "https://github.com/kingfs/Decis/issues"
+Changelog = "https://github.com/kingfs/Decis/releases"
+
+[project.scripts]
+decis = "decis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "weights: requires real model weights (deselected by default in CI)",
+  "network: makes real network calls",
+]
+filterwarnings = ["error::DeprecationWarning:decis.*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "PTH"]
+ignore = [
+  "E501",   # line length is handled by the formatter
+  "B008",   # FastAPI's Depends()/Body() in defaults is the documented idiom
+  "RUF012", # ClassVar annotation is noise for our small model classes
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["decis"]

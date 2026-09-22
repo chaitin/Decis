@@ -6,9 +6,91 @@
 
 Decis is a small, self-hostable server that speaks [TypeSafe's System One API](https://docs.typesafe.ai/api) — the same `/v1/systemone` contract as Jev — and answers those requests with an open decision model of your choosing. Point the official `typesafe-sdk` at Decis instead of `api.typesafe.ai` and nothing else changes.
 
-> **Status: design phase.** No code has been written yet. [`docs/design.md`](docs/design.md) is the target implementation; [`AGENTS.md`](AGENTS.md) is the engineering contract for building it; [`docs/design-review.md`](docs/design-review.md) is an adversarial audit of the design, including what is still unproven. The contract in [`docs/api-compatibility.md`](docs/api-compatibility.md) rests on the [official OpenAPI snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API actually returns](docs/contract/observations-2026-09-22.md) — not on inference.
+> **Status: the API server works; the real models are next.** `Stage 0` is done: the wire contract, authentication, error shapes, the engine abstraction, configuration, the CLI, the Dockerfile and CI are implemented, with **205 tests passing** — including the official `typesafe-sdk` 0.7.1 driven over a real socket. Today the only registered engine is `mock`, a weight-free deterministic engine used for contract tests and demos, so **you can run and evaluate the API right now**. Laya lands in Stage 1 and kev in Stage 2 (`docs/design.md §12`).
+>
+> The contract in [`docs/api-compatibility.md`](docs/api-compatibility.md) rests on the [official OpenAPI snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API actually returns](docs/contract/observations-2026-09-22.md) — not on inference. [`docs/design-review.md`](docs/design-review.md) is an adversarial audit of the design, including what is still unproven.
 
 ---
+
+## Quickstart
+
+No weights, no GPU, no model download. The `mock` engine answers deterministically.
+
+```bash
+git clone https://github.com/kingfs/Decis && cd Decis
+uv sync --extra dev
+cp .env.example .env          # then set DECIS_API_KEY to anything
+uv run decis serve --host 127.0.0.1 --port 8000
+```
+
+```python
+from typesafe_sdk import Choice, Noul, TypeSafeClient
+
+# No `model=`: the SDK sends its default, "jev-latest", and Decis answers with the
+# engine it is actually running. Swapping TYPESAFE_BASE_URL is the whole migration.
+client = TypeSafeClient(api_key="local", base_url="http://127.0.0.1:8000")
+
+response = client.system_one(
+    state={
+        "subject": "Duplicate charge on invoice #4411",
+        "body": "We were billed twice for March. Please refund the duplicate today or we will cancel our plan.",
+    },
+    questions={
+        "department": Choice(
+            instructions="Which team should handle this?",
+            criteria={
+                "billing": "invoices, payments, refunds",
+                "technical": "bugs, outages, system errors",
+                "sales": "pricing, new contracts",
+            },
+        ),
+        "churn_risk": Noul(instructions="Does the user threaten to cancel or leave?"),
+    },
+)
+
+print(response.model)  # decis/mock@0.1.0
+print(response.choices["department"].choice)  # whichever the engine picked
+print(response.choices["department"].confidence)  # 0..1
+print(response.nouls["churn_risk"].noul)  # P(true), 0..1
+```
+
+The same request by hand:
+
+```bash
+curl -s localhost:8000/v1/systemone \
+  -H 'authorization: Bearer local' -H 'content-type: application/json' -d '{
+  "state": "We were billed twice for March. Please refund the duplicate today.",
+  "model": "mock",
+  "questions": {
+    "department": {"type": "choice", "instructions": "Which team should handle this?",
+                   "criteria": {"billing": "invoices, payments, refunds",
+                                "technical": "bugs, outages, system errors"}},
+    "churn_risk": {"type": "noul", "instructions": "Does the user threaten to cancel?"}
+  }}'
+```
+
+```jsonc
+{
+  "model": "decis/mock@0.1.0",
+  "answers": {
+    "department": { "type": "choice", "choice": "billing", "confidence": 0.763,
+                    "probabilities": { "billing": 0.8815, "technical": 0.1185 } },
+    "churn_risk": { "type": "noul", "noul": 0.89 }
+  },
+  "usage": { "input_tokens": 67, "output_tokens": 40 },
+  // Everything Decis adds beyond the contract lives under one key, and the
+  // official SDK ignores it. `batch_size` is how you can see batching happen.
+  "decis": { "engine": "mock", "engine_version": "0.1.0", "device": "cpu", "dtype": "none",
+             "latency_ms": 0.2, "batch_size": 2 }
+}
+```
+
+Other things that work today:
+
+```bash
+uv run decis models     # which engines are registered and usable here
+uv run decis doctor     # environment and configuration self-check
+```
 
 ## The problem
 
@@ -24,23 +106,25 @@ Decis is that uniform way: one stable API, many engines, packaged as one contain
 
 ## What you get
 
-- **The jev contract, implemented once.** `POST /v1/systemone`, `GET /v1/models`, `choice` / `score` / `noul` primitives, the official SDK's error shapes and request-id header. The wire format is pinned down in [`docs/api-compatibility.md`](docs/api-compatibility.md) with an evidence level on every claim.
-- **Pluggable engines.** An engine only has to produce a probability per option; the server turns that into `Noul` / `Choice` / `Score` answers, so every engine returns identical, comparable shapes — including a single documented `confidence` definition.
-- **Built for small, frequent calls.** Both open decision models are a single forward pass, so Decis batches questions *across requests* before they reach the model. This is the difference between "a FastAPI wrapper" and a server.
+- **The jev contract, implemented once.** `POST /v1/systemone`, `GET /v1/models`, `choice` / `score` / `noul` primitives, the official SDK's error shapes and request-id header. The wire format is pinned down in [`docs/api-compatibility.md`](docs/api-compatibility.md) with an evidence level on every claim — and the live API was probed rather than assumed, which is how we found that a missing credential is 403 while an invalid one is 401.
+- **Pluggable engines.** An engine only has to produce a probability per option; the server turns that into `Noul` / `Choice` / `Score` answers, so every engine returns identical, comparable shapes — including a single documented `confidence` definition. Engines are referenced by string path, so an image with one engine's dependencies installed can still list the others.
+- **Aimed at small, frequent calls.** Both open decision models are a single forward pass, so the request path is designed to batch questions *across requests* before they reach the model — see the honesty note under Performance.
 - **Baked-in weights or a mounted volume.** Images ship with the model so `docker run` works offline; `DECIS_MODEL_DIR` overrides it with your own directory.
+- **Safe by default.** Bearer-token auth (from `.env`), a constant-time comparison, a request-size cap, and a refusal to start on a public address with no token configured.
 
 ## Engines
 
-| Engine | Backbone | Params | Weights | Notes |
-|---|---|---|---|---|
-| `laya-multilingual` | mmBERT-base | 322M | 614 MiB | 100+ languages, ~2.2× faster — the best default |
-| `laya` | ModernBERT-large | 421M | 804 MiB | English, strongest on English benchmarks |
-| `laya-typed-decisions` | ModernBERT-large | 421M | 804 MiB | Tuned for the typed-decisions workflows |
-| `kev-0.8b` | Qwen3.5-0.8B + LoRA | 0.8B | ~1.7 GB | Different architecture, different error profile |
-| `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | Higher accuracy, no longer "light-weight" |
-| `remote` | — | — | — | Forwards to the real `api.typesafe.ai`; useful for A/B and as a test oracle |
+| Engine | Backbone | Params | Weights | Status | Notes |
+|---|---|---|---|---|---|
+| `mock` | — | — | none | **shipped** | Deterministic, weight-free. Contract tests and demos |
+| `laya-multilingual` | mmBERT-base | 322M | 614 MiB | Stage 1 | 100+ languages, ~2.2× faster — the intended default |
+| `laya` | ModernBERT-large | 421M | 804 MiB | Stage 1 | English, strongest on English benchmarks |
+| `kev-0.8b` | Qwen3.5-0.8B + LoRA | 0.8B | ~1.7 GB | Stage 2 | Different architecture, different error profile |
+| `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | Stage 2 | Higher accuracy, no longer "light-weight" |
+| `remote` | — | — | — | planned | Forwards to the real `api.typesafe.ai`; A/B and test oracle |
 
-Adding an engine is one module plus one registry line. See [`AGENTS.md §5`](AGENTS.md).
+Adding an engine is one module plus one registry line, and **no change to the normalisation layer** —
+if an engine needs `render.py` or `answers.py` changed, the abstraction is wrong. See [`AGENTS.md §5`](AGENTS.md).
 
 ## Performance
 
@@ -57,73 +141,50 @@ and the one most people will try first:
 
 Three things worth taking from this table:
 
-- **Batching is the lever.** Ten questions in one call cost about half as much per question as one
-  question on its own. Decis batches across requests, not just within one.
+- **Within-request batching is a real lever.** Ten questions in one call cost about half as much per
+  question as one question on its own.
 - **Cold start is ~75 seconds**, and peak memory is 3–7× the weight files. Plan readiness probes and
   container memory accordingly.
 - **`kev-0.8b` wants a GPU.** Its Qwen3.5 backbone needs `flash-linear-attention` and `causal_conv1d`
   to run at speed, and both require Triton/CUDA. On CPU it is an order of magnitude slower than Laya.
-  Its `bf16` path on CPU is a further **83×** slower than `fp32` — which is why Decis picks dtypes per
-  engine *and* device, and warns rather than silently crawling.
+  Its `bf16` path on CPU is a further **83×** slower than `fp32` (a single observation, not a
+  benchmark) — which is why Decis picks dtypes per engine *and* device, and warns rather than silently
+  crawling.
+
+### What this table does *not* tell you
+
+Decis's central throughput claim is **cross-request batching** — joining questions from *different*
+requests into one forward pass. That has **never been measured**, because it needs the batching
+scheduler that arrives in Stage 3. The table above only measures questions that share one `state`,
+which is the easy case. Real traffic has a different state per request, and the win there may be
+smaller.
+
+So: **no QPS figure is quoted here, and none should be until it has been measured.** This is gap M5 in
+[`docs/design-review.md`](docs/design-review.md), and it is the reason `decis.batch_size` is in every
+response — the mechanism has to be observable, or "it batches" is unfalsifiable. The design does
+include a test that the batcher *did* fire, so a batcher that never triggers cannot pass CI.
 
 Raw per-sample output, the exact commands, and the host spec are in
 [`benchmarks/results/`](benchmarks/results/). Every number quoted in the docs comes from there.
 
-## Usage
+## Deployment
+
+One image per engine, because engine dependencies conflict and are large. Images with weights baked in
+arrive with each engine (Stage 4); today's image is the API plus the mock engine.
 
 ```bash
-docker run -p 8000:8000 ghcr.io/kingfs/decis:laya-multilingual-latest
+docker build -f docker/Dockerfile -t decis:mock .
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me decis:mock
 ```
 
-```python
-from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
-
-client = TypeSafeClient(api_key="local", base_url="http://127.0.0.1:8000", model="laya-multilingual")
-
-response = client.system_one(
-    state={"subject": "Duplicate charge on invoice #4411",
-           "body": "We were billed twice for March. Please refund the duplicate today or we will cancel our plan."},
-    questions={
-        "department":  Choice(instructions="Which team should handle this?",
-                              criteria={"billing": "invoices, payments, refunds",
-                                        "technical": "bugs, outages, system errors",
-                                        "sales": "pricing, new contracts"}),
-        "urgency":     Score(instructions="How urgent is this?",
-                             criteria=["not urgent", "soon", "critical deadline or blocking issue"]),
-        "churn_risk":  Noul(instructions="Does the user threaten to cancel or leave?"),
-    },
-)
-
-print(response.choices["department"].choice)      # billing
-print(response.scores["urgency"].score)           # 1.84
-print(response.nouls["churn_risk"].noul)          # 0.89
-```
-
-Or by hand:
+Mounted weights beat baked weights when you want to update a model without rebuilding:
 
 ```bash
-curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
-  "state": "We were billed twice for March. Please refund the duplicate today.",
-  "model": "laya-multilingual",
-  "questions": {
-    "department": {"type": "choice", "instructions": "Which team should handle this?",
-                   "criteria": {"billing": "invoices, payments, refunds",
-                                "technical": "bugs, outages, system errors"}},
-    "churn_risk": {"type": "noul", "instructions": "Does the user threaten to cancel?"}
-  }}'
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models decis:laya
 ```
 
-```jsonc
-{
-  "model": "decis/laya-multilingual@0.3.5",
-  "answers": {
-    "department": { "type": "choice", "choice": "billing", "confidence": 0.71,
-                    "probabilities": { "billing": 0.85, "technical": 0.15 } },
-    "churn_risk": { "type": "noul", "noul": 0.89 }
-  },
-  "usage": { "input_tokens": 96, "output_tokens": 21 }
-}
-```
+The container runs as a non-root user, needs no external services — no Redis, no Postgres, no Celery —
+and refuses to start on a public address with no token configured.
 
 ## Primitives
 
@@ -161,9 +222,29 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 ## Development
 
 ```bash
-uv sync --extra server --extra laya
-uv run pytest -q           # no model weights needed
-uv run decis serve
+uv sync --extra dev
+uv run pytest -q                        # 205 tests, ~6 s, no weights, no network
+uv run ruff check && uv run ruff format --check
+uv run decis serve --host 127.0.0.1     # loopback may run without a token
+```
+
+The test suite is organised by the evidence it provides, following
+[`docs/api-compatibility.md §8`](docs/api-compatibility.md):
+
+| Layer | What it proves | Where |
+|---|---|---|
+| L0 | Our models still match the vendored official OpenAPI snapshot | [`tests/test_contract_openapi.py`](tests/test_contract_openapi.py) |
+| L1/L2 | Response shape and every invariant in `AGENTS.md §3` | [`tests/test_contract_shape.py`](tests/test_contract_shape.py) |
+| L3b | The error contract: 401 vs 403, auth before validation, request ids | [`tests/test_contract_errors.py`](tests/test_contract_errors.py) |
+| L4 | **The real `typesafe-sdk` over a real socket** — the only test that proves compatibility | [`tests/test_contract_sdk.py`](tests/test_contract_sdk.py) |
+| — | Readiness, cold start, shutdown | [`tests/test_readiness.py`](tests/test_readiness.py) |
+| — | The canonical-home and layering rules, enforced by parsing the AST | [`tests/test_conventions.py`](tests/test_conventions.py) |
+
+Before changing anything in `docs/api-compatibility.md`, run the differential check against the live API
+— no offline test can detect the live server disagreeing with its own OpenAPI:
+
+```bash
+TYPESAFE_LIVE_API_KEY=<key> uv run pytest tests/test_contract_sdk.py -m network
 ```
 
 ## License

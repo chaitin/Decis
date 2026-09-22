@@ -4,7 +4,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 本文件是**在这个仓库里工作的契约**。它写给 AI agent，也写给人类。规则不是建议，是约束；违反约束的改动即使"能跑"也不接受。
 
-> **当前状态**：仓库处于设计阶段。已有 `README.md` / `README.zh-CN.md`、`AGENTS.md`、`LICENSE`、`NOTICE`、`docs/` 下的四份文档、`docs/contract/` 的官方 OpenAPI 快照与线上观测记录、以及 `benchmarks/` 里实现前采集的引擎实测数据。`docs/design.md §11` 里的 `src/decis/` 是**目标结构**，尚未实现。实现时请逐条遵守下面的规则。
+> **当前状态**：**Stage 0 已完成**。API server 可用：`uv sync --extra dev && uv run decis serve`。契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象与 `MockEngine`、`scheduler.py`、`config.py`、`cli.py`、`docker/Dockerfile` 与 CI 均已实现，**205 个测试通过**（含官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试）。**尚未实现的是真实引擎**：`registry.py` 里目前只有 `mock`，Laya/kev 引擎属于 Stage 1/2。`docs/` 下是设计文档；`docs/design.md §11` 里的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 
 ---
 
@@ -30,13 +30,16 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 | 概念 | 唯一所在 | 禁止 |
 |---|---|---|
+| 各层共享的领域类型（`Option`/`PreparedQuestion`/`PreparedRequest`/`ProbDist`） | `src/decis/domain.py` | 在 `schema.py`/`render.py` 里另定义一份；`domain.py` **不得 import 包内任何模块** |
 | `state`/`instructions`/`criteria` → 模型可见文本 | `src/decis/render.py` | 引擎各自拼 prompt；引擎各自做分隔符转义 |
 | 概率分布 → `Noul`/`Choice`/`Score` answer | `src/decis/answers.py` | 引擎返回线格式 answer |
 | `confidence` 计算 | `src/decis/answers.py` | 引擎各自算 confidence 并直接透出 |
 | question 的 wire key（`"false"/"true"`、选项名、`"0".."n-1"`） | `src/decis/answers.py: question_keys` | 任何地方重复这份规则 |
-| 线格式 Pydantic 模型 / 错误形状 | `src/decis/schema.py` | 路由里零散定义 model |
+| 线格式 Pydantic 模型 | `src/decis/schema.py` | 路由里零散定义 model |
+| 请求容量校验（选项数、state/question token 预算） | `src/decis/schema.py: validate_capacity` | 让引擎截断后静默给出劣化答案 |
 | 异常 → 契约错误响应（状态码、`detail` 多态形状） | `src/decis/errors.py` | 路由里直接 `raise HTTPException` 拼 body |
 | Bearer 校验、常数时间比较、401/403 分工 | `src/decis/auth.py` | 在路由或中间件里各写一份鉴权 |
+| `x-typesafe-request-id` 生成与请求日志 | `src/decis/observability.py` | 各处在响应上手写这个 header |
 | 权重路径解析 | `src/decis/paths.py` | 引擎自己决定去哪找权重 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
 | 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
@@ -75,13 +78,27 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 ## 4. 架构分层与依赖方向
 
 ```
-routes/app  →  schema/render/answers  →  scheduler/batch  →  engines  →  paths
+        routes/app                        ← HTTP：只做解析、委派、序列化
+            ↓
+        service.py                        ← 编排：解析模型、归一化、容量校验、组装响应
+            ↓
+   schema / render / answers              ← 归一化：线格式 ⇄ 领域类型 ⇄ 文本
+            ↓
+        scheduler.py                      ← 调度：进程内、串行化（Stage 3 起负责攒批）
+            ↓
+        engines/                          ← 引擎：只吃 PreparedQuestion，只吐 ProbDist
+            ↓
+        paths.py                          ← 权重定位
+        domain.py                         ← 以上所有层的共享词汇表（不依赖包内任何模块）
 ```
 
-- 只能向下依赖。
+- 只能向下依赖。`domain.py` 不参与此序：它是各层的共同词汇，被任何层 import 都是对的。
 - **引擎层不得 import HTTP 层**（FastAPI、路由、请求对象）。
-- **归一化层（render/answers/schema）不得 import 任何引擎**。
-- 引擎通过 `DecisionEngine` 协议暴露，返回 `ProbDist`，**不返回线格式**。
+- **归一化层（`schema`/`render`/`answers`）不得 import 任何引擎**。
+- 引擎通过 `DecisionEngine` 暴露，返回 `ProbDist`，**不返回线格式**。
+- `routes.py` 里不允许有判断逻辑；业务判断放 `service.py`，这样它可以脱离 HTTP 测试。
+
+`tests/test_conventions.py` 会解析 AST 来验证上述方向。
 
 ---
 
@@ -113,19 +130,30 @@ routes/app  →  schema/render/answers  →  scheduler/batch  →  engines  → 
 
 ## 7. 命令
 
-（Stage 0 之后可用；现在尚未实现，先用 `docs/` 里的方案。）
+已实现（Stage 0）：
 
 ```bash
-uv sync --extra server --extra laya     # 开发环境
-uv run pytest -q                        # 无权重测试（CI 跑这个）
-uv run pytest -m weights                # 需要权重的测试（本地/夜间）
+uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
+cp .env.example .env                 # 至少要改 DECIS_API_KEY
+uv run pytest -q                     # 无权重测试（CI 跑这个，205 个）
+uv run pytest -m weights             # 需要权重的测试（Stage 1 起才有用例）
 uv run decis serve --host 0.0.0.0 --port 8000
-uv run decis download --engine laya-multilingual --dest ./models
-uv run decis models                     # 列出已注册引擎与权重状态
-uv run decis doctor                     # 环境自检：依赖、权重、设备、线程数
-uv run decis bench --engine ... --batch 1,8,32   # 性能基准
-uv run python benchmarks/report.py      # 由原始 JSON 生成文档里的表
+uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token
+uv run decis models                  # 列出已注册引擎及其在本机是否可用
+uv run decis doctor                  # 环境自检：依赖、配置安全性、设备
 uv run ruff check && uv run ruff format --check
+
+cp .env.example .env
+docker build -f docker/Dockerfile -t decis:mock .
+docker build -f docker/Dockerfile --build-arg DECIS_EXTRAS=laya -t decis:laya .
+```
+
+尚未实现（随真实引擎落地，见 `docs/design.md §12` 的 Stage 1–4）：
+
+```bash
+uv run decis download --engine laya-multilingual --dest ./models
+uv run decis bench --engine ... --batch 1,8,32
+uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 ```
 
 ---

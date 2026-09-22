@@ -1,4 +1,5 @@
 """CPU latency probe for a kev server (Decis feasibility study). Measures the HTTP path."""
+
 import json
 import statistics
 import sys
@@ -57,10 +58,21 @@ for _ in range(N):
     post(BODY)
     lat2.append((time.time() - t) * 1000)
 
-print(json.dumps({
-    "engine": "kev",
-    "models_endpoint": get("/v1/models"),
-    "latency_ms": {"min": round(min(lat2), 1), "p50": round(statistics.median(lat2), 1), "max": round(max(lat2), 1)},
-    "first_pass_ms": round(lat[0], 1),
-    "response": resp,
-}, indent=2, ensure_ascii=False, default=str))
+print(
+    json.dumps(
+        {
+            "engine": "kev",
+            "models_endpoint": get("/v1/models"),
+            "latency_ms": {
+                "min": round(min(lat2), 1),
+                "p50": round(statistics.median(lat2), 1),
+                "max": round(max(lat2), 1),
+            },
+            "first_pass_ms": round(lat[0], 1),
+            "response": resp,
+        },
+        indent=2,
+        ensure_ascii=False,
+        default=str,
+    )
+)

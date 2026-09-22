@@ -1,4 +1,5 @@
 """CPU latency probe for the Laya decision model (Decis feasibility study)."""
+
 import json
 import os
 import resource
@@ -9,7 +10,7 @@ import time
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
-import laya  # noqa: E402
+import laya
 
 STATE = {
     "from": "user@acme.com",
@@ -55,13 +56,24 @@ for _ in range(n):
 
 rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
 
-print(json.dumps({
-    "engine": "laya",
-    "checkpoint": sub or "english",
-    "threads": threads,
-    "load_s": round(load_s, 1),
-    "latency_ms": {"min": round(min(lat), 1), "p50": round(statistics.median(lat), 1), "max": round(max(lat), 1)},
-    "peak_rss_gb": round(rss_gb, 2),
-    "answers": r["answers"] if isinstance(r, dict) and "answers" in r else r,
-    "top_level_keys": sorted(r.keys()) if isinstance(r, dict) else None,
-}, indent=2, ensure_ascii=False, default=str))
+print(
+    json.dumps(
+        {
+            "engine": "laya",
+            "checkpoint": sub or "english",
+            "threads": threads,
+            "load_s": round(load_s, 1),
+            "latency_ms": {
+                "min": round(min(lat), 1),
+                "p50": round(statistics.median(lat), 1),
+                "max": round(max(lat), 1),
+            },
+            "peak_rss_gb": round(rss_gb, 2),
+            "answers": r["answers"] if isinstance(r, dict) and "answers" in r else r,
+            "top_level_keys": sorted(r.keys()) if isinstance(r, dict) else None,
+        },
+        indent=2,
+        ensure_ascii=False,
+        default=str,
+    )
+)

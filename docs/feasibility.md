@@ -66,7 +66,7 @@
 **对 Decis 极其重要的发现**：`laya/common.py:collate_items` 的实现是
 
 ```python
-items = [it for group in batch for it in group]   # 展平多组问题
+items = [it for group in batch for it in group]  # 展平多组问题
 ```
 
 即 **Laya 的官方原语天然支持"把多个请求的问题组展平成一个 batch 做一次前向"**。上游 `system_one` 只传了 `[items]`（一组），但底下的 `collate_items` + `model(...)` 可以直接喂多组。这意味着 Decis 的**跨请求批处理在 Laya 上是复用官方原语，不是 hack**，实现量约 50 行。

@@ -64,6 +64,7 @@ class WorkItem:
     state_text: str
     question: PreparedQuestion
 
+
 def predict(self, items: Sequence[WorkItem]) -> list[ProbDist]: ...
 ```
 
@@ -118,9 +119,10 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 **修正**（`api-compatibility.md §7`）：保留统一口径作为线格式（契约的可预测性需要它），但——
 
-- **始终**把引擎原生置信度放进 `decis.engine.confidence`。对 `noul` 尤其重要：契约规定 `noul` answer **没有** confidence 字段，所以扩展字段是用户唯一能拿到 noul 不确定性的地方；
-- `/v1/models` 声明每个引擎的 `confidence_formula`；
+- **始终**把引擎原生置信度放进响应的 `decis.native_confidence`。对 `noul` 尤其重要：契约规定 `noul` answer **没有** confidence 字段，所以扩展字段是用户唯一能拿到 noul 不确定性的地方；
 - 文档明确写出：**用于风险决策时请在自己的标注集上重新标定，不要跨引擎复用阈值**。
+
+实现时进一步发现两个原语的公式口径必须一致（**0 = 无倾向，1 = 确定**）。kev 的 score 公式 `1 − E|level − mode|/(L−1)` 加上众数约束后在 `L=3` 的均匀分布上得 `0.5`，可达区间并非 `[0,1]`；于是 `score` 改用归一化熵 `1 − H(p)/ln(L)`，与 `choice` 口径一致。这是对 kev 的**有意偏离**，记录在 `api-compatibility.md §7`。原计划在 `/v1/models` 里声明 `confidence_formula` 一条已取消：公式不因引擎而异，声明它反而暗示它会变。
 
 ### D5（中）缺少启动顺序与优雅下线的设计 — 已补
 

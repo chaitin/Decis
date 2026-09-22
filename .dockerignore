@@ -1,0 +1,30 @@
+# Keep the build context small and reproducible.
+.git
+.github
+.venv
+.uv-cache
+.scratch
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Weights never belong in an image: mount them at /models instead.
+models/
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.onnx
+*.gguf
+*.npz
+hf/
+
+# Local configuration, including the API token.
+.env
+.env.local
+
+docs/
+benchmarks/
+tests/

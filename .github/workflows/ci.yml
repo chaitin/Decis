@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # uv writes its cache here; the runner's default is not always writable.
+  UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+
+jobs:
+  test:
+    name: lint + tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The engines themselves are platform-specific, but the API and the
+        # contract are not: they must hold everywhere.
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --extra dev --python ${{ matrix.python }}
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Tests
+        # No weights are downloaded and no network is used: the mock engine and
+        # the vendored OpenAPI snapshot are the whole fixture set.
+        run: uv run pytest -q
+
+      - name: The server starts and answers, with a real HTTP client
+        run: |
+          uv run python - <<'PY'
+          import json, os, threading, time, urllib.request
+          from decis.app import create_app
+          from decis.config import Settings
+
+          settings = Settings(api_keys=("ci",), host="127.0.0.1", default_engine="mock", env_file="")
+          app = create_app(settings)
+
+          import uvicorn
+          server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8123, log_level="warning"))
+          threading.Thread(target=server.run, daemon=True).start()
+          for _ in range(200):
+              if server.started:
+                  break
+              time.sleep(0.05)
+
+          def call(path, payload=None):
+              request = urllib.request.Request(
+                  f"http://127.0.0.1:8123{path}",
+                  data=json.dumps(payload).encode() if payload else None,
+                  headers={"Authorization": "Bearer ci", "Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(request) as response:
+                  return response.status, dict(response.headers), json.loads(response.read())
+
+          status, headers, body = call("/v1/systemone", {
+              "state": "I was charged twice.",
+              "model": "jev-latest",
+              "questions": {"billing": {"type": "noul", "instructions": "Is this about billing?"}},
+          })
+          assert status == 200, status
+          assert body["model"] == "decis/mock@0.1.0", body
+          assert "noul" in body["answers"]["billing"], body
+          assert headers["x-typesafe-request-id"].startswith("req_"), headers
+          print("smoke test ok:", body["model"], body["answers"])
+          PY
+
+  contract:
+    name: contract snapshot unchanged
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - name: The vendored OpenAPI snapshot is still the pinned version
+        run: |
+          uv run python - <<'PY'
+          import hashlib, json, pathlib, sys
+          path = pathlib.Path("docs/contract/typesafe-openapi-0.2.0.json")
+          raw = path.read_bytes()
+          spec = json.loads(raw)
+          version = spec["info"]["version"]
+          digest = hashlib.sha256(raw).hexdigest()
+          print(f"{path} version={version} sha256={digest} bytes={len(raw)}")
+          if version != "0.2.0":
+              sys.exit("the snapshot's version changed: update docs/api-compatibility.md and the pin")
+          PY
+
+  docker:
+    name: image builds and serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the engine-free image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: decis:ci
+      - name: Serve one request from the built image
+        run: |
+          docker run --rm -d --name decis-ci -p 8000:8000 \
+            -e DECIS_API_KEY=ci -e DECIS_DEFAULT_ENGINE=mock decis:ci
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8000/readyz && break || sleep 1
+          done
+          curl -fsS -X POST http://127.0.0.1:8000/v1/systemone \
+            -H 'Authorization: Bearer ci' -H 'Content-Type: application/json' \
+            -d '{"state":"charged twice","model":"mock","questions":{"q":{"type":"noul"}}}' | tee /dev/stderr | grep -q '"noul"'
+          curl -fsS http://127.0.0.1:8000/v1/models -H 'Authorization: Bearer ci' | grep -q 'decis/mock'
+          docker stop decis-ci

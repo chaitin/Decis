@@ -3,6 +3,7 @@
 Writes raw per-config JSON (the Decis benchmarks/ convention: raw samples + input hash,
 report generated from the JSON, never hand-typed numbers).
 """
+
 import hashlib
 import json
 import os
@@ -11,13 +12,14 @@ import resource
 import statistics
 import sys
 import time
+from pathlib import Path
 
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-import torch  # noqa: E402
-import laya  # noqa: E402
+import laya
+import torch
 
 SUBFOLDER = sys.argv[1] if len(sys.argv) > 1 else "multilingual"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/laya_sweep.json"
@@ -39,10 +41,12 @@ def make_questions(n):
             out[f"choice_{i}"] = {
                 "type": "choice",
                 "instructions": "Which department should handle this request?",
-                "criteria": {"billing": "invoices, payments, refunds",
-                             "technical": "bugs, outages, system errors",
-                             "sales": "pricing, new contracts",
-                             "other": "everything else"},
+                "criteria": {
+                    "billing": "invoices, payments, refunds",
+                    "technical": "bugs, outages, system errors",
+                    "sales": "pricing, new contracts",
+                    "other": "everything else",
+                },
             }
         elif kind == 1:
             out[f"score_{i}"] = {
@@ -61,10 +65,11 @@ def make_questions(n):
 def token_estimate(agent, questions):
     """Same token accounting the model sees, for the report's input-hash assertion."""
     from laya.common import build_sequence
+
     max_len = agent.cfg.get("max_len", 512)
     head_max_len = agent.cfg.get("head_max_len", 192)
     total = 0
-    for qid, q in questions.items():
+    for q in questions.values():
         internal = agent._to_internal(q)
         seq, _ = build_sequence(agent.tok, STATE, internal, max_len, head_max_len)
         total += len(seq)
@@ -95,27 +100,31 @@ for threads in [1, 2, 4, 8, 16, 24]:
         qs = make_questions(nq)
         try:
             samples, resp = measure(agent, qs, ITER)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             results.append({"threads": threads, "questions": nq, "error": repr(e)[:300]})
             continue
-        results.append({
-            "threads": threads,
-            "questions": nq,
-            "input_tokens": token_estimate(agent, qs),
-            "input_sha256": hashlib.sha256(
-                json.dumps(qs, sort_keys=True).encode() + json.dumps(STATE, sort_keys=True).encode()
-            ).hexdigest()[:16],
-            "n": len(samples),
-            "p50_ms": round(statistics.median(samples), 1),
-            "p95_ms": round(sorted(samples)[max(0, int(len(samples) * 0.95) - 1)], 1),
-            "min_ms": round(min(samples), 1),
-            "max_ms": round(max(samples), 1),
-            "ms_per_question": round(statistics.median(samples) / nq, 2),
-            # NOT throughput: this is what one serial caller achieves. It ignores concurrency
-            # and cross-request batching. See benchmarks/README.md and docs/design-review.md M4.
-            "single_caller_questions_per_second": round(1000 / (statistics.median(samples) / nq), 1),
-            "sample_choice_confidence": resp["answers"][next(k for k in resp["answers"] if k.startswith("choice"))]["confidence"],
-        })
+        results.append(
+            {
+                "threads": threads,
+                "questions": nq,
+                "input_tokens": token_estimate(agent, qs),
+                "input_sha256": hashlib.sha256(
+                    json.dumps(qs, sort_keys=True).encode() + json.dumps(STATE, sort_keys=True).encode()
+                ).hexdigest()[:16],
+                "n": len(samples),
+                "p50_ms": round(statistics.median(samples), 1),
+                "p95_ms": round(sorted(samples)[max(0, int(len(samples) * 0.95) - 1)], 1),
+                "min_ms": round(min(samples), 1),
+                "max_ms": round(max(samples), 1),
+                "ms_per_question": round(statistics.median(samples) / nq, 2),
+                # NOT throughput: this is what one serial caller achieves. It ignores concurrency
+                # and cross-request batching. See benchmarks/README.md and docs/design-review.md M4.
+                "single_caller_questions_per_second": round(1000 / (statistics.median(samples) / nq), 1),
+                "sample_choice_confidence": resp["answers"][next(k for k in resp["answers"] if k.startswith("choice"))][
+                    "confidence"
+                ],
+            }
+        )
 
 payload = {
     "engine": "laya",
@@ -135,7 +144,7 @@ payload = {
     "results": results,
 }
 
-with open(OUT, "w", encoding="utf-8") as f:
+with Path(OUT).open("w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2, ensure_ascii=False)
 
 print(json.dumps({k: v for k, v in payload.items() if k != "results"}, indent=2, ensure_ascii=False))
@@ -144,5 +153,7 @@ for r in results:
     if "error" in r:
         print(f"{r['threads']:>7}  {r['questions']:>9}   ERROR {r['error'][:60]}")
     else:
-        print(f"{r['threads']:>7}  {r['questions']:>9}  {r['p50_ms']:>7}  {r['p95_ms']:>7}  "
-              f"{r['ms_per_question']:>11}  {r['single_caller_questions_per_second']:>11}")
+        print(
+            f"{r['threads']:>7}  {r['questions']:>9}  {r['p50_ms']:>7}  {r['p95_ms']:>7}  "
+            f"{r['ms_per_question']:>11}  {r['single_caller_questions_per_second']:>11}"
+        )

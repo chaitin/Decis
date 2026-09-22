@@ -139,7 +139,7 @@ Decis 对外只暴露**一套**接口，其语义目标是"把 `base_url` 从 `h
 
 **两者在 OpenAPI 里都是必填的非空整数**（`Usage.required = ["input_tokens","output_tokens"]`，类型 `integer`）。官方 SDK 把字段放宽为 `int | None` 只是客户端容错，**不构成"可以不发"的许可**。Decis 必须始终发整数。
 
-> **工程含义 4**：决策模型**不生成文本**，"输出 token"在 Decis 中无自然定义。kev 用"序列化 answers 的 token 数"（`kev/api.py:150-152`）作为计费式口径。Decis 采用同一口径并**在文档中明确说明它是计费口径、不是生成长度**——这是必须诚实交代的地方。若某引擎确实报不出，Decis 输出 `0` 并在 `decis.engine` 里说明，而不是发 `null`。
+> **工程含义 4**：决策模型**不生成文本**，"输出 token"在 Decis 中无自然定义。kev 用"序列化 answers 的 token 数"（`kev/api.py:150-152`）作为计费式口径。Decis 采用同一口径并**在文档中明确说明它是计费口径、不是生成长度**——这是必须诚实交代的地方。实现见 `src/decis/answers.py: estimate_output_tokens`；`input_tokens` 由引擎自己的 tokenizer 报（引擎没有 tokenizer 时才退化为字符估算）。
 
 ### 4.4 `model` 回填
 
@@ -240,9 +240,24 @@ Decis 必须照此实现。只返回 401（很多 API 的做法）会让依赖�
 |---|---|---|---|---|
 | 1 | `score` 层级数下限 | OpenAPI `min_length=1`（A） vs 文档散文"至少 2"（B） vs kev 用 2（C） | **接受 ≥1，不拒绝** | 拒绝一个符合 OpenAPI 的请求风险更大；文档化"≥2 才有语义" |
 | 2 | `score` 层级数上限 | 文档散文"最多 10"（B） vs OpenAPI 无上限、kev 允许 255（A/C） | **不设 10 的硬上限**，由各引擎的 `EngineInfo.max_options` 决定（Laya ≤255，kev ≤255） | 10 是 jev 产品限制而非线格式限制；Decis 引擎能力不同 |
-| 3 | `model` 是否必填 | OpenAPI 必填（A） vs kev 有默认值（C） | **必填**；缺省时回落到配置的默认引擎并记录告警 | 契约优先，同时不破坏 kev 风格客户端 |
-| 4 | 响应中额外字段 | 无规定 | 允许，且集中在 `decis` 命名空间下 | SDK `extra="ignore"`，向前兼容 |
+| 3 | `model` 是否必填 | OpenAPI 必填（A） vs kev 有默认值（C） | **必填** | 契约优先。官方 SDK 的默认值是 `jev-latest`，见第 6 条 |
+| 4 | 响应中额外字段 | 无规定 | 允许，且集中在 `decis` 命名空间下，见下表 | SDK `extra="ignore"`，向前兼容 |
 | 5 | `confidence` 公式 | **官方明确不公开**；文档称"是概率分布的统计量"，并明说用户可自行定义（B） | **由 Decis 统一定义并公开**，各引擎不各算各的 | 见下 |
+| 6 | 客户端发来的 `jev-latest` | SDK 默认模型名（A，`TYPESAFE_DEFAULT_MODEL`） | **接受**，替换为服务器实际加载的引擎，并在 `decis.requested_model` 回报 | "只改 `TYPESAFE_BASE_URL` 就能跑"是项目的核心承诺；静默替换才是问题，所以必须回报 |
+
+### 7.1 `decis` 扩展字段（Decis 实际发送的内容）
+
+顶层只有 `decis` 一个额外键。所有这些字段都可以被官方 SDK 安全忽略（`extra="ignore"`）。
+
+| 字段 | 含义 | 为什么在这里而不是契约里 |
+|---|---|---|
+| `engine` | 引擎 id，如 `mock` | 契约只有 `model`（版本化 id）。定位"是谁答的"时 id 比版本化字符串好读 |
+| `engine_version` | 引擎版本 | 便于把一条答案追溯回具体的构建 |
+| `device` / `dtype` | 如 `cpu` / `float32` | 复现性能与数值差异的必要信息 |
+| `latency_ms` | 本次推理耗时（毫秒） | 服务端自己测的，比客户端往返更干净 |
+| `batch_size` | 本次实际一起算的问题数 | **这是批处理真的发生了的证据**。`design-review.md §2-D1` 的教训是：无法观测的批处理等于没有批处理 |
+| `requested_model` | 仅当客户端点了非本服务器的模型名（如 `jev-latest`）时出现，原样回报客户端请求的字符串 | 替换必须可见 |
+| `native_confidence` | 引擎自己的标定置信度；Decis 没有时为 `null` | `noul` answer 按契约没有 confidence，这是唯一能拿到 `noul` 不确定性的地方 |
 
 ### 关于 `confidence`（重要设计决策，且是一处**权衡**）
 
@@ -259,10 +274,13 @@ Decis 必须照此实现。只返回 401（很多 API 的做法）会让依赖�
 
 **决策**：
 
-1. **线格式的 `confidence` 用 Decis 统一公式**（choice/score 用 kev 那套，因为它对 K=1 与 L=1 有定义、行为可解释、且是纯分布函数）。理由不是"更准"，而是**契约需要可预测**：官方文档示例、SDK 用户代码、以及"换 base_url 就能跑"这个核心承诺，都要求同一个字段在不同引擎下是同一种东西。
-2. **引擎原生的、经过标定的置信度一律保留**，放进 `decis.engine.confidence`。对 `noul` 尤其重要：契约规定 `noul` answer **没有** confidence 字段，所以**扩展字段是用户唯一能拿到 noul 不确定性（如 `max(p,1−p)`）的地方**。
-3. `GET /v1/models` 的 `decis` 扩展里声明每个引擎的 `confidence_formula`，让用户能判断该不该直接套用阈值。
-4. 文档明确写出：**若把 `confidence` 用于风险决策，请在自己的标注集上重新标定**，不要跨引擎复用阈值。
+1. **线格式的 `confidence` 用 Decis 统一公式**；理由不是"更准"，而是**契约需要可预测**：官方文档示例、SDK 用户代码、以及"换 base_url 就能跑"这个核心承诺，都要求同一个字段在不同引擎下是同一种东西。两个原语的公式口径统一为 **0 = 均匀/无倾向，1 = 确定**：
+   - `choice`：`(p_max − 1/K) / (1 − 1/K)`（kev 那套），`K = 1` 时为 `1.0`；
+   - `score`：`1 − H(p)/ln(L)`（归一化熵），`L = 1` 时为 `1.0`。
+   `score` 这里**偏离了 kev**：kev 用 `1 − E|level − mode|/(L−1)`，但加上众数约束后该式在 `L=3` 的均匀分布上得 `0.5`，可达区间并非 `[0,1]`，"无倾向"却报中等置信度，无法解释。这是有意的偏离，记录在此。
+2. **引擎原生的、经过标定的置信度一律保留**，放进响应的 `decis.native_confidence`。对 `noul` 尤其重要：契约规定 `noul` answer **没有** confidence 字段，所以**扩展字段是用户唯一能拿到 noul 不确定性（如 `max(p,1−p)`）的地方**。
+3. 文档明确写出：**若把 `confidence` 用于风险决策，请在自己的标注集上重新标定**，不要跨引擎复用阈值。
+4. **不再计划**在 `GET /v1/models` 里声明各引擎的 `confidence_formula`：公式由 Decis 统一定义（见第 1 条），本来就不因引擎而异，声明它只会让用户以为它可能会变。
 
 > 这一条从"Decis 统一定义 confidence"（初版写法）改成了上面的形式。初版把它讲成了一个没有代价的改进，实际上它**用可比性换掉了 Laya 已经做过的标定**。诚实的表述是：这是一个取舍，且我们通过保留原生值来让用户自己选。
 
