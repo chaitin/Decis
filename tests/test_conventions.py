@@ -17,8 +17,16 @@ import pytest
 PACKAGE = Path(__file__).resolve().parent.parent / "src" / "decis"
 
 
-def _modules() -> list[Path]:
-    return sorted(PACKAGE.rglob("*.py"))
+# `engines/_kev_vendor/` holds byte-identical third-party copies; its VENDOR.md explains
+# why. Those files are exempt from the rules below because editing them to suit our
+# conventions would break the sha256 pin that makes the copy auditable -- the
+# `os.environ` and `torch` in them are upstream's, not ours. Every exemption here is a
+# hole in a rule, so `test_only_the_vendor_tree_is_exempt` keeps it from growing.
+VENDORED = PACKAGE / "engines" / "_kev_vendor"
+
+
+def _modules(*, include_vendored: bool = False) -> list[Path]:
+    return sorted(p for p in PACKAGE.rglob("*.py") if include_vendored or VENDORED not in p.parents)
 
 
 def _source(path: Path) -> str:
@@ -333,3 +341,17 @@ def test_engine_readiness_is_classified_once() -> None:
     # A reachability check: the words a user reads must come from that one place.
     cli = _source(PACKAGE / "cli.py")
     assert "unavailable  " not in cli, "cli.py is formatting readiness itself"
+
+
+def test_only_the_vendor_tree_is_exempt_from_these_rules() -> None:
+    """Exactly one hole is cut in the rules above, it is the vendored copy, and it says so.
+
+    Without this, `_modules()`'s exemption could be widened to hide a Decis module from
+    every convention at once, and nothing else here would notice.
+    """
+    vendored = sorted(p.relative_to(PACKAGE).as_posix() for p in PACKAGE.rglob("*.py") if VENDORED in p.parents)
+    assert vendored, "the exemption exists for engines/_kev_vendor, which has no Python files"
+    assert all(path.startswith("engines/_kev_vendor/") for path in vendored), vendored
+    # and the tree must genuinely be the vendored one, not a normal package
+    assert (VENDORED / "VENDOR.md").is_file(), "engines/_kev_vendor must document its provenance"
+    assert _modules(include_vendored=True) != _modules(), "the exemption must actually exclude something"

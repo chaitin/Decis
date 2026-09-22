@@ -8,26 +8,30 @@ Third-party components
 ================================================================================
 
 --------------------------------------------------------------------------------
-kev  (planned: vendored subset)
+kev  (vendored subset)
 --------------------------------------------------------------------------------
 Source:  https://github.com/jaredpalmer/kev
+Commit:  90990a5fac2995b9faa3190f7d437e84f2067768  (2026-09-21)
 License: Apache License 2.0
 Author:  Jared Palmer
 
-Status: NOT YET VENDORED. This entry is a placeholder for the planned vendoring of
-kev's inference kernel into src/decis/engines/_kev_vendor/.
+Vendored verbatim, with NO local modifications, into
+src/decis/engines/_kev_vendor/:
 
-When vendoring is performed, this entry MUST be updated with:
-  - the exact commit SHA that was pinned
-  - the list of files copied
-  - any local modifications made to those files
+  kev/model.py       -> encode(), branch_mask_batch(), PointerHead, DecisionModel
+  kev/checkpoint.py  -> Checkpoint, Meta, LoadOptions
+  LICENSE            -> the Apache-2.0 text, as required by section 4(a)/(d)
 
-The intended subset is limited to the inference path:
-  kev/model.py      -> encode(), branch_mask_batch(), PointerHead, DecisionModel
-  kev/checkpoint.py -> Checkpoint, Meta, LoadOptions
+The full licence text is at src/decis/engines/_kev_vendor/LICENSE. The sha256 of
+each vendored file is recorded in src/decis/engines/_kev_vendor/VENDOR.md and is
+checked by tests/test_kev_vendor.py, so "were these files modified?" is answerable
+without diffing against upstream.
+
 kev/api.py is deliberately NOT vendored: Decis implements the wire contract in
-src/decis/answers.py so that every engine shares one answer/confidence definition.
-kev's training, evaluation and dataset modules are not used.
+src/decis/schema.py + src/decis/answers.py so that every engine shares one answer
+and one confidence definition. kev/serve.py (its HTTP layer) and its training,
+evaluation and dataset modules are not used either. See VENDOR.md for the rationale
+and for the two os.environ reads that exist in the vendored copy.
 
 --------------------------------------------------------------------------------
 Laya  (runtime dependency, not vendored)

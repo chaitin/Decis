@@ -76,6 +76,10 @@ filterwarnings = ["error::DeprecationWarning:decis.*"]
 line-length = 120
 target-version = "py311"
 src = ["src", "tests"]
+# Vendored third-party code is kept byte-identical to upstream so that its sha256 is
+# a meaningful pin (tests/test_kev_vendor.py). Reformatting it to our style would
+# break that, so it is excluded rather than edited. See VENDOR.md.
+extend-exclude = ["src/decis/engines/_kev_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "PTH"]
