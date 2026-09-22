@@ -232,6 +232,7 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models decis:
 
 | 文档 | 内容 |
 |---|---|
+| [`examples/`](examples/README.md) | 可运行示例：裸 `curl` 与官方 SDK。每条命令都由 CI 执行 |
 | [`docs/api-compatibility.md`](docs/api-compatibility.md) | 精确的线格式契约，每条结论都有证据等级，并列出所有已知偏差 |
 | [`docs/design.md`](docs/design.md) | 架构、引擎抽象、批处理、打包、路线图 |
 | [`docs/design-review.md`](docs/design-review.md) | 对本设计的自我审查：发现并修掉的缺陷、方法论局限、尚未验证的部分 |

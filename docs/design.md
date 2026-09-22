@@ -779,8 +779,9 @@ Decis/
 │   ├── probe/                    # ✅ 实现前的引擎探测脚本（已 checked in）
 │   └── results/                  # ✅ checked-in 原始结果
 └── examples/
-    ├── curl.md                   # ⬜
-    └── python_sdk.py             # ⬜
+    ├── README.md                 # ✅ 索引 + 起步步骤；说明这些例子由 CI 执行
+    ├── curl.md                   # ✅ 裸 HTTP：全端点、三种原语、错误契约（每条命令都带状态码，CI 逐条跑）
+    └── python_sdk.py             # ✅ 官方 typesafe-sdk 未改动，指向 Decis
 ```
 
 ---
@@ -950,7 +951,9 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 3. **`/metrics`**——让"攒批器真的触发了"在生产里可观测，而不只在测试里。
 4. **用 `run.py` 重采 Laya**（端到端，而不是引擎本身）——把 B 档的延迟升到 A 档。
 5. **`docker-compose.yml` + `docker-build.yml`（多架构矩阵 + GHCR + SBOM）**（Stage 4）。
-6. `examples/`（`curl.md`、`python_sdk.py`）——目前 README 里有片段，但没有可运行样例。
+6. ~~`examples/`（`curl.md`、`python_sdk.py`）~~ ✅ 已完成：三个文件，且**由
+   `tests/test_examples.py` 逐条执行**（`curl.md` 里 12 条命令的状态码、文档里印出的
+   mock 取值、官方 SDK 脚本的端到端运行都进 CI）。写它的过程发现 D13。
 7. `remote.py`——把请求转发给另一个 Decis/真 jev；需要先确认用户自有 key 的 ToS。
 8. `kev` 的 prefix 缓存路径——同一 state 多问题时的重复 prefill 优化（kev 是 prefill-only 架构，收益可能不小）。
 9. D11（挂载的 kev **基座**不被尊重）——只能靠上游 PR + re-vendor，不是本地补丁。

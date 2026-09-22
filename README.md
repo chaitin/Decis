@@ -273,6 +273,7 @@ Three question types, mixable in one request, evaluated in parallel against the 
 
 | Document | What it covers |
 |---|---|
+| [`examples/`](examples/README.md) | Runnable examples: raw `curl` and the official SDK. Every command is executed by CI |
 | [`docs/api-compatibility.md`](docs/api-compatibility.md) | The exact wire contract, with an evidence level per claim and every known deviation |
 | [`docs/design.md`](docs/design.md) | Architecture, the engine abstraction, batching, packaging, roadmap |
 | [`docs/design-review.md`](docs/design-review.md) | A self-audit of this design: defects found and fixed, methodology limits, what is still unverified |
