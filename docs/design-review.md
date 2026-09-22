@@ -106,6 +106,22 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 3. 提供 `DECIS_BATCH_MAX_SIZE=1` 逃生门，换取逐位可复现。
 4. 列入 Stage 3 的**前置**验证，不是优化项的附属品。
 
+**Stage 1 的实测（部分完成，比预期乐观）。** 原判断有两处过度悲观，一处仍然成立：
+
+- ✅ **padding 不会污染结果**。`build_sequence` / `collate_items` 把不同长度的 state 补齐到同一宽度，
+  实测"每题单独算"与"混在不同 state 的 batch 里算"**最大绝对偏差 8.345e-07，argmax 翻转 0 次**
+  （16 条 different state × 三种原语 × batch=2/4/8/16，原始记录 `docs/contract/stage1-batch-invariance.json`；
+  `tests/test_laya_inference.py` 的 `test_batching_across_different_states_is_invariant` 与
+  `test_a_long_and_a_short_state_padded_together_stay_correct` 以 1e-5 为界把它钉住）。
+  偏差量级说明原因是 attention mask 被正确遵守——这值得测，但不需要为它牺牲批处理。
+- ✅ **Laya 的 option 预算不是按批内最长项截断的**。原判断说"Laya 的 option 预算还按批内最长项截断"，
+  实测不成立：`build_sequence` 是**逐项**算 head 预算的，`collate_items` 只做 padding。
+  所以批组成不会改变某一项的 option 预算，也就不会改变它的文本。
+- ⬜ **跨请求批处理的收益仍未测**。上面两条只说明"批处理不会算错"，完全不说明"批处理能攒到东西"。
+  M5 依旧有效，**对外材料里仍然不许出现 QPS**。
+- ⬜ **覆盖面**：只测了同一进程内、同一引擎实例、batch ≤ 16。多进程/多 worker 之间的一致性
+  （Stage 3 的进程池）没有覆盖——不同进程的浮点归约顺序可能不同，但每个回答本身是可复现的。
+
 ### D4（中）`confidence` 的决策被讲成了没有代价的改进 — 已改写
 
 初版说"Decis 统一定义 confidence，各引擎不各算各的"，把它当成纯粹的正确选择。
@@ -221,14 +237,20 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 
 **修正**：字段改名为 `single_caller_questions_per_second`，并在 `benchmarks/README.md` 说明它的含义。**一个误导性的字段名比没有字段更糟**，因为它会被下游引用。
 
-### M5（严重，未修正）最核心的性能断言完全没测
+### M5（严重，部分前置已关闭）最核心的性能断言完全没测
 
 `design.md §6` 的整个论证是：跨请求批处理把多个请求的问题合并成一个大 batch，从而把每问成本降下来，这是高 QPS 的来源。
 
 **实测覆盖的部分**：单请求内多问题的批处理（1 问 201 ms → 10 问 98.7 ms/问）。
 **完全没测的部分**：**跨请求**批处理。也就是说，"把 10 个不同请求的 1 个问题合并成 batch=10"能带来多少收益——**一点数据都没有**。
 
-这两者不等价：单请求内的 10 个问题共享同一个 state，而 10 个不同请求各有不同 state（序列更长、padding 更多、Laya 的 option 预算按最长项截断）。**收益可能明显低于 2×。**
+这两者不等价：单请求内的 10 个问题共享同一个 state，而 10 个不同请求各有不同 state
+（序列更长、padding 更多，而 padding 是纯浪费的计算）。
+
+> Stage 1 更正了这里的另一半猜测：初版说"Laya 的 option 预算按最长项截断"，实测**不成立**
+> ——`build_sequence` 是逐项算 head 预算的，`collate_items` 只做 padding。所以跨 state 组批
+> 在**正确性**上没有问题（见 D3），剩下的未知量纯粹是**收益**。
+> 序列长度的方差仍然会拉低收益：padding 到批内最长序列，短 state 的问题要陪跑。
 
 这也使得 D1（协议缺陷）的后果更严重：**如果实现时没发现 D1，会得到一个"实现了批处理但从不触发"的系统，而没有任何测试会发现它。**
 

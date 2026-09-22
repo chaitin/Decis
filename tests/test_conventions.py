@@ -29,6 +29,45 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(_source(path), filename=str(path))
 
 
+def _module_scope_imports(tree: ast.Module) -> list[str]:
+    """Imports that run when the module is imported.
+
+    Only the top level counts. `ast.walk` would also visit the inside of every
+    function, which is exactly where a lazy import *should* live (AGENTS.md §6) -- so
+    walking the whole tree would fail every engine that does the right thing.
+    """
+    names: list[str] = []
+
+    def visit(statements: list[ast.stmt]) -> None:
+        for node in statements:
+            if isinstance(node, ast.Import):
+                names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names.append(node.module)
+            elif isinstance(node, (ast.If, ast.Try)):
+                # `if TYPE_CHECKING:` and `try: import x` still execute at import time
+                # (the latter catches ImportError, which is a real dependency signal).
+                visit(node.body)
+                visit(getattr(node, "orelse", []))
+
+    visit(tree.body)
+    return names
+
+
+def _imported_modules(path: Path) -> set[str]:
+    """Every module name imported anywhere in `path`, at any level."""
+    imported: set[str] = set()
+    for node in ast.walk(_tree(path)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                imported.add(node.module)
+            elif node.module:
+                imported.add(f"{path.parent.name}.{node.module}")
+    return imported
+
+
 def test_canonical_files_exist() -> None:
     """The table in AGENTS.md §2 names files; they must all be real."""
     for name in (
@@ -47,8 +86,6 @@ def test_canonical_files_exist() -> None:
         "domain.py",
         "engines/registry.py",
     ):
-        if name == "paths.py":
-            continue  # arrives with the first engine that has weights on disk
         assert (PACKAGE / name).is_file(), f"AGENTS.md §2 names {name}, which does not exist"
 
 
@@ -216,3 +253,83 @@ def test_streaming_is_not_advertised(client, auth) -> None:
 
 def test_python_version_floor_matches_pyproject() -> None:
     assert sys.version_info >= (3, 11)
+
+
+# --- §2: weight location has one home ------------------------------------------
+
+
+def test_weight_location_is_decided_only_in_paths() -> None:
+    """Engines must not invent their own search order.
+
+    If they did, "mount your own model with DECIS_MODEL_DIR" would work for one engine
+    and silently not for another -- and the failure would appear as the model loader
+    reporting a missing file, far from the actual cause.
+    """
+    offenders = []
+    for path in _modules():
+        if path.parent.name != "engines":
+            continue
+        source = _source(path)
+        # A Hub repository id being read is fine; deciding *where* to read from is not.
+        if "snapshot_download" in source or "huggingface_hub" in source:
+            offenders.append(str(path.relative_to(PACKAGE)))
+    assert offenders == [], f"engines must not fetch weights themselves; use paths.resolve: {offenders}"
+
+
+def test_paths_does_not_import_the_engine_layer() -> None:
+    """`paths.py` sits below `engines/` in the layering (AGENTS.md §4)."""
+    imported = _imported_modules(PACKAGE / "paths.py")
+    assert not any(name.startswith("decis.engines") for name in imported), imported
+
+
+def test_the_laya_engine_does_not_import_torch_at_module_scope() -> None:
+    """AGENTS.md §6: an image with the `laya` extra absent must still list the engine.
+
+    Torch may be imported *inside* a method -- `load()` and `predict()` do so -- but
+    touching it at module scope would make `GET /v1/models` fail in a container that
+    only installed a different engine.
+    """
+    heavy = {"torch", "transformers", "numpy", "laya", "safetensors", "huggingface_hub"}
+    # Positive control: the guard must be capable of failing, or it proves nothing.
+    assert heavy & set(_module_scope_imports(_tree(PACKAGE / "engines" / "base.py"))) == set()
+    for name in _module_scope_imports(_tree(PACKAGE / "engines" / "laya.py")):
+        assert name.split(".")[0] not in heavy, (
+            f"laya.py imports {name!r} at module scope; it must be inside load()/predict() "
+            f"so that GET /v1/models works without the extra installed"
+        )
+
+
+def test_torch_is_imported_nowhere_in_the_core() -> None:
+    """The rest of the package must not reach for torch on any path."""
+    offenders = []
+    for path in _modules():
+        if path.parent.name == "engines":
+            continue
+        if any(name.split(".")[0] == "torch" for name in _module_scope_imports(_tree(path))):
+            offenders.append(str(path.relative_to(PACKAGE)))
+    assert offenders == [], f"only engines may import torch: {sorted(set(offenders))}"
+
+
+def test_measured_tokens_is_defined_once() -> None:
+    definitions = [str(path.relative_to(PACKAGE)) for path in _modules() if "class MeasuredTokens" in _source(path)]
+    assert definitions == ["domain.py"], f"MeasuredTokens must be defined once, in domain.py: {definitions}"
+
+
+def test_head_budget_arithmetic_has_one_home() -> None:
+    """`budgeted_head` encodes upstream's truncation condition; a copy would drift."""
+    definitions = [str(path.relative_to(PACKAGE)) for path in _modules() if "def budgeted_head" in _source(path)]
+    assert definitions == ["engines/laya.py"], definitions
+
+
+def test_engine_readiness_is_classified_once() -> None:
+    """`decis models` and `decis doctor` must not each decide what "ready" means.
+
+    They did, in the first Stage 1 draft: both printed "ready" for every registered
+    engine, because both only checked that the engine *class* imports -- which is
+    always true, since registration is lazily imported by design (AGENTS.md §6).
+    """
+    definitions = [str(path.relative_to(PACKAGE)) for path in _modules() if "def status(" in _source(path)]
+    assert definitions == ["engines/registry.py"], definitions
+    # A reachability check: the words a user reads must come from that one place.
+    cli = _source(PACKAGE / "cli.py")
+    assert "unavailable  " not in cli, "cli.py is formatting readiness itself"

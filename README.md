@@ -6,7 +6,7 @@
 
 Decis is a small, self-hostable server that speaks [TypeSafe's System One API](https://docs.typesafe.ai/api) — the same `/v1/systemone` contract as Jev — and answers those requests with an open decision model of your choosing. Point the official `typesafe-sdk` at Decis instead of `api.typesafe.ai` and nothing else changes.
 
-> **Status: the API server works; the real models are next.** `Stage 0` is done: the wire contract, authentication, error shapes, the engine abstraction, configuration, the CLI, the Dockerfile and CI are implemented, with **205 tests passing** — including the official `typesafe-sdk` 0.7.1 driven over a real socket. Today the only registered engine is `mock`, a weight-free deterministic engine used for contract tests and demos, so **you can run and evaluate the API right now**. Laya lands in Stage 1 and kev in Stage 2 (`docs/design.md §12`).
+> **Status: the API server works and Laya runs behind it.** `Stage 0` and `Stage 1` are done. The wire contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the Dockerfile and CI are implemented, with **274 tests passing** without weights — including the official `typesafe-sdk` 0.7.1 driven over a real socket. Three real Laya checkpoints are registered alongside `mock`, and **`decis serve --engine laya-multilingual` answers real requests today**; 14 further tests load the real weights and check batch invariance. kev lands in Stage 2 (`docs/design.md §12`).
 >
 > The contract in [`docs/api-compatibility.md`](docs/api-compatibility.md) rests on the [official OpenAPI snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API actually returns](docs/contract/observations-2026-09-22.md) — not on inference. [`docs/design-review.md`](docs/design-review.md) is an adversarial audit of the design, including what is still unproven.
 
@@ -92,6 +92,34 @@ uv run decis models     # which engines are registered and usable here
 uv run decis doctor     # environment and configuration self-check
 ```
 
+### A real model
+
+Swap `mock` for Laya. The request above does not change — only which engine answers it.
+
+```bash
+uv sync --extra laya
+uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB, one time
+uv run decis serve --engine laya-multilingual --host 127.0.0.1
+```
+
+Cold start is about **75 s on CPU**, so `/healthz` is up immediately while `/readyz` reports
+not-ready until the weights are in memory. In a container, put the weights in the image and it runs
+with no network:
+
+```bash
+docker build -f docker/Dockerfile \
+  --build-arg DECIS_EXTRAS=laya --build-arg DECIS_ENGINE=laya-multilingual \
+  --build-arg DECIS_PREDOWNLOAD=laya-multilingual -t decis:laya-multilingual .
+docker run --rm -p 8000:8000 -e DECIS_API_KEY=local decis:laya-multilingual
+```
+
+To serve your own fine-tune, point that engine at a directory instead — it takes precedence over
+everything else, including the network:
+
+```bash
+DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage uv run decis serve
+```
+
 ## The problem
 
 Jev proved that a *decision model* — a model that answers typed questions about a state and returns calibrated probabilities instead of generated text — belongs in your request path, not in a chat window. But it is a hosted, closed API:
@@ -117,8 +145,9 @@ Decis is that uniform way: one stable API, many engines, packaged as one contain
 | Engine | Backbone | Params | Weights | Status | Notes |
 |---|---|---|---|---|---|
 | `mock` | — | — | none | **shipped** | Deterministic, weight-free. Contract tests and demos |
-| `laya-multilingual` | mmBERT-base | 322M | 614 MiB | Stage 1 | 100+ languages, ~2.2× faster — the intended default |
-| `laya` | ModernBERT-large | 421M | 804 MiB | Stage 1 | English, strongest on English benchmarks |
+| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **shipped** | 100+ languages, ~2.2× faster — the intended default |
+| `laya` | ModernBERT-large | 421M | 807 MiB | **shipped** | English, strongest on English benchmarks |
+| `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | **shipped** | The typed-decisions checkpoint from the same repo |
 | `kev-0.8b` | Qwen3.5-0.8B + LoRA | 0.8B | ~1.7 GB | Stage 2 | Different architecture, different error profile |
 | `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | Stage 2 | Higher accuracy, no longer "light-weight" |
 | `remote` | — | — | — | planned | Forwards to the real `api.typesafe.ai`; A/B and test oracle |
@@ -223,7 +252,8 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 205 tests, ~6 s, no weights, no network
+uv run pytest -q                        # 274 tests, ~7 s, no weights, no network
+uv run pytest -m weights                # 14 tests that load the real Laya weights
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token
 ```

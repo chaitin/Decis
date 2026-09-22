@@ -1,0 +1,151 @@
+{
+  "_comment": "Stage 1 evidence for docs/design-review.md D3: does batch composition change an answer? Each item's probability vector computed alone is compared against the same item's vector when it is row i of a padded batch of size N. Produced by .scratch/batch_deviation.py. This is a numerical-accuracy record, not a latency benchmark; see benchmarks/results/ (Stage 3) for performance.",
+  "method": {
+    "reference": "each item predicted alone (batch of 1)",
+    "comparison": "the same item as row i of a batch of N items with N distinct states",
+    "batched_items": "the first N items of `states`, each carrying its own state text",
+    "metric": "max over (items x options) of |p_alone - p_batched|",
+    "argmax": "compared per item; a flip is a user-visible error, not a rounding wobble"
+  },
+  "engine": "laya-multilingual",
+  "revision": "1c5edc17a7acd8701df6fc341c0d179f1c62c982",
+  "device": "cpu",
+  "dtype": "float32",
+  "threads": {
+    "torch_get_num_threads": 24,
+    "torch_get_num_interop_threads": 24,
+    "DECIS_TORCH_THREADS": null,
+    "note": "unset: torch chose, one thread per vCPU. Single process, no worker pool."
+  },
+  "runtime": {
+    "python": "3.12.3",
+    "torch": "2.14.0+cpu",
+    "laya": "0.3.5",
+    "transformers": "5.17.0",
+    "machine": "aarch64",
+    "cpu_count": 24,
+    "gpu": null
+  },
+  "state_chars": [
+    65,
+    68,
+    52,
+    66,
+    41,
+    48,
+    58,
+    61,
+    60,
+    49,
+    62,
+    52,
+    53,
+    61,
+    60,
+    54
+  ],
+  "state_chars_note": "character counts; token counts differ and are not recorded here",
+  "summary": {
+    "max_abs_deviation_over_all_configurations": 8.344650268554688e-07,
+    "argmax_flips_over_all_configurations": 0,
+    "configurations": 12
+  },
+  "results": [
+    {
+      "question_type": "noul",
+      "batch_size": 2,
+      "max_abs_deviation": 1.3271346688270569e-08,
+      "num_options": 2,
+      "argmax_flips": 0,
+      "compared_items": 2
+    },
+    {
+      "question_type": "noul",
+      "batch_size": 4,
+      "max_abs_deviation": 1.3271346688270569e-08,
+      "num_options": 2,
+      "argmax_flips": 0,
+      "compared_items": 4
+    },
+    {
+      "question_type": "noul",
+      "batch_size": 8,
+      "max_abs_deviation": 1.955777406692505e-08,
+      "num_options": 2,
+      "argmax_flips": 0,
+      "compared_items": 8
+    },
+    {
+      "question_type": "noul",
+      "batch_size": 16,
+      "max_abs_deviation": 1.955777406692505e-08,
+      "num_options": 2,
+      "argmax_flips": 0,
+      "compared_items": 16
+    },
+    {
+      "question_type": "choice",
+      "batch_size": 2,
+      "max_abs_deviation": 1.0547118733938987e-14,
+      "num_options": 3,
+      "argmax_flips": 0,
+      "compared_items": 2
+    },
+    {
+      "question_type": "choice",
+      "batch_size": 4,
+      "max_abs_deviation": 7.748603820800781e-07,
+      "num_options": 3,
+      "argmax_flips": 0,
+      "compared_items": 4
+    },
+    {
+      "question_type": "choice",
+      "batch_size": 8,
+      "max_abs_deviation": 8.344650268554688e-07,
+      "num_options": 3,
+      "argmax_flips": 0,
+      "compared_items": 8
+    },
+    {
+      "question_type": "choice",
+      "batch_size": 16,
+      "max_abs_deviation": 8.344650268554688e-07,
+      "num_options": 3,
+      "argmax_flips": 0,
+      "compared_items": 16
+    },
+    {
+      "question_type": "score",
+      "batch_size": 2,
+      "max_abs_deviation": 7.450580596923828e-07,
+      "num_options": 4,
+      "argmax_flips": 0,
+      "compared_items": 2
+    },
+    {
+      "question_type": "score",
+      "batch_size": 4,
+      "max_abs_deviation": 7.450580596923828e-07,
+      "num_options": 4,
+      "argmax_flips": 0,
+      "compared_items": 4
+    },
+    {
+      "question_type": "score",
+      "batch_size": 8,
+      "max_abs_deviation": 7.450580596923828e-07,
+      "num_options": 4,
+      "argmax_flips": 0,
+      "compared_items": 8
+    },
+    {
+      "question_type": "score",
+      "batch_size": 16,
+      "max_abs_deviation": 8.344650268554688e-07,
+      "num_options": 4,
+      "argmax_flips": 0,
+      "compared_items": 16
+    }
+  ]
+}

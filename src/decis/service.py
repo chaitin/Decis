@@ -74,7 +74,9 @@ class DecisionService:
 
         loaded = self._loaded_info()
         if loaded is not None:
-            listed.setdefault(loaded.id, _metadata(loaded))
+            # Assign rather than setdefault: `describe()` reports pre-load values
+            # ("unloaded" device), and the loaded engine's are the true ones.
+            listed[loaded.id] = _metadata(loaded)
 
         return ModelMetadataList(models=list(listed.values()))
 
@@ -102,7 +104,7 @@ class DecisionService:
                 loc=["body", "model"],
             )
 
-        validate_capacity(prepared, info, self._scheduler.count_tokens)
+        validate_capacity(prepared, info, self._scheduler.measure)
 
         items = [
             WorkItem(request_id=request_id, state_text=prepared.state_text, question=question)
@@ -118,6 +120,15 @@ class DecisionService:
             for question, probabilities in zip(prepared.questions, prediction.probabilities, strict=True)
         }
 
+        # Zip by question id rather than trusting order, so a native confidence can
+        # never end up attributed to a different question than the one it scored.
+        native = None
+        if prediction.native_confidences is not None:
+            native = {
+                question.qid: value
+                for question, value in zip(prepared.questions, prediction.native_confidences, strict=True)
+            }
+
         return SystemOneResponse(
             model=info.model_id,
             answers=answers,
@@ -132,7 +143,7 @@ class DecisionService:
                 dtype=info.dtype,
                 latency_ms=latency_ms,
                 batch_size=len(items),
-                native_confidence=prediction.native_confidence,
+                native_confidence=native,
                 requested_model=request.model if substituted else None,
             ),
         )

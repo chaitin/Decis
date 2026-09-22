@@ -87,6 +87,24 @@ jobs:
           print("smoke test ok:", body["model"], body["answers"])
           PY
 
+  upstream:
+    name: upstream contract (with the laya extra)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # `tests/test_upstream_contract.py` asserts that the Laya functions we call still
+      # exist, still have the signatures we call them with, and still *behave* the way
+      # our token accounting assumes. Without this job it skips everywhere and the
+      # guard is decorative -- an upstream rename would surface as a confusing
+      # ImportError in production instead of a red check here.
+      - name: Install with the engine extra
+        run: uv sync --extra dev --extra laya
+      - name: Upstream fidelity
+        run: uv run pytest tests/test_upstream_contract.py -q
+
   contract:
     name: contract snapshot unchanged
     runs-on: ubuntu-latest

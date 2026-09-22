@@ -4,7 +4,19 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 本文件是**在这个仓库里工作的契约**。它写给 AI agent，也写给人类。规则不是建议，是约束；违反约束的改动即使"能跑"也不接受。
 
-> **当前状态**：**Stage 0 已完成**。API server 可用：`uv sync --extra dev && uv run decis serve`。契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象与 `MockEngine`、`scheduler.py`、`config.py`、`cli.py`、`docker/Dockerfile` 与 CI 均已实现，**205 个测试通过**（含官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试）。**尚未实现的是真实引擎**：`registry.py` 里目前只有 `mock`，Laya/kev 引擎属于 Stage 1/2。`docs/` 下是设计文档；`docs/design.md §11` 里的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
+> **当前状态**：**Stage 0 与 Stage 1 已完成**。API server 可用，且已经接了真实模型：
+> `uv sync --extra laya && uv run decis serve --engine laya-multilingual`。
+> 契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象、
+> `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
+> `docker/Dockerfile` 与 CI 均已实现。
+>
+> **测试**：`uv run pytest -q` 跑无权重的那套（**274 个通过**，约 7 秒，不联网）；
+> `uv run pytest -m weights` 跑真实 Laya 推理的那套（14 个，需要权重，CPU 上约 110 秒）。
+> 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
+>
+> **已注册引擎**：`mock`（无权重）、`laya`、`laya-multilingual`、`laya-typed-decisions`。
+> **未实现**：kev（Stage 2）、跨请求攒批调度器与 `decis bench`（Stage 3）、多架构镜像矩阵（Stage 4）。
+> `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 
 ---
 
@@ -31,16 +43,21 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 | 概念 | 唯一所在 | 禁止 |
 |---|---|---|
 | 各层共享的领域类型（`Option`/`PreparedQuestion`/`PreparedRequest`/`ProbDist`） | `src/decis/domain.py` | 在 `schema.py`/`render.py` 里另定义一份；`domain.py` **不得 import 包内任何模块** |
-| `state`/`instructions`/`criteria` → 模型可见文本 | `src/decis/render.py` | 引擎各自拼 prompt；引擎各自做分隔符转义 |
+| `state`/`instructions`/`criteria` → 可读文本（任意 JSON 的扁平化） | `src/decis/render.py` | 引擎各自实现 JSON 扁平化；引擎各自做分隔符转义 |
+| 把渲染片段排成**某个引擎自己的序列** | 该引擎（并优先用它上游库的函数，如 Laya 的 `build_sequence`） | 在 `render.py` 里重写某个模型的序列格式——那是对上游内部的复制，保证会漂移（`design.md §4.1` 的 Stage 1 修正） |
+| `noul` 的选项名 `"false"/"true"` | `src/decis/render.py: noul_options` | 任何地方写字面量 `Option("false", …)` |
+| 「这个请求会被吃掉多少 token」（容量校验的**测量**） | 各引擎的 `DecisionEngine.measure` | 用 `len(text)//4` 估算一个会截断的引擎；在 `render.py` 里猜某个模型的 head 开销 |
 | 概率分布 → `Noul`/`Choice`/`Score` answer | `src/decis/answers.py` | 引擎返回线格式 answer |
 | `confidence` 计算 | `src/decis/answers.py` | 引擎各自算 confidence 并直接透出 |
 | question 的 wire key（`"false"/"true"`、选项名、`"0".."n-1"`） | `src/decis/answers.py: question_keys` | 任何地方重复这份规则 |
 | 线格式 Pydantic 模型 | `src/decis/schema.py` | 路由里零散定义 model |
-| 请求容量校验（选项数、state/question token 预算） | `src/decis/schema.py: validate_capacity` | 让引擎截断后静默给出劣化答案 |
+| 请求容量校验的**策略**（选项数、token 预算、错误形状） | `src/decis/schema.py: validate_capacity` | 让引擎截断后静默给出劣化答案 |
+| upstream 的 head 预算换算（`budgeted_head`） | `src/decis/engines/laya.py` | 在别处再算一遍这个不截断条件 |
 | 异常 → 契约错误响应（状态码、`detail` 多态形状） | `src/decis/errors.py` | 路由里直接 `raise HTTPException` 拼 body |
 | Bearer 校验、常数时间比较、401/403 分工 | `src/decis/auth.py` | 在路由或中间件里各写一份鉴权 |
 | `x-typesafe-request-id` 生成与请求日志 | `src/decis/observability.py` | 各处在响应上手写这个 header |
-| 权重路径解析 | `src/decis/paths.py` | 引擎自己决定去哪找权重 |
+| 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
+| 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
 | 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
 
@@ -109,10 +126,14 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 1. 在 `src/decis/engines/<name>.py` 实现 `DecisionEngine`：`info()` / `load()` / `predict()` / `close()`。
 2. 在 `registry.py` 注册：id → `"module:ClassName"`（**字符串路径，惰性 import**）+ 可选依赖 extra 名。
 3. 在 `pyproject.toml` 加 extra：`<name> = [...]`。**引擎的重依赖只能出现在 extra 里**，不能进 `[project.dependencies]`。
-4. `EngineInfo` 必须诚实声明：`max_options`、`max_state_tokens`、`max_question_tokens`、`primitives`、`device`、`dtype`。**容量校验在 `schema.py` 用这些值前置拒绝**，不允许让引擎截断后静默给出劣化答案。
-5. 加 `tests/test_engines_shape.py` 的 tiny-fixture 用例：随机小模型 + 假 tokenizer，**不下载权重**，断言 `predict` 输出形状与归一化（和为 1）。
-6. 更新 `docs/design.md §7.2` 的权重清单（来源、体积、上下文）。
-7. 若引擎复用上游包的内部函数，加一条 `tests/test_upstream_contract.py` 断言那些函数存在且签名未变。
+4. 实现 `weights()`（声明权重来源、pin 的 commit、体积）与 `measure()`。`EngineInfo` 必须诚实声明 `max_options`、`max_sequence_tokens`、`max_question_tokens`、`primitives`、`device`、`dtype`。
+   - **`max_sequence_tokens` 是"state + 一个问题"的总预算**，不是 state 单独的预算。state 与 head 共享同一条序列，分开检查会让两边都合规、合起来超长的请求被静默截断（`design.md §4.1`）。
+   - **`measure()` 必须用真实 tokenizer 和真实的序列布局测量，不能退回 `len(text)//4`。** 如果上游会截断，就把它的不截断条件压成一个可验证的表达式（Laya 的做法：`budgeted_head`），并用上游函数本身断言这个表达式正确。
+5. 加**两套**测试：
+   - 快速套（无权重，CI 必跑）：`tests/test_engines_laya.py` 的做法——假 tokenizer + stub 掉上游渲染，覆盖 `measure` 的算术与 `_internal` 的形状；
+   - `weights` 套：`tests/test_laya_inference.py` 的做法——真实权重，覆盖**批不变性**、"一次 `predict` 只做一次前向"、以及"超长请求被拒而不是被截断"。
+6. 更新 `docs/design.md §7.2` 的权重清单（来源、**实测**体积、pin 的 revision、实测过的依赖组合）。
+7. 若引擎复用上游包的函数（公开的或 `__all__` 之外的），加 `tests/test_upstream_contract.py` 的断言：符号存在、签名未变、以及**你所依赖的行为**（如 `collate_items` 会展平分组）。一个只在 ImportError 时才失败的守卫是不够的——上游改了行为会静默给出错误答案。
 
 **不要**为了接一个引擎去改 `render.py` / `answers.py`。如果非改不可，说明抽象错了——先改 `docs/design.md §2` 并说明理由。
 
@@ -130,31 +151,60 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 ## 7. 命令
 
-已实现（Stage 0）：
+已实现：
 
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个，205 个）
-uv run pytest -m weights             # 需要权重的测试（Stage 1 起才有用例）
+uv run pytest -q                     # 无权重测试（CI 跑这个，274 个，约 7 秒）
+uv run ruff check && uv run ruff format --check
+
 uv run decis serve --host 0.0.0.0 --port 8000
 uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token
 uv run decis models                  # 列出已注册引擎及其在本机是否可用
 uv run decis doctor                  # 环境自检：依赖、配置安全性、设备
-uv run ruff check && uv run ruff format --check
-
-cp .env.example .env
-docker build -f docker/Dockerfile -t decis:mock .
-docker build -f docker/Dockerfile --build-arg DECIS_EXTRAS=laya -t decis:laya .
 ```
 
-尚未实现（随真实引擎落地，见 `docs/design.md §12` 的 Stage 1–4）：
+真实模型：
 
 ```bash
-uv run decis download --engine laya-multilingual --dest ./models
+uv sync --extra laya
+uv run decis download --engine laya-multilingual --dest ./models   # 约 647 MiB
+uv run decis serve --engine laya-multilingual --host 127.0.0.1     # CPU 冷启动约 75 秒
+uv run pytest -m weights             # 真实推理 + 批不变性（CPU 上约 110 秒）
+```
+
+镜像：
+
+```bash
+docker build -f docker/Dockerfile -t decis:mock .
+docker build -f docker/Dockerfile \
+  --build-arg DECIS_EXTRAS=laya \
+  --build-arg DECIS_ENGINE=laya-multilingual \
+  --build-arg DECIS_PREDOWNLOAD=laya-multilingual \
+  -t decis:laya-multilingual .
+```
+
+尚未实现（见 `docs/design.md §12`）：
+
+```bash
 uv run decis bench --engine ... --batch 1,8,32
 uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 ```
+
+**两套测试各自都会漏东西，声称"测试通过"之前必须在两个环境里都跑过。**
+
+- 无权重环境（`uv sync --extra dev`）跑得快，但引擎的任何 **`requires`/权重/依赖已装** 的分支
+  都不会被走到。Stage 1 就有一个真实 bug 藏在这里：`decis models` 在"装了 `laya` extra
+  但还没下载权重"的机器上会 `AttributeError` 崩溃——那恰好是文档让用户做的第一步——
+  而无权重的那套因为提前 return 而全绿。
+- 有额外依赖的环境（`uv sync --extra dev --extra laya`）会发现上面那类 bug，
+  但会漏掉"依赖缺失时的提示是否清楚"，因为那时依赖是齐的。
+
+所以提交前的最低要求是：`.venv`（无 extra）与 `.scratch/venv`（真实 `laya`）各跑一次全量。
+写测试时不要假设自己在哪个环境里——**不要断言 `laya` 没被安装、不要假设会走网络、
+不要假设别的测试没 import 过 torch**。需要"某个模块不存在"就挑一个真的不存在的名字，
+需要判断环境就 `pytest.skip` 并说清理由。
 
 ---
 
@@ -178,6 +228,9 @@ uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 - ❌ 让引擎返回 `confidence`
 - ❌ 引入需要外部服务（Redis/Postgres/Celery）才能单机运行的依赖
 - ❌ 未经许可与署名就复制第三方代码进仓库
+- ❌ 让引擎在超预算时静默截断输入（上游这么干，Decis 不能跟着干）
+- ❌ 在 `paths.py` 之外决定权重从哪来，或让"本地有权重"输给网络请求
+- ❌ 用 `len(text) // 4` 给一个会截断的引擎做容量校验
 
 ---
 

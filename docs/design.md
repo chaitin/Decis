@@ -142,6 +142,37 @@ def render(value, indent=0) -> str:
 
 > `render.py` 是**契约的一部分**，改动会改变所有引擎的行为。CI 必须有一组冻结的 `(input, rendered_text)` 快照。
 
+**Stage 1 修正：`render.py` 的边界在哪。** 上面写的"唯一"需要更精确。接 Laya 时发现的实际情况是：
+
+- **Laya 自己会渲染选项文本**。`build_sequence` 内部调用它自己的 `render_options`
+  （`laya/common.py:33-46`），给每个 choice 选项加 `"name: "` 前缀、给每个 score level 加
+  `"level N: "` 前缀、给 noul 补上默认的 false/true 描述。这些是 **Laya 序列格式的一部分**，
+  重写一份放在 `render.py` 里既是对上游内部的复制，也保证会漂移。
+- 所以正确的分工是：**`render.py` 拥有"任意 JSON → 可读文本"这一步**（`state` 整体、
+  `instructions`、每个 criterion 的值），这是所有引擎共用的、也是"同一个请求在不同引擎上看到的
+  文本一致"这条要求的落点；**每个引擎拥有"把这些片段排成它自己的序列"这一步**，因为那是模型
+  特有的，而且由模型自己的库提供。
+- 这个修正**没有动 `answers.py`，也没有动路由层**——`AGENTS.md §5` 说"如果接一个引擎要改这两处，
+  说明抽象错了"，这条通过了；要修正的是 `render` 契约的表述，不是它的实现。
+- 一个直接的后果：`noul` 的两个选项名 `"false"/"true"` 必须有一个渲染侧的家，供"只想构造一个
+  合法 noul"的调用方（例如引擎的 warmup）使用。它是 `render.noul_options`
+  （`AGENTS.md §2`），而不是各处的字面量；`tests/test_conventions.py` 断言只有 `render.py`
+  里出现 `Option("false"`。
+
+**还有一条 Stage 1 才变得具体的要求：引擎必须能报告"我到底会吃掉多少 token"。**
+初版把容量校验设计成"引擎提供一个 `count_tokens(texts)`，`schema.py` 拿预算去比"。用 Laya 一测
+就发现这个接口不够：`build_sequence` **会静默截断** state、instructions 和选项，而它的 head 预算
+里还包含 `render.py` 根本看不到的东西（`"name: "`、`"level N: "`、每个选项一个 `[MASK]`、分隔符）。
+用 `len(text)//4` 或只数渲染后的文本都会**低报**，于是请求通过校验、然后被引擎悄悄截断——
+一个自信的、基于部分输入的答案，正是 `AGENTS.md §5-4` 禁止的。
+
+所以接口改成 `DecisionEngine.measure(request) -> MeasuredTokens`：**引擎测量，`schema.py` 决定
+怎么办**。`MeasuredTokens` 同时给出 `sequence_tokens`（最长的那条完整序列，state 与 head 共享同一个
+预算，所以必须一起算）和 `head_tokens`（每题自己的 head 开销），`EngineInfo.max_state_tokens`
+相应改名为 `max_sequence_tokens`。Laya 侧的换算被压缩成一个可直接验证的表达式
+（`engines/laya.py: budgeted_head`），"它是否恰好等价于 build_sequence 的不截断条件"由
+`tests/test_upstream_contract.py` 在 11 种形状 × 6 个预算上**双向**断言。
+
 ### 4.2 `answers.py` —— 概率 → 答案
 
 ```python
@@ -436,29 +467,56 @@ engine workers × N_engine   (每个进程一份权重，跑攒批循环)
 
 ## 7. 模型资产与离线部署
 
-### 7.1 解析顺序（一个函数，两处调用）
+### 7.1 解析顺序（一个函数，两处调用）— ✅ Stage 1 已实现
 
 ```
-resolve(engine) →
-  1. $DECIS_MODEL_DIR/<engine-id>/ 存在且完整  → 用它（挂载模式）
-  2. HF 本地缓存存在                          → 用它（弱网/离线）
-  3. 允许联网 → snapshot_download 到 (1)       → 用它
-  4. 否则 → 报错，错误信息里给出确切的下载命令
+resolve(spec, settings) →                                    src/decis/paths.py
+  1. $DECIS_MODEL_PATH_<ENGINE_ID> 指向的目录是完整 checkpoint  → 用它（你自己的权重）
+  2. $DECIS_MODEL_DIR/<engine-id>/ 是完整 checkpoint           → 用它（挂载模式）
+  3. $DECIS_MODEL_DIR/<engine-id>/<subfolder>/ 是完整 checkpoint → 用它（仓库布局的挂载）
+  4. 有 repo_id → 交给调用方去 snapshot_download（decis download）→ 再回到上面的判断
+  5. 否则 → 报错，错误信息里给出确切的下载命令
 ```
 
-- 这条顺序让"烘进镜像"和"挂载外部权重"**共用同一条代码路径**（kev 的 `resolve_run` 与 Laya 的 `Agent.__init__` 都已具备"存在即用"的行为）。
-- 完整性校验：`decis models verify` 检查必需文件与可选 checksum，启动时也校验（缺文件**立即失败**，不要等到第一个请求）。
+- **"完整"是有定义的**：目录里必须有 `rl_agent_config.json`（引擎在 `WeightSpec.marker` 里声明）。
+  这条不是形式主义：`DECIS_MODEL_DIR` 通常是个挂载点，而**挂载点在卷为空时依然存在**，
+  这是最常见的故障，且不检查的话会以模型加载器深处的一个费解错误浮现。`tests/test_paths.py`
+  钉住了"存在但为空"和"存在但缺文件"两种情况都必须回退到网络而不是被当成可用权重。
+- **本地永远优先于网络**。这是安全性质而非偏好：把权重烘进镜像或挂载的全部意义就是
+  镜像可以无出口网络运行，所以一个缺失的卷绝不能导致容器去访问 Hub。
+- 第 3 步返回的是**解析后的根目录**（`checkpoint_root`），所以调用方不会把 subfolder 加两次——
+  那正是这个函数要防的错误。
+- **revision 钉在 commit sha 上**，不是 tag 或 branch：否则上游一次 force-push 就会改变某个已发布的
+  Decis 镜像加载的是什么权重，可复现性就没有了（`engines/laya.py: REVISION`）。
+  要跑自己的微调就用第 1 条，那是这条规则预留的出口。
 - 离线：`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`，与 UniTS-Hub 一致。
 
-### 7.2 各引擎的权重清单
+### 7.2 各引擎的权重清单 — ✅ 体积取自 Hub 文件列表实测
 
-| 引擎 | 来源 | 体积 | 备注 |
-|---|---|---|---|
-| `laya`（英文） | `convaiinnovations/laya`（根目录） | 803.6 MiB (fp16) / 1607 MiB (fp32) | 421M 参数，ModernBERT-large |
-| `laya-multilingual` | `convaiinnovations/laya`，`subfolder="multilingual"` | 614.0 MiB (fp16) | 322M 参数，mmBERT-base，~2.2× 快 |
-| `laya-typed-decisions` | 同上，`subfolder="typed-decisions"` | ~803.6 MiB | 4 个 typed-decisions workflow 专用 |
-| `kev-0.8b` | adapter `jaredpalmer/kev-0.8b` + 基座 `Qwen/Qwen3.5-0.8B-Base` | adapter ≈113MB + 基座 ≈1.6GB (bf16) | 基座是大头 |
-| `kev-4b` / `kev-9b` | 同上 | ≈582MB + 8GB / ≈392MB + 18GB | 超出"轻量"定位，只做可选镜像 |
+下表"体积"是 `decis download` 实际会拉取的文件总和（用 Hub 的
+[tree API](https://huggingface.co/api/models/convaiinnovations/laya/tree/main?recursive=true) 实测，
+不是估算）；"模型文件"是其中 `model.safetensors` 的大小。
+
+| 引擎 | 来源 | 下载总量 | 模型文件 | 备注 |
+|---|---|---|---|---|
+| `laya`（英文） | `convaiinnovations/laya`（根目录） | 807.0 MiB | 803.6 MiB | 421M 参数，ModernBERT-large |
+| `laya-multilingual` | 同上，`subfolder="multilingual"` | 646.8 MiB | 614.0 MiB | 322M 参数，mmBERT-base，~2.2× 快 |
+| `laya-typed-decisions` | 同上，`subfolder="typed-decisions"` | 807.0 MiB | 803.6 MiB | typed-decisions workflow 专用 |
+| `kev-0.8b` | adapter `jaredpalmer/kev-0.8b` + 基座 `Qwen/Qwen3.5-0.8B-Base` | 未实测 | adapter ≈113MB + 基座 ≈1.6GB (bf16) | 基座是大头 |
+| `kev-4b` / `kev-9b` | 同上 | 未实测 | ≈582MB + 8GB / ≈392MB + 18GB | 超出"轻量"定位，只做可选镜像 |
+
+三个 Laya checkpoint 共用同一个仓库，但 `allow_patterns` 只列出一个 checkpoint 的文件
+（`rl_agent_config.json` / `model.safetensors` / `tokenizer/*` / `encoder/*`，带 subfolder 前缀），
+所以装一个不会顺带拉另外两个。`tests/test_paths.py` 断言了这一点，包括"根 checkpoint 的前缀为空
+时不能退化成下载全部"。
+
+**实测过的组合**（`benchmarks/results/`）：`laya 0.3.5` + `torch 2.14.0+cpu` +
+`transformers 5.17.0` + `safetensors 0.8.0` + `numpy 2.5.3`。`pyproject.toml` 里只钉
+`laya>=0.3.5,<0.4`，不重复声明它自己已经声明的 torch 等依赖——加一个我们没测过的下界，
+是一个无法支撑的兼容性承诺。
+
+`EngineInfo` 里的 `release_date` 用 Hub 元数据里的 `lastModified`（`2026-09-20`），
+那是唯一可核实的日期；它不是营销意义上的发布日。
 
 ### 7.3 kev 的特殊处理
 
@@ -711,17 +769,59 @@ Decis/
 - 认证放在 ASGI 中间件而非 FastAPI 依赖，使"认证先于请求体校验"成为结构性质而非框架内部顺序的副产品。
 - `score` 的 `confidence` 由 kev 的"到众数平均距离"改为归一化熵，理由见 `api-compatibility.md §7`。
 
-**Stage 1 — Laya 引擎闭环（3–5 天）** — ⬜ 未开始
-`engines/laya.py` → `decis serve`；单进程、无批处理；`decis download` 可用；带权重的镜像可用。此阶段结束的标志：`docker run` 后官方 SDK 拿到真实 Laya 答案，且 `/readyz` 在 warmup 完成后才转绿。
+**Stage 1 — Laya 引擎闭环** — ✅ 已完成
+
+四个验收标准全部达成：
+
+1. ✅ **`decis serve --engine laya-multilingual` 用真实权重回答真实请求**。三个原语
+   （`noul`/`choice`/`score`）都产出合法分布；`tests/test_laya_inference.py` 用真实权重验证，
+   共 14 个用例，CPU 上约 90 秒。
+2. ✅ **`/readyz` 在 warmup 完成后才转绿**。冷启动约 75 秒（CPU），期间 `/healthz` 立即可用，
+   所以 HEALTHCHECK 打的是 `/healthz`，容器不会被 75 秒的加载期误杀。
+3. ✅ **`decis download` 可用**，且**只**拉目标 checkpoint 的文件（三个 checkpoint 共用一个
+   仓库，`allow_patterns` 保证不互相牵连）。
+4. ✅ **带权重的镜像可用**：`DECIS_PREDOWNLOAD=<engine>` 在构建期落地权重，
+   镜像因此可以无出口网络运行。
+
+实现时暴露的三个问题（前两个改的是设计，不只是代码）：
+
+- **`render.py` 的"唯一"边界写得过宽**。Laya 自己渲染选项文本（`"name: "`、
+  `"level N: "`、noul 的默认描述），那些是它序列格式的一部分。正确的分工是
+  "`render.py` 拥有任意 JSON → 可读文本，引擎拥有把片段排成自己的序列"，
+  见 §4.1 的 Stage 1 修正。**这处修正没有触碰 `answers.py` 或路由层**，
+  所以 §2 的抽象通过了它的第一次检验。
+- **容量校验的接口错了**。初版设计成"引擎给一个 `count_tokens`，`schema.py` 拿预算去比"。
+  `build_sequence` 会静默截断，而它的 head 预算包含 `render.py` 看不到的东西
+  （选项名前缀、每个选项一个 `[MASK]`、分隔符），所以任何基于"渲染后文本"的估算都会**低报**，
+  结果是请求通过校验然后被悄悄截断。改成 `DecisionEngine.measure() -> MeasuredTokens`
+  ——**引擎测量，`schema.py` 决定怎么办**；`EngineInfo.max_state_tokens` 随之改名为
+  `max_sequence_tokens`，因为 state 与 head 共享同一条序列。upstream 的不截断条件被压成
+  一个表达式（`engines/laya.py: budgeted_head`），并由 11 种形状 × 6 个预算的**双向**断言钉住。
+- **Laya 的 `Agent` 会和官方 manifest 打架**。上游 `Agent.__init__` 在加载失败时会**静默回落到
+  CPU**。Decis 不跟：那会在一次请求中间改变设备，破坏 §3-11 的"POST 是纯函数"，
+  并让此后每个请求的延迟变 10 倍。改为抛 `EngineUnavailableError`（503）。
+
+顺带记录一条对 §7 的独立佐证：**Laya 的 `confidence_from_probs` 就是 `1 − H(p)/log k`**，
+正是 Decis 为 `choice` 选的归一化熵口径。`source: laya/common.py`。对 Laya 而言
+`decis.native_confidence == confidence`；两个字段仍然分开，因为 kev 的 `noul` 口径不同。
 
 **Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — ⬜ 未开始
 vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是证伪/证实 §2 的抽象**：如果接 kev 需要改动 `answers.py` 或路由层，说明抽象错了，必须回去改。同时验证 §5.1 的 `WorkItem` 签名对 `rows` 与 `prefix` 两种模式都成立。
 
 **Stage 3 — 性能（5–7 天）** — ⬜ 未开始
-攒批器 + 进程池 + 指标 + `benchmarks/`；产出各引擎 × 设备 × 批大小的延迟/吞吐表。用数据决定 `DECIS_BATCH_MODE` 与 `DECIS_BATCH_MAX_WAIT_MS` 的默认值。**本阶段有三个必须先做的验证**（前两个可能推翻设计假设）：
+攒批器 + 进程池 + 指标 + `benchmarks/`；产出各引擎 × 设备 × 批大小的延迟/吞吐表。用数据决定 `DECIS_BATCH_MODE` 与 `DECIS_BATCH_MAX_WAIT_MS` 的默认值。**本阶段有三个必须先做的验证**：
 
-1. **跨 state 批处理的真实收益**（§6.2）——这是整个吞吐论点的基石，目前**完全未实测**；
-2. **批不变性**（§6.6）——若 batch 变化会翻转 argmax，批处理的价值要重新评估；
+1. **跨请求批处理的真实收益**（§6.2）——这是整个吞吐论点的基石，仍然**完全未实测**。
+   Stage 1 只证明了"引擎层能正确地把不同 state 的问题合成一次前向"（
+   `tests/test_laya_inference.py: test_one_predict_call_handles_every_state_in_one_forward_pass`），
+   那是必要条件，不是收益证据；攒批窗口能不能攒到东西，取决于真实流量的到达分布。
+2. ✅ **批不变性**（§6.6）——已在 Stage 1 用真实权重测过（它是阶段 1 的前置，因为若 argmax
+   会翻转，整个批处理设计要重估）：16 条不同 state、三种原语、batch=2/4/8/16 共 12 组配置下，
+   **最大绝对偏差 8.345e-07，argmax 翻转 0 次**（原始记录
+   `docs/contract/stage1-batch-invariance.json`，设备/精度/runtime 均记在文件内）。
+   `tests/test_laya_inference.py` 以 `1e-5` 为界——比实测宽一个量级，但比"什么都不测"紧得多，
+   足以在 mask 出问题时变红。注意这只覆盖了"同一进程内、
+   不同 batch 组成"，**不覆盖**多进程/多 worker 之间的一致性。
 3. `DECIS_BATCH_MODE=rows|prefix|auto` 的默认值与判据。
 
 **Stage 4 — 发布工程（3–5 天）** — ⬜ 未开始

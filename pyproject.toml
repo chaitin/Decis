@@ -30,7 +30,12 @@ dependencies = [
 [project.optional-dependencies]
 # Engine dependencies live here, never in [project.dependencies]: an image that
 # installs decis[laya] has no peft, and vice versa. See AGENTS.md §6.
-laya = ["laya>=0.3.5,<0.4", "torch>=2.4"]
+#
+# `laya` declares its own torch/transformers/safetensors/huggingface_hub, so this
+# deliberately does not restate them. Adding a floor Decis has not tested would be a
+# compatibility claim we cannot back; the combination that *is* tested is recorded in
+# docs/design.md §7.2.
+laya = ["laya>=0.3.5,<0.4"]
 kev = ["torch>=2.4", "transformers>=4.44", "peft>=0.13", "accelerate>=1.0", "safetensors>=0.4"]
 remote = ["httpx>=0.27"]
 metrics = ["prometheus-client>=0.20"]
@@ -42,6 +47,10 @@ dev = [
   "typesafe-sdk>=0.7.1",
 ]
 all = ["decis[laya,kev,remote,metrics]"]
+
+# `decis download` needs huggingface_hub, which arrives with any engine that has
+# weights. `decis doctor` says so explicitly when it is missing.
+download = ["huggingface_hub>=0.20"]
 
 [project.urls]
 Homepage = "https://github.com/kingfs/Decis"

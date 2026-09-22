@@ -5,9 +5,16 @@
 #   docker build -f docker/Dockerfile -t decis:mock .
 #   docker build -f docker/Dockerfile --build-arg DECIS_EXTRAS=laya -t decis:laya .
 #
-# The default image carries NO model weights and no engine dependencies. It serves
-# the mock engine, which is what CI, the contract tests and `docker run` demos use.
-# Per-engine images that bake weights are produced on top of this one (Stage 4).
+# The default image carries NO model weights and no engine dependencies. It serves the
+# mock engine, which is what CI and the contract tests use, and starts in about a
+# second. An engine image that works with no network at run time adds:
+#
+#   --build-arg DECIS_EXTRAS=laya \
+#   --build-arg DECIS_ENGINE=laya-multilingual \
+#   --build-arg DECIS_PREDOWNLOAD=laya-multilingual
+#
+# The multi-architecture matrix that publishes these to a registry is Stage 4
+# (docs/design.md §12); this file only has to be able to produce one.
 
 # syntax=docker/dockerfile:1.7
 
@@ -22,18 +29,25 @@ LABEL org.opencontainers.image.title="Decis" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.base.name="docker.io/library/python:3.13-slim"
 
-# Which engine's dependencies to install. Empty means none: an API-only image that
-# starts in under a second.
+# Which engine's dependencies to install. Empty means none: an API-only image.
 ARG DECIS_EXTRAS=""
+# The engine this image serves by default.
+ARG DECIS_ENGINE="mock"
+# An engine id whose weights to bake in. Empty means "mount them instead".
+ARG DECIS_PREDOWNLOAD=""
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    # Weight downloads land here, under <engine id>/, which is exactly where
+    # `paths.resolve` looks first.
+    DECIS_MODEL_DIR=/models \
     HF_HOME=/models/.hf \
-    # Overridable at run time; the container must be able to listen on 0.0.0.0,
-    # and a token is required before it will.
+    DECIS_DEFAULT_ENGINE=${DECIS_ENGINE} \
+    # Overridable at run time; the container must be able to listen on 0.0.0.0, and a
+    # token is required before it will.
     DECIS_HOST=0.0.0.0 \
     DECIS_PORT=8000
 
@@ -51,25 +65,36 @@ RUN if [ -n "$DECIS_EXTRAS" ]; then \
     fi \
     && rm -rf /app/src/*.egg-info
 
-# Fail the build, not the deployment, if the wiring is broken.
+# Fail the build, not the deployment, if the wiring is broken. `doctor` exits non-zero
+# when no API key is configured, which is expected at build time, so its status is
+# ignored while its output is kept.
 RUN decis doctor || true
 RUN python -c "from decis.app import create_app; create_app(load_engine=False); print('app builds')"
 
-# Weights are mounted, never baked into the base image (AGENTS.md §9).
-VOLUME ["/models"]
-ENV DECIS_MODEL_DIR=/models
+# Bake weights when asked. Done as its own layer so that changing source does not
+# refetch hundreds of megabytes, and *before* the non-root user exists so the files are
+# owned correctly afterwards. No weights are ever committed to git (AGENTS.md §9).
+RUN if [ -n "$DECIS_PREDOWNLOAD" ]; then \
+        mkdir -p /models && decis download --engine "$DECIS_PREDOWNLOAD"; \
+    else \
+        mkdir -p /models; \
+    fi
+
+# No VOLUME declaration on purpose. `/models` is declared as a volume only for images
+# that lack weights, and a volume hides whatever was baked into the image behind it --
+# which would silently turn an offline image into one that reaches for the Hub. Use
+# `-v /srv/models:/models` to mount weights; that works without the declaration.
 
 # Non-root, with a fixed uid so a mounted volume can be chowned predictably.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin decis \
-    && mkdir -p /models \
     && chown -R 10001:10001 /models /app
 USER 10001:10001
 
 EXPOSE 8000
 
-# Liveness only: /readyz would report unhealthy during a 73 s cold start and get
-# the container killed mid-load.
-HEALTHCHECK --interval=10s --timeout=3s --start-period=120s --retries=6 \
+# Liveness only: /readyz would report unhealthy during a ~75 s cold start and get the
+# container killed mid-load.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=180s --retries=6 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"
 
 # Exec form so the server is PID 1 and receives SIGTERM directly.

@@ -56,17 +56,28 @@ SPECS: dict[str, EngineSpec] = {
         extra="",  # no dependencies at all: usable in a bare install
         aliases=("decis-mock", "mock-engine"),
     ),
-    # Real engines are registered in the same change that implements them
-    # (AGENTS.md §5). Registering a target whose module does not exist yet would
-    # advertise a model that cannot be served, and `decis models` would report a
-    # missing dependency -- for our own missing code.
-    #
-    #   "laya-multilingual": EngineSpec(
-    #       id="laya-multilingual",
-    #       target="decis.engines.laya:LayaEngine",
-    #       extra="laya",
-    #       aliases=("decis-laya-multilingual", "laya"),
-    #   ),
+    # One entry per Laya checkpoint, because they are separate sets of weights with
+    # separate capacities and must be describable independently by `GET /v1/models`.
+    # `laya` is the English root checkpoint; the other two are subfolders of the same
+    # Hub repository (see `engines/laya.py`).
+    "laya-multilingual": EngineSpec(
+        id="laya-multilingual",
+        target="decis.engines.laya:LayaMultilingualEngine",
+        extra="laya",
+        aliases=("decis-laya-multilingual", "laya-multi"),
+    ),
+    "laya": EngineSpec(
+        id="laya",
+        target="decis.engines.laya:LayaEngine",
+        extra="laya",
+        aliases=("decis-laya", "laya-english"),
+    ),
+    "laya-typed-decisions": EngineSpec(
+        id="laya-typed-decisions",
+        target="decis.engines.laya:LayaTypedDecisionsEngine",
+        extra="laya",
+        aliases=("decis-laya-typed-decisions",),
+    ),
 }
 
 
@@ -147,3 +158,59 @@ def create(engine_id: str) -> DecisionEngine:
 def describe(engine_id: str) -> EngineInfo:
     """Engine metadata without loading weights."""
     return create(engine_id).info()
+
+
+@dataclass(frozen=True)
+class EngineStatus:
+    """Whether an engine can answer a request *right now*, and if not, what to do.
+
+    This exists because "the class imports" is not the same claim as "this server
+    can run it". Registration is lazy by design (AGENTS.md §6), so every engine
+    class imports cleanly even in an image that installed none of its dependencies.
+    Reporting that as "ready" would be a false claim in a command operators script
+    against, so the distinction is made explicit and derived from two facts the
+    engine already declares: the modules it needs, and where its weights are.
+    """
+
+    engine_id: str
+    usable: bool
+    #: One short phrase naming the state, for a column in `decis models`.
+    summary: str
+    #: The exact command or path that changes the answer, when there is one.
+    remedy: str = ""
+
+
+def status(engine_id: str) -> EngineStatus:
+    """Classify one engine. Never downloads and never loads weights."""
+    from ..config import load_settings
+    from ..paths import missing_requirements, resolve
+
+    try:
+        engine = create(engine_id)
+        spec = engine.weights()
+    except InvalidRequestError as exc:
+        # Collapsed to one line: `EngineStatus.remedy` goes in a table, and these
+        # messages are written to be complete, not short.
+        return EngineStatus(engine_id, False, "unavailable", str(exc).splitlines()[0])
+
+    if spec is None:
+        return EngineStatus(engine_id, True, "ready")
+
+    absent = missing_requirements(spec)
+    if absent:
+        extra = SPECS[engine_id].extra or "all"
+        return EngineStatus(
+            engine_id,
+            False,
+            "deps missing",
+            f"uv sync --extra {extra}   (no {', '.join(absent)} module)",
+        )
+
+    source = resolve(spec, load_settings())
+    if source.is_local:
+        return EngineStatus(engine_id, True, "ready", f"weights at {source.path}")
+    # Whether a *download* is possible is a property of the checkpoint's declaration,
+    # not of where the resolver happened to look.
+    if spec.is_downloadable():
+        return EngineStatus(engine_id, False, "needs weights", f"decis download --engine {engine_id}")
+    return EngineStatus(engine_id, False, "no weights", "the path is not a valid checkpoint")

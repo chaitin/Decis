@@ -70,12 +70,44 @@ class PreparedRequest:
 
 
 def estimate_tokens(text: str) -> int:
-    """A cheap character-based estimate for engines with no tokenizer.
+    """A cheap character-based estimate, for engines with no tokenizer.
 
-    Deliberately conservative: it only ever feeds a capacity check that produces a
-    clear 422, never a silent truncation.
+    Only ever feeds a capacity check that produces a clear 422, never a silent
+    truncation -- provided the caller overrides the measurement. See
+    `MeasuredTokens`.
     """
     return max(0, len(text) // CHARS_PER_TOKEN)
+
+
+@dataclass(frozen=True)
+class MeasuredTokens:
+    """How many tokens an engine will *actually* consume, per budget.
+
+    Exists because a character estimate was measurably wrong in the direction that
+    hurts: an engine's head budget also pays for per-option decorations (option
+    names, `[MASK]` positions, separators) that do not appear in the rendered
+    question text, so `len(text) // 4` under-counts. A request could then pass
+    validation and still be **silently truncated by the engine**, which is exactly
+    the degraded answer `AGENTS.md §5-4` forbids.
+
+    So the engine measures (it is the only layer that knows its own sequence
+    layout) and `schema.validate_capacity` applies the policy (it is the only
+    layer that owns the error shape).
+    """
+
+    #: Raw length of the rendered state, for reporting.
+    state_tokens: int
+    #: Per question: what that question's own head costs (instructions + options).
+    head_tokens: dict[str, int]
+    #: The longest single sequence any one question needs -- state plus that
+    #: question's head. This, not `state_tokens`, is the real context constraint:
+    #: the state and the head share one sequence, so checking them independently
+    #: lets a request satisfy both budgets and still be truncated.
+    sequence_tokens: int
+
+    def describe(self) -> str:
+        heads = ", ".join(f"{qid}={n}" for qid, n in self.head_tokens.items())
+        return f"sequence={self.sequence_tokens} state={self.state_tokens} heads: {heads}"
 
 
 def as_text(value: Any) -> str:
@@ -85,6 +117,7 @@ def as_text(value: Any) -> str:
 
 __all__ = [
     "CHARS_PER_TOKEN",
+    "MeasuredTokens",
     "Option",
     "PreparedQuestion",
     "PreparedRequest",

@@ -50,8 +50,13 @@ download weights at build time from their upstream publishers. Users are
 responsible for complying with each model's license:
 
   convaiinnovations/laya                Apache-2.0
-  convaiinnovations/laya-multilingual   Apache-2.0
-  convaiinnovations/laya-typed-decisions Apache-2.0
+      One repository holding three checkpoints. Decis registers them under three
+      engine ids, all served from this single repo at a pinned revision:
+        laya                  the repository root
+        laya-multilingual     the `multilingual/` subfolder
+        laya-typed-decisions  the `typed-decisions/` subfolder
+      `decis download` fetches only the files of the checkpoint you asked for.
+
   jaredpalmer/kev-*                     Apache-2.0
   Qwen/Qwen3.5-*-Base                   Apache-2.0
 

@@ -16,7 +16,8 @@ import logging
 import threading
 from typing import Protocol
 
-from .engines.base import DecisionEngine, EngineInfo, Prediction, WorkItem
+from .domain import MeasuredTokens, PreparedRequest
+from .engines.base import DecisionEngine, EngineInfo, Prediction, WeightSpec, WorkItem
 from .errors import EngineFailedError, EngineUnavailableError
 
 _logger = logging.getLogger("decis.scheduler")
@@ -33,6 +34,8 @@ class Scheduler(Protocol):
     def ready(self) -> bool: ...
 
     def count_tokens(self, texts: list[str]) -> int: ...
+
+    def measure(self, request: PreparedRequest) -> MeasuredTokens: ...
 
     def run(self, items: list[WorkItem]) -> Prediction: ...
 
@@ -64,6 +67,15 @@ class InProcessScheduler:
 
     def count_tokens(self, texts: list[str]) -> int:
         return self._engine.count_tokens(texts)
+
+    def measure(self, request: PreparedRequest) -> MeasuredTokens:
+        # Delegated rather than snapshotted: the measurement depends on the
+        # loaded tokenizer and the checkpoint's own budgets, both of which only
+        # exist after `load()`.
+        return self._engine.measure(request)
+
+    def weights(self) -> WeightSpec | None:
+        return self._engine.weights()
 
     def run(self, items: list[WorkItem]) -> Prediction:
         if not self._engine.loaded:

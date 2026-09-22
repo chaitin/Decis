@@ -6,7 +6,7 @@
 
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
-> **状态：API server 已经能跑，真实模型是下一步。** `Stage 0` 已完成：线格式契约、认证、错误形状、引擎抽象、配置、CLI、Dockerfile 与 CI 都已实现，**205 个测试通过**——其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。目前唯一注册的引擎是 `mock`（无权重、确定性，用于契约测试与演示），所以**你现在就可以把它跑起来评估这套 API**。Laya 在 Stage 1、kev 在 Stage 2（见 [`docs/design.md §12`](docs/design.md)）。
+> **状态：API server 已经能跑，Laya 已经在它后面跑起来了。** `Stage 0` 与 `Stage 1` 已完成。线格式契约、认证、错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**274 个无权重测试通过**——其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。除 `mock` 外已注册三个真实 Laya checkpoint，**`decis serve --engine laya-multilingual` 现在就能回答真实请求**；另有 14 个测试会加载真实权重并检查批不变性。kev 在 Stage 2（见 [`docs/design.md §12`](docs/design.md)）。
 >
 > 契约不是推断出来的，而是建立在[官方 OpenAPI 快照](docs/contract/typesafe-openapi-0.2.0.json)和[线上 API 实际返回什么的记录](docs/contract/observations-2026-09-22.md)之上。[`docs/design-review.md`](docs/design-review.md) 是对这套设计的对抗性审查，包括哪些部分还没有被验证。
 
@@ -92,6 +92,32 @@ uv run decis models     # 本机注册了哪些引擎、哪些可用
 uv run decis doctor     # 环境与配置自检
 ```
 
+### 换成真实模型
+
+把 `mock` 换成 Laya。上面的请求一个字都不用改——变的只是谁来回答。
+
+```bash
+uv sync --extra laya
+uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB，只需一次
+uv run decis serve --engine laya-multilingual --host 127.0.0.1
+```
+
+CPU 上冷启动约 **75 秒**，所以 `/healthz` 立刻可用，而 `/readyz` 在权重进内存之前一直报未就绪。
+容器里把权重打进镜像即可离线运行：
+
+```bash
+docker build -f docker/Dockerfile \
+  --build-arg DECIS_EXTRAS=laya --build-arg DECIS_ENGINE=laya-multilingual \
+  --build-arg DECIS_PREDOWNLOAD=laya-multilingual -t decis:laya-multilingual .
+docker run --rm -p 8000:8000 -e DECIS_API_KEY=local decis:laya-multilingual
+```
+
+要跑自己的微调，就把那个引擎指向一个目录——它的优先级高于其他一切，包括网络：
+
+```bash
+DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage uv run decis serve
+```
+
 ## 问题
 
 Jev 已经证明，*决策模型*（针对一段 state 回答带类型的问题，返回校准过的概率，而不是生成文本）应该放在请求路径上，而不是放在聊天窗口里。但 Jev 是托管、闭源的 API：
@@ -117,8 +143,9 @@ Decis 就是这种方式：一个稳定的 API，多个引擎，每个模型打�
 | 引擎 | 骨干模型 | 参数量 | 权重 | 状态 | 说明 |
 |---|---|---|---|---|---|
 | `mock` | — | — | 无 | **已实现** | 确定性、无权重。用于契约测试与演示 |
-| `laya-multilingual` | mmBERT-base | 322M | 614 MiB | Stage 1 | 支持 100+ 种语言，快约 2.2 倍，预期的默认选择 |
-| `laya` | ModernBERT-large | 421M | 804 MiB | Stage 1 | 英语，在英语基准上最强 |
+| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **已可用** | 支持 100+ 种语言，快约 2.2 倍，预期的默认选择 |
+| `laya` | ModernBERT-large | 421M | 807 MiB | **已可用** | 英语，在英语基准上最强 |
+| `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | **已可用** | 同一个仓库里的 typed-decisions checkpoint |
 | `kev-0.8b` | Qwen3.5-0.8B + LoRA | 0.8B | ~1.7 GB | Stage 2 | 架构不同，错误分布也不同 |
 | `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | Stage 2 | 精度更高，但已经不算“轻量” |
 | `remote` | — | — | — | 计划中 | 转发到真正的 `api.typesafe.ai`，可用于 A/B 对比，也可当测试基准 |
@@ -202,7 +229,8 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 205 个测试，约 6 秒，无权重、无网络
+uv run pytest -q                        # 274 个测试，约 7 秒，无权重、无网络
+uv run pytest -m weights                # 14 个加载真实 Laya 权重的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token
 ```

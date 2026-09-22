@@ -33,7 +33,7 @@ class MockEngine(DecisionEngine):
             version=__version__,
             primitives=frozenset({"noul", "choice", "score"}),
             max_options=255,
-            max_state_tokens=32_000,
+            max_sequence_tokens=32_000,
             max_question_tokens=32_000,
             languages="any",
             device="cpu",

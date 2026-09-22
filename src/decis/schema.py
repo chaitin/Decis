@@ -23,7 +23,7 @@ from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .domain import PreparedRequest
+from .domain import MeasuredTokens, PreparedRequest
 from .errors import InvalidRequestError
 
 # --- request -----------------------------------------------------------------
@@ -134,10 +134,12 @@ class DecisExtensions(BaseModel):
     #: Set when the caller named a model this server does not have and we
     #: substituted the one it runs -- typically `jev-latest`. Never silent.
     requested_model: str | None = None
-    #: The engine's own confidence, when it has a calibrated one of its own. The
-    #: contract-level `confidence` is Decis's formula; this preserves the engine's
-    #: (see docs/api-compatibility.md §7).
-    native_confidence: float | None = None
+    #: The engine's own confidence, one entry per question id, when the engine has a
+    #: calibrated one. The contract-level `confidence` is Decis's own formula and is
+    #: comparable across engines; this preserves the engine's, which is not
+    #: (see docs/api-compatibility.md §7). A map rather than a scalar because one
+    #: request can mix question types, and averaging them would be meaningless.
+    native_confidence: dict[str, float] | None = None
 
 
 class SystemOneResponse(BaseModel):
@@ -186,32 +188,43 @@ class EngineCapacity(Protocol):
 
     primitives: frozenset[str]
     max_options: int
-    max_state_tokens: int
+    max_sequence_tokens: int
     max_question_tokens: int
 
 
 def validate_capacity(
     prepared: PreparedRequest,
     capacity: EngineCapacity,
-    count_tokens: Callable[[list[str]], int],
-) -> None:
+    measure: Callable[[PreparedRequest], MeasuredTokens],
+) -> MeasuredTokens:
     """Reject requests the target engine cannot honour.
 
     Checked *before* the engine runs, so an over-long input is a clear 422 naming
     the field rather than a truncated sequence producing a confidently wrong
-    answer. `count_tokens` comes from the engine, so the budget is measured in the
-    tokens that engine will actually see.
+    answer.
+
+    `measure` comes from the engine and reports what it will *actually* consume,
+    not a character estimate. That distinction is load-bearing: an engine's
+    question budget also pays for per-option decoration (option names, mask
+    positions, separators) which never appears in the rendered question text, so
+    a character count under-reports and lets through a request the engine would
+    then silently truncate. The engine measures; this function decides what to do
+    about it (`AGENTS.md §2`, `§5-4`).
 
     The two limits are separate because real engines have separate budgets: Laya
     spends a long-context encoder on the state but only a small fixed allowance on
     the options (`head_max_len`). The official docs express this as "state + the
     longest question <= 32k"; two named limits say the same thing more precisely.
+
+    Returns the measurement, so the caller can log it without measuring twice.
     """
-    state_tokens = count_tokens([prepared.state_text])
-    if state_tokens > capacity.max_state_tokens:
+    measured = measure(prepared)
+    if measured.sequence_tokens > capacity.max_sequence_tokens:
         raise InvalidRequestError(
-            f"`state` is about {state_tokens} tokens, over this model's limit of "
-            f"{capacity.max_state_tokens}. Shorten the content or use a model with a longer context.",
+            f"`state` plus the longest question is about {measured.sequence_tokens} tokens (state "
+            f"alone: {measured.state_tokens}), over this model's limit of "
+            f"{capacity.max_sequence_tokens}. Shorten the content, or ask fewer or shorter "
+            f"questions about it.",
             loc=["body", "state"],
             type="too_long",
         )
@@ -243,11 +256,14 @@ def validate_capacity(
                 type="too_long",
             )
 
-        question_tokens = count_tokens([question.text()])
-        if question_tokens > capacity.max_question_tokens:
+        head_tokens = measured.head_tokens.get(question.qid, 0)
+        if head_tokens > capacity.max_question_tokens:
             raise InvalidRequestError(
-                f"Question {question.qid!r} is about {question_tokens} tokens, over this model's "
-                f"limit of {capacity.max_question_tokens} per question.",
+                f"Question {question.qid!r} is about {head_tokens} tokens, over this model's "
+                f"limit of {capacity.max_question_tokens} per question. Shorten the instructions "
+                "or the criteria descriptions.",
                 loc=["body", "questions", question.qid],
                 type="too_long",
             )
+
+    return measured

@@ -7,6 +7,10 @@ covers the real engines.
 from __future__ import annotations
 
 import math
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +27,8 @@ from decis.engines.base import (
 )
 from decis.engines.mock import MockEngine
 from decis.errors import InvalidRequestError
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _item(state: str = "some content", qid: str = "q", names: tuple[str, ...] = ("a", "b")) -> WorkItem:
@@ -52,10 +58,37 @@ def test_engine_classes_subclass_the_protocol() -> None:
         assert issubclass(registry.load_class(engine_id), DecisionEngine)
 
 
-def test_registry_does_not_import_torch_at_module_level() -> None:
-    import sys
+@pytest.mark.parametrize(
+    "module",
+    ["decis.engines.registry", "decis.app", "decis.service", "decis.schema", "decis.render"],
+)
+def test_core_modules_do_not_pull_in_torch(module: str) -> None:
+    """AGENTS.md §6: an image with one engine's extra must still serve `/v1/models`.
 
-    assert "torch" not in sys.modules, "importing the registry must not pull in torch"
+    Run in a fresh interpreter on purpose. The earlier version of this test asserted
+    `"torch" not in sys.modules` in-process, which was both vacuous and order-dependent:
+    vacuous in the no-weights environment, where torch is not installed at all, and
+    dependent on whichever test happened to import torch first once the `laya` extra was
+    present. A subprocess is the only way to ask "does *importing this* pull in torch".
+    """
+    code = (
+        "import sys, importlib;"
+        f"importlib.import_module({module!r});"
+        "heavy = sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'torch', 'transformers', 'laya', 'numpy', 'safetensors'});"
+        "print(','.join(heavy));"
+        "sys.exit(1 if heavy else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+    )
+    assert result.returncode == 0, (
+        f"importing {module} pulled in heavyweight dependencies: {result.stdout.strip()}\n{result.stderr}"
+    )
 
 
 @pytest.mark.parametrize(

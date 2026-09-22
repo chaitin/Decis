@@ -257,7 +257,10 @@ Decis 必须照此实现。只返回 401（很多 API 的做法）会让依赖�
 | `latency_ms` | 本次推理耗时（毫秒） | 服务端自己测的，比客户端往返更干净 |
 | `batch_size` | 本次实际一起算的问题数 | **这是批处理真的发生了的证据**。`design-review.md §2-D1` 的教训是：无法观测的批处理等于没有批处理 |
 | `requested_model` | 仅当客户端点了非本服务器的模型名（如 `jev-latest`）时出现，原样回报客户端请求的字符串 | 替换必须可见 |
-| `native_confidence` | 引擎自己的标定置信度；Decis 没有时为 `null` | `noul` answer 按契约没有 confidence，这是唯一能拿到 `noul` 不确定性的地方 |
+| `native_confidence` | 引擎自己的标定置信度，**按 question id 键控的字典**（`{"q1": 0.63, …}`）；引擎不提供时为 `null` | `noul` answer 按契约没有 confidence，这是唯一能拿到 `noul` 不确定性的地方 |
+
+> **`native_confidence` 在 Stage 1 从标量改成了字典。** 一个请求可以同时包含 `noul`、`choice` 和 `score`，它们的原生置信度口径不同（Laya 对 `noul` 覆写成 `max(p, 1−p)`，对其余用归一化熵），一个标量无法表达。
+> 另有一处值得记录的巧合：**Laya 的 `confidence_from_probs` 就是 `1 − H(p)/log k`，与 Decis 给 `choice` 选的"归一化熵"口径同源。** 于是对 Laya 而言 `decis.native_confidence == confidence`。这不改变"两个字段都存在"的决定——kev 的 `noul` 口径不同，一个会把两者混为一谈的设计在接 kev 时就会出问题——但它是对 Decis 那个选择的一次独立佐证，记录在此。
 
 ### 关于 `confidence`（重要设计决策，且是一处**权衡**）
 

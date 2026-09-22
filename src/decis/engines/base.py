@@ -13,7 +13,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ..domain import PreparedQuestion, ProbDist, estimate_tokens
+from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist, estimate_tokens
+from ..paths import WeightSpec
 
 Primitive = Literal["noul", "choice", "score"]
 
@@ -31,7 +32,9 @@ class EngineInfo:
     version: str
     primitives: frozenset[Primitive]
     max_options: int
-    max_state_tokens: int
+    #: Longest `state` + `question` the engine can process as one sequence. Engines
+    #: that score options cheaply can set this far above `max_question_tokens`.
+    max_sequence_tokens: int
     max_question_tokens: int
     languages: str
     device: str
@@ -53,7 +56,7 @@ class EngineInfo:
         return {
             "primitives": sorted(self.primitives),
             "max_options": self.max_options,
-            "max_state_tokens": self.max_state_tokens,
+            "max_sequence_tokens": self.max_sequence_tokens,
             "max_question_tokens": self.max_question_tokens,
             "languages": self.languages,
             "device": self.device,
@@ -82,10 +85,19 @@ class Prediction:
 
     probabilities: list[ProbDist]
     input_tokens: int = 0
-    #: The engine's own confidence, when it has a calibrated one. Unlike the
-    #: contract's `confidence`, this is not comparable across engines; it is
-    #: surfaced under `decis` for callers who know what they are asking for.
-    native_confidence: float | None = None
+    #: The engine's own confidence, one per work item, when it has a calibrated
+    #: one. Unlike the contract's `confidence`, this is not comparable across
+    #: engines; it is surfaced under `decis.native_confidence` for callers who
+    #: know what they are asking for. Per item rather than per batch, because a
+    #: single batch can mix questions and a mean would be meaningless.
+    native_confidences: list[float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.native_confidences is not None and len(self.native_confidences) != len(self.probabilities):
+            raise ValueError(
+                f"got {len(self.native_confidences)} native confidences for "
+                f"{len(self.probabilities)} predictions; they must line up one to one"
+            )
 
 
 class DecisionEngine(ABC):
@@ -113,6 +125,31 @@ class DecisionEngine(ABC):
     @abstractmethod
     def predict(self, items: list[WorkItem]) -> Prediction:
         """Answer every item. Must return one distribution per item, in order."""
+
+    def weights(self) -> WeightSpec | None:
+        """Where this engine's weights live, or None if it has none.
+
+        Declared without loading anything, so `decis download` and `decis doctor`
+        can describe an engine whose dependencies are not installed.
+        """
+        return None
+
+    def measure(self, request: PreparedRequest) -> MeasuredTokens:
+        """Tokens this engine will actually consume, for a capacity check.
+
+        The default is a character estimate. **Engines with a real tokenizer and a
+        real sequence layout must override this**, because the estimate misses the
+        per-option overhead an engine adds (names, mask positions, separators) and
+        therefore lets a request through that the engine would silently truncate
+        (AGENTS.md §5-4).
+        """
+        heads = {question.qid: estimate_tokens(question.text()) for question in request.questions}
+        state = estimate_tokens(request.state_text)
+        return MeasuredTokens(
+            state_tokens=state,
+            head_tokens=heads,
+            sequence_tokens=state + max(heads.values(), default=0),
+        )
 
     def count_tokens(self, texts: list[str]) -> int:
         """Tokens the model will see. Override with the real tokenizer when there is one."""

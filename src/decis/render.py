@@ -62,6 +62,18 @@ def render_state(state: Any) -> str:
     return render_value(state)
 
 
+def noul_options(false_description: str = "", true_description: str = "") -> tuple[Option, ...]:
+    """The two options a `noul` always has, in the order the contract fixes.
+
+    A helper rather than two literals at each call site because it is the *type*
+    that determines these names, not the question: anything needing to build a
+    `noul` -- including a warmup pass that just needs a valid question -- goes
+    through here, so `render.py` stays the only place the wire keys `"false"` and
+    `"true"` are written (`AGENTS.md §2`).
+    """
+    return (Option("false", false_description), Option("true", true_description))
+
+
 def prepare_question(qid: str, question: Question) -> PreparedQuestion:
     """Turn one wire question into rendered options."""
     instructions = render_value(question.instructions)
@@ -73,7 +85,7 @@ def prepare_question(qid: str, question: Question) -> PreparedQuestion:
             qid=qid,
             type="noul",
             instructions=instructions,
-            options=(Option("false", no), Option("true", yes)),
+            options=noul_options(no, yes),
         )
 
     if isinstance(question, ChoiceQuestion):
@@ -97,4 +109,4 @@ def prepare_request(request: SystemOneRequest) -> PreparedRequest:
     )
 
 
-__all__ = ["prepare_question", "prepare_request", "render_state", "render_value"]
+__all__ = ["noul_options", "prepare_question", "prepare_request", "render_state", "render_value"]
