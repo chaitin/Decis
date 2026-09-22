@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,26 @@ OPENAPI_SNAPSHOT = CONTRACT_DIR / "typesafe-openapi-0.2.0.json"
 TEST_KEY = "test-token-do-not-use-in-production"
 
 
+def wait_until_ready(client: TestClient, timeout: float = 15.0) -> dict:
+    """Poll `/readyz` until the engine is loaded, and return its body.
+
+    The engine loads on a worker thread, so "the server is accepting connections"
+    and "the engine can answer" are now different instants. Anything that wants a
+    usable server has to wait for one, exactly as a client behind a load balancer
+    would; assuming otherwise is a race. `/healthz` remains the check for "is the
+    process up", and it does not wait for anything.
+    """
+    deadline = time.monotonic() + timeout
+    body: dict = {}
+    while time.monotonic() < deadline:
+        response = client.get("/readyz")
+        body = response.json()
+        if response.status_code == 200:
+            return body
+        time.sleep(0.01)
+    raise AssertionError(f"the engine was not ready within {timeout}s; last /readyz said {body!r}")
+
+
 @pytest.fixture
 def settings() -> Settings:
     """Authenticated, loopback, mock engine."""
@@ -52,13 +73,25 @@ def open_settings() -> Settings:
 @pytest.fixture
 def client(settings: Settings) -> TestClient:
     with TestClient(create_app(settings)) as test_client:
+        wait_until_ready(test_client)
         yield test_client
 
 
 @pytest.fixture
 def open_client(open_settings: Settings) -> TestClient:
     with TestClient(create_app(open_settings)) as test_client:
+        wait_until_ready(test_client)
         yield test_client
+
+
+@pytest.fixture
+def engine_ready():
+    """`engine_ready(client)` blocks until that client's engine can answer.
+
+    A fixture rather than an import: `tests/` is not a package, so tests reach
+    shared helpers through conftest.
+    """
+    return wait_until_ready
 
 
 @pytest.fixture

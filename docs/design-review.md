@@ -164,7 +164,7 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 已改为：`DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量），超时返回 **504**；**队列等待计入这个预算**；过载优先用 **429 + `retry-after-ms`**（在重试集合内且语义准确）。`design.md §6.5`。
 
-### D7（中，未修正——需要一次决策）冷启动期间服务完全不响应，且文档说的是反的
+### D7（中）冷启动期间服务完全不响应，且文档说的是反的 — 已修正（方案 B）
 
 接 Laya 之后第一次真的用真实权重起服务时实测到的：
 
@@ -197,8 +197,59 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 | A. 维持同步加载 | 加载失败立刻让进程退出，最不容易被忽略 | 冷启动窗口内无任何响应；探针必须调好，否则重启循环；"未就绪"路径在生产上是死代码 |
 | B. 后台线程加载，失败时 `/readyz` 报 `failed` 并返回非 200 | 冷启动期间 `/healthz` 200、`/readyz` 503 且能说明原因；未就绪路径在生产上可达；探针可区分"还在加载"和"崩了" | 加载失败不再让进程退出，需要靠 `/readyz` 的 `failed` + 日志告警；要改掉那个 Stage 0 测试 |
 
-倾向 B（可观测性更好，且让已写好的 503 逻辑不再是死代码），但这会改动已记录的启动语义，
-所以留待明确决定，不擅自改。
+**决定：采用方案 B。** 理由是方案 A 的"快速失败"其实并不更快——容器照样要退出、照样要重启，
+而 503 至少让已经在轮询的探针能说出原因。B 保留了 A 真正想要的东西（绝不服务答不了的流量：
+`/v1/systemone` 在 loading 和 failed 两种状态下都是 503），同时把"为什么"变成一个可观测的状态。
+
+**已实现**：引擎在 lifespan 起的后台线程里加载；`LoadPhase` 有 `idle/loading/ready/failed` 四态，
+`failed` 是终态且**不带 `retry-after`**（官方 SDK 会重试 5xx，告诉它"退避"等于让它永远 hammer 一个
+不会恢复的服务）；加载失败记录错误文本（截断到 300 字符）并写完整 traceback 到日志，进程不再退出。
+
+**实测（真实 Laya 权重，CPU，80 秒冷启动）**：
+
+```
+1. liveness and readiness DURING the cold start
+  ok  /healthz answers during the cold start  -- 0.50s after the request, 0.6s in
+  ok  /readyz answers during the cold start   -- 0.01s
+  ok  /readyz says loading, not failed        -- {'status': 'loading', ...}
+  ok  inference mid-load is 503               -- 503 in 0.0s
+2. cold start: 74.9s total
+3. the official typesafe-sdk over a real socket  -- 全部通过
+```
+
+对照修正前的同一次测量：**第一条 HTTP 响应在 79.7 秒**。现在 `/healthz` 在冷启动开始后
+0.5 秒内就答，`/readyz` 明确说 `loading`。
+
+**代价（明确接受）**：加载失败不再让进程退出，所以"容器没起来"这个信号变成了"`/readyz` 持续
+`failed`"。这需要监控 `/readyz` 或在日志上加告警；只监控进程存活的人会漏掉它。
+`test_an_engine_that_fails_to_load_stops_startup` 因此被改写为
+`test_a_failed_load_is_reported_as_failed_and_does_not_stop_the_server`。
+
+**顺带修掉的两处**：
+1. `service.answer` 现在**先检查就绪再 `measure()`**。容量校验需要已加载的 tokenizer，
+   而后台加载意味着请求真的可能落在"引擎还没好"的窗口里——原先这个顺序会从测量路径里抛 500，
+   而不是干净的 503。
+2. `load_status` 与 `ready` 归一。引擎自己才是"能不能服务"的权威，所以当引擎已加载而调度器
+   没驱动加载时（`create_app` 明确支持传入已加载的引擎），`phase` 不再是 `idle` 而是 `ready`。
+
+### D8（严重）`/v1/systemone` 是 `async def` 却调用阻塞函数，一次推理会堵死整个事件循环 — 已修正
+
+写请求预算的测试时发现的，不是设计推演出来的：`routes.py` 里 `/v1/systemone` 写成 `async def`，
+而 `service.answer` 是同步阻塞函数，于是 FastAPI 直接在**事件循环线程**上跑它。后果是
+
+- 一次推理（几百毫秒，长 state 到秒级）期间，服务器**不响应任何其他请求**；
+- `/healthz` 与 `/readyz` 也在其中，所以**探针会在推理期间挂起**，编排器可能杀掉一个完全正常的容器；
+- 并发度实际为 0，`InProcessScheduler` 的锁根本没机会起作用——序列化发生在事件循环上，而不是引擎上。
+
+这个 bug 之前测不出来，因为 `.venv` 的 mock 引擎推理是微秒级，而真实 Laya 的 300 毫秒没有被
+任何并发测试覆盖过。发现它的测试是 `test_healthz_and_readyz_answer_while_inference_is_running`：
+把一个假引擎卡在 `predict` 里，然后在推理进行中探 `/healthz`。
+
+**修正**：把路由从 `async def` 改成 `def`，Starlette 便会在它的工作线程池里执行它，事件循环空出来，
+序列化交回给调度器的锁——那本来就是它存在的理由。`/v1/models` 同样改了（它要 import 引擎类）。
+`/healthz`、`/readyz` 保持 `async def`：它们只读内存里的状态，不阻塞。
+
+这个 bug 与 D7 属于同一族——**"服务在忙时不回答探针"**——但成因和修法完全不同，所以分开记录。
 
 ---
 

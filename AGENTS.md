@@ -4,13 +4,14 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 本文件是**在这个仓库里工作的契约**。它写给 AI agent，也写给人类。规则不是建议，是约束；违反约束的改动即使"能跑"也不接受。
 
-> **当前状态**：**Stage 0 与 Stage 1 已完成**。API server 可用，且已经接了真实模型：
+> **当前状态**：**Stage 0 与 Stage 1 已完成，Stage 2 的地基已铺好**（引擎后台加载、请求预算、
+> 非阻塞路由——见 `design-review.md §2-D7/D8`）。API server 可用，且已经接了真实模型：
 > `uv sync --extra laya && uv run decis serve --engine laya-multilingual`。
 > 契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象、
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**274 个通过**，约 7 秒，不联网）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**292 个通过**，约 8 秒，不联网）；
 > `uv run pytest -m weights` 跑真实 Laya 推理的那套（14 个，需要权重，CPU 上约 110 秒）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -56,6 +57,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 | 异常 → 契约错误响应（状态码、`detail` 多态形状） | `src/decis/errors.py` | 路由里直接 `raise HTTPException` 拼 body |
 | Bearer 校验、常数时间比较、401/403 分工 | `src/decis/auth.py` | 在路由或中间件里各写一份鉴权 |
 | `x-typesafe-request-id` 生成与请求日志 | `src/decis/observability.py` | 各处在响应上手写这个 header |
+| 单请求等待预算（取锁上限、429 的退避值） | `src/decis/scheduler.py: InProcessScheduler.run` | 在路由或 `config.py` 里再判一次超时；把阻塞函数写成 `async def` 路由 |
+| 引擎加载状态（idle/loading/ready/failed 与失败原因） | `src/decis/scheduler.py: LoadStatus` | 在 CLI/路由里各写一份"就绪"判断；用 `ready` 一个布尔表示"为什么不能服务" |
 | 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
 | 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
@@ -67,7 +70,10 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 ## 3. 契约不变量（不可破坏）
 
-以下每一条都有测试守着。改坏它们等于破坏项目存在的理由。
+每一条都必须有测试守着。改坏它们等于破坏项目存在的理由。
+
+**唯一例外是第 18 条**：攒批器要到 Stage 3 才存在，所以那条现在**没有守卫**——它是写给
+将来那个实现的约束，不是对现有代码的描述。实现攒批器时必须同时把守卫补上，否则这条就是空文。
 
 1. **`score` 的 `legend` 与 `probabilities` 的键是字符串** `"0"`、`"1"`、…。不是数组，不是整数。
 2. **`noul` answer 是标量** `{"type":"noul","noul":p}`，**没有 `confidence`，没有 `probabilities`**。
@@ -86,7 +92,14 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 15. **所有响应都必须带 `x-typesafe-request-id`，错误响应也不例外**，格式 `req_` + 32 位小写十六进制。SDK 的成功响应模型在缺该头时**抛异常**。
 16. **返回 429 时必须带 `retry-after-ms`**（或 `Retry-After`）。不带会让官方 SDK 退化成指数退避，把已过载的服务打得更狠。
 17. **任何同步等待都不得让单次请求超过 10 s**。官方 SDK 的单次 HTTP 超时是 10 s 且超时会重发，服务端还在算时客户端已重发会把负载放大。队列等待计入这个预算。
+    - **实现**：`InProcessScheduler.run` 用 `DECIS_REQUEST_TIMEOUT_MS`（默认 **8000**，刻意小于 SDK 的 10 s）
+      给**取锁**设上限。超时返回 **429 + `retry-after-ms`**，不是 504——两者都在 SDK 的重试集里，
+      但 504 不带退避指令，会按 §3-16 退化成指数退避，反而打得更狠。守卫在 `tests/test_request_budget.py`。
+    - **说清楚做不到的部分**：同步 `torch` 前向一旦开始就无法中断，所以这个预算约束的是**排队等待**，
+      不是已经在算的工作。而它成立的前提是**阻塞路由不能写成 `async def`**——否则序列化发生在事件
+      循环上，锁和预算都形同虚设（`routes.py`、`design-review.md §2-D8`）。
 18. **攒批器不得按 `state` 分组**。`WorkItem` 每项自带 `state_text`，跨 state 组批是引擎的内部实现细节（`design.md §5.1`）。按 state 分组会让真实流量下的 batch 恒为 1，使批处理永不触发。
+    **（尚未实现，因此暂无守卫——见本节开头的说明。）**
 19. **未配置 `DECIS_API_KEY` 且监听非回环地址时，服务必须拒绝启动**，除非显式设置 `DECIS_ALLOW_NO_AUTH=1`。不安全的默认值会被原样部署到生产。
 20. **一个引擎实例在任一时刻只能被一个线程执行 `predict`**。不得跨线程共享引擎内部对象（tokenizer 除外）。
 
@@ -156,7 +169,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个，274 个，约 7 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个，292 个，约 8 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -165,12 +178,20 @@ uv run decis models                  # 列出已注册引擎及其在本机是�
 uv run decis doctor                  # 环境自检：依赖、配置安全性、设备
 ```
 
+服务行为相关的配置（都有默认值，`decis doctor` 会报告实际取值）：
+
+```bash
+DECIS_REQUEST_TIMEOUT_MS=8000        # 单请求取锁预算；必须小于官方 SDK 的 10 s
+DECIS_SHUTDOWN_GRACE_MS=20000        # 关闭时等在途加载的上限；要小于 terminationGracePeriodSeconds
+```
+
 真实模型：
 
 ```bash
 uv sync --extra laya
 uv run decis download --engine laya-multilingual --dest ./models   # 约 647 MiB
-uv run decis serve --engine laya-multilingual --host 127.0.0.1     # CPU 冷启动约 75 秒
+uv run decis serve --engine laya-multilingual --host 127.0.0.1     # CPU 冷启动约 75-90 秒
+#   冷启动期间 /healthz 立即可用，/readyz 报 {"status":"loading"}；加载失败则报 "failed"
 uv run pytest -m weights             # 真实推理 + 批不变性（CPU 上约 110 秒）
 ```
 
@@ -231,6 +252,9 @@ uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 - ❌ 让引擎在超预算时静默截断输入（上游这么干，Decis 不能跟着干）
 - ❌ 在 `paths.py` 之外决定权重从哪来，或让"本地有权重"输给网络请求
 - ❌ 用 `len(text) // 4` 给一个会截断的引擎做容量校验
+- ❌ 把调用阻塞函数的路径写成 `async def` 路由（会堵死事件循环，连探针一起堵）
+- ❌ 在请求路径上无限期等引擎（取锁必须有 `DECIS_REQUEST_TIMEOUT_MS` 上限）
+- ❌ 对"引擎永久加载失败"报 `retry-after`（等于让 SDK 永远重试一个不会恢复的服务）
 
 ---
 

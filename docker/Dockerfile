@@ -92,11 +92,12 @@ USER 10001:10001
 
 EXPOSE 8000
 
-# Liveness only, and the start period is load-bearing: the engine is loaded during
-# startup, before the HTTP loop begins, so for the first ~80 s (CPU, laya-multilingual)
-# this probe cannot connect at all. Measured cold start: 79.7 s. Do not lower this
-# without measuring your engine -- too short a start period turns a healthy load into a
-# restart loop. See docs/design-review.md §2-D7.
+# Liveness only -- do not point this at /readyz. The engine loads on a worker thread, so
+# /healthz answers within a second of start and a Kubernetes liveness probe with default
+# settings is safe. The start period is kept generous anyway because the *first* response
+# still waits for the process to finish importing torch, which is slow on a cold page
+# cache. Measured cold start for laya-multilingual: 75-90 s on CPU
+# (docs/design-review.md §2-D7).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=180s --retries=6 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"
 

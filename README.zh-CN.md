@@ -102,10 +102,22 @@ uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB，�
 uv run decis serve --engine laya-multilingual --host 127.0.0.1
 ```
 
-CPU 上冷启动约 **80 秒**，而且**在此之前服务不回答任何请求**——引擎在启动过程中加载，
-此时 HTTP 协议循环还没开始，所以这期间探针是挂起而不是收到 503。要放到探针后面的话，
-把启动宽限期设得足够长（本镜像的 `HEALTHCHECK` 用的是 180 秒），否则编排系统会反复重启一个
-其实在正常加载的容器。把权重打进镜像后它就能离线运行：
+CPU 上冷启动约 **80 秒**，整个过程里探针都可用：引擎在后台线程里加载，所以 `/healthz` 立刻就有响应，
+`/readyz` 会把当前状态说清楚，不用你去猜。
+
+```
+$ curl -s localhost:8000/healthz   # 启动后 0.5 秒
+{"status":"ok","version":"0.1.0"}
+$ curl -s localhost:8000/readyz    # 还在加载
+{"status":"loading","engine":"laya-multilingual"}     # 503，带 retry-after
+$ curl -s localhost:8000/readyz    # 约 80 秒后
+{"status":"ready","engine":"laya-multilingual"}
+```
+
+加载期间到达的请求会收到 `503` 和 `"The model is still loading. Please retry shortly."`；
+如果权重加载**失败**了，收到的 `503` 会明确说明失败，并且**不带** `retry-after`——对一个不会恢复的
+服务反复重试只是浪费时间。注意别把**存活探针**指向 `/readyz`，否则慢启动会变成重启循环。
+把权重打进镜像后它就能离线运行：
 
 ```bash
 docker build -f docker/Dockerfile \

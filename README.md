@@ -102,11 +102,24 @@ uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB, on
 uv run decis serve --engine laya-multilingual --host 127.0.0.1
 ```
 
-Cold start is about **80 s on CPU**, and **the server answers nothing until it finishes** — the
-engine is loaded during startup, before the HTTP protocol loop begins, so a probe during that window
-hangs rather than returning 503. If you put this behind a probe, give it a generous start period
-(the image's `HEALTHCHECK` uses 180 s) or the orchestrator will restart a container that is loading
-correctly. Weights in the image means it then runs with no network:
+Cold start is about **80 s on CPU**, and the server is usable for probes the whole time: the engine
+loads on a worker thread, so `/healthz` answers immediately and `/readyz` reports what is going on
+rather than leaving you to guess.
+
+```
+$ curl -s localhost:8000/healthz   # 0.5 s after start
+{"status":"ok","version":"0.1.0"}
+$ curl -s localhost:8000/readyz    # still loading
+{"status":"loading","engine":"laya-multilingual"}     # 503, with retry-after
+$ curl -s localhost:8000/readyz    # ~80 s later
+{"status":"ready","engine":"laya-multilingual"}
+```
+
+A request that arrives mid-load gets a `503` with `"The model is still loading. Please retry
+shortly."`, and one that arrives on an engine whose weights failed to load gets a `503` that says
+so and carries **no** `retry-after` — retrying something that will never recover only wastes your
+time. Don't point a *liveness* probe at `/readyz`, or a slow start becomes a restart loop. Weights
+in the image means it then runs with no network:
 
 ```bash
 docker build -f docker/Dockerfile \

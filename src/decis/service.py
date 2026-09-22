@@ -13,9 +13,9 @@ from .answers import build_answer, estimate_output_tokens
 from .config import Settings
 from .engines.base import EngineInfo, WorkItem
 from .engines.registry import SPECS, canonical, describe, is_foreign_default, unknown_model_error
-from .errors import InvalidRequestError
+from .errors import EngineUnavailableError, InvalidRequestError
 from .render import prepare_request
-from .scheduler import Scheduler
+from .scheduler import LoadStatus, Scheduler
 from .schema import (
     DecisExtensions,
     ModelMetadata,
@@ -47,6 +47,10 @@ class DecisionService:
     @property
     def ready(self) -> bool:
         return self._scheduler.ready
+
+    @property
+    def load_status(self) -> LoadStatus:
+        return self._scheduler.load_status
 
     @property
     def engine_id(self) -> str:
@@ -81,6 +85,14 @@ class DecisionService:
         return ModelMetadataList(models=list(listed.values()))
 
     def answer(self, request: SystemOneRequest, *, request_id: str) -> SystemOneResponse:
+        # Before anything that touches the engine, including `measure()`. The
+        # capacity check needs the loaded tokenizer, so on a cold or failed engine
+        # it would raise from inside the measurement and surface as a 500 instead of
+        # the honest 503. Only reachable because the engine now loads in the
+        # background, so requests really can arrive mid-load.
+        if not self.ready:
+            raise EngineUnavailableError(self.load_status.unavailable_message())
+
         prepared = prepare_request(request)
         info = self._scheduler.info
         loaded = canonical(info.id)

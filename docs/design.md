@@ -441,9 +441,23 @@ engine workers × N_engine   (每个进程一份权重，跑攒批循环)
 
 - 队列上限 `DECIS_MAX_QUEUE`，满则 **429 且带 `retry-after-ms`**（不是 503/529——429 在官方 SDK 的重试集合里且语义准确；不带 `Retry-After` 头会让 SDK 用指数退避砸已过载的服务）。
 - **单请求必须在 10 s 内返回**。这不是我们自己定的数字：官方 SDK 的 `DEFAULT_TIMEOUT` 是 **10.0 s / 次 HTTP 操作**，超过它 SDK 会放弃并**重发**（连接错误与超时也在默认重试集合里）。服务端还在算的时候客户端已经重发，负载会被放大成 2–3 倍。所以：
-  - `DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量），预算耗尽返回 **504**；
+  - `DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量）；
   - 队列等待时间计入这个预算，不允许"排队 30 s 然后正常处理"；
-  - 引擎侧的单次 `predict` 也要有上限，超时后该批整体失败，不能挂住工作进程。
+
+**Stage 2 修正：这个预算只能加在"进入引擎之前"。** 初版写"预算耗尽返回 504"、"单次 `predict`
+也要有上限"，实现时发现后者做不到：**同步的 `torch` 前向一旦开始就无法中断**，Python 里没有安全的
+办法把线程从一次 forward 里拉出来。能强制执行的只有**取锁**这一步，那也恰好是唯一属于 Decis 责任
+而非模型责任的部分。于是：
+
+  - `InProcessScheduler.run` 用 `acquire(timeout=DECIS_REQUEST_TIMEOUT_MS)` 取锁；
+  - 取不到就返回 **429 + `retry-after-ms`**，而**不是 504**。两者都在官方 SDK 的重试集合里，
+    但 504 不带退避指令，SDK 会退回指数退避继续砸一个已经饱和的服务（§3-16）；429 才能告诉它等多久。
+    这个请求**根本没有被启动**，所以它不消耗算力，也不会有"算完了但客户端已走"的浪费；
+  - 已经在算的工作不受预算约束——这是必须如实说明的局限，不是可以悄悄略过的细节。
+  - **前提条件**：阻塞路由**不得**写成 `async def`，否则序列化发生在事件循环上，锁和预算都形同虚设
+    （`design-review.md §2-D8` 记录了踩到的这个坑）。
+
+守卫：`tests/test_request_budget.py`。
 - 攒批窗口 `DECIS_BATCH_MAX_WAIT_MS`（默认 2–5ms，需实测）：太小失去批处理收益，太大增加尾延迟。**窗口必须有上限**，否则低流量时每个请求都会等到窗口结束才开始算——这会把 p50 延迟凭空抬高一个窗口长度。
 - **必须暴露的指标**：`queue_depth`、`batch_size_histogram`、`engine_infer_ms`、`prefix_cache_hit_ratio`、`rejected_total{reason}`。没有这些就无法调参，也无法区分"慢"是因为排队、算力还是 tokenization。
 
@@ -668,8 +682,20 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 
 ### 10.2 启动期契约
 
-- **先加载、后监听**：不能先 bind 端口再加载权重。否则编排器看到端口通了就送流量，而请求会排在加载后面直到超时。
-- 加载失败时**进程退出并返回非零码**，不要"起来了但没引擎"。一个健康的容器应该要么能服务，要么明显死掉——不要中间态。
+**Stage 2 修正：改成"先监听、后台加载"，并保留"绝不服务答不了的流量"。** 初版要求
+"先加载、后监听"＋"加载失败即退出"。实测后发现这样做的代价是**冷启动的 80 秒里服务完全不响应**，
+`/healthz` 也挂起——探针拿不到任何信号，编排器无法区分"还在加载"和"崩了"（`design-review.md §2-D7`
+有原始时间线）。
+
+现行契约：
+
+- **端口立刻可服务**，引擎在 lifespan 起的后台线程里加载。`/healthz` 立即 200。
+- `/readyz` 三态：`loading`（503 + `retry-after`）→ `ready`（200）→ `failed`（503，**不带**
+  `retry-after`，因为重试不会让它恢复）。
+- **加载失败不再让进程退出**，而是记录错误文本（截断）+ 完整 traceback 到日志，`/readyz` 持续报
+  `failed`。代价是"容器没起来"这个信号消失了，改为靠 `/readyz` 或日志告警——这一点必须让部署者知道。
+- 加载期间到达的 `/v1/systemone` 返回 503 `engine_unavailable`，消息明确是"还在加载"还是"加载失败"。
+  就绪检查排在 `measure()` **之前**，因为容量校验需要已加载的 tokenizer。
 - 启动日志必须包含：引擎 id、device、dtype、线程数、权重路径与来源（本地目录 / HF 缓存）、加载耗时、**以及命中的劣化配置告警**（如 kev+CPU+bf16）。
 
 ### 10.3 优雅下线
@@ -807,7 +833,19 @@ Decis/
 正是 Decis 为 `choice` 选的归一化熵口径。`source: laya/common.py`。对 Laya 而言
 `decis.native_confidence == confidence`；两个字段仍然分开，因为 kev 的 `noul` 口径不同。
 
-**Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — ⬜ 未开始
+**Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — 🟡 进行中
+
+**已完成的先行项**（都是接 kev 之前必须先修的地基，详见 `design-review.md §2-D7/D8`）：
+
+1. ✅ **引擎改为后台加载**（D7 方案 B）。冷启动期间 `/healthz` 立即可用、`/readyz` 报
+   `loading`/`ready`/`failed`。实测：修正前第一条 HTTP 响应在 **79.7 秒**，修正后 **0.5 秒**。
+2. ✅ **修掉阻塞路由**（D8）。`/v1/systemone` 原本是 `async def` 却调用同步推理，一次推理会堵死
+   事件循环——连 `/healthz` 一起堵。改成普通 `def` 后由 Starlette 的线程池执行，
+   序列化交回给调度器的锁。
+3. ✅ **§3-17 的请求预算真正实现**。取锁设 `DECIS_REQUEST_TIMEOUT_MS`（默认 8000）上限，
+   超时返回 429 + `retry-after-ms`；见 `docs/design.md §6.5` 与 `tests/test_request_budget.py`。
+
+**尚未开始**：vendor kev 最小子集、`rows`/`prefix` 两种模式、LoRA parity 三条路径的测试。
 vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是证伪/证实 §2 的抽象**：如果接 kev 需要改动 `answers.py` 或路由层，说明抽象错了，必须回去改。同时验证 §5.1 的 `WorkItem` 签名对 `rows` 与 `prefix` 两种模式都成立。
 
 **Stage 3 — 性能（5–7 天）** — ⬜ 未开始

@@ -98,6 +98,10 @@ class Settings:
     model_paths: dict[str, Path] = field(default_factory=dict)
     max_request_bytes: int = 2 * 1024 * 1024
     request_timeout_ms: int = 8000
+    #: How long shutdown waits for an in-flight engine load before giving up and
+    #: exiting without closing it. Keep it below the orchestrator's
+    #: `terminationGracePeriodSeconds`, or SIGKILL arrives mid-wait.
+    shutdown_grace_ms: int = 20000
     torch_threads: int | None = None
     log_level: str = "info"
     log_payloads: bool = False
@@ -152,6 +156,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         model_paths=_model_paths(),
         max_request_bytes=_int("DECIS_MAX_REQUEST_BYTES", 2 * 1024 * 1024),
         request_timeout_ms=_int("DECIS_REQUEST_TIMEOUT_MS", 8000),
+        shutdown_grace_ms=_int("DECIS_SHUTDOWN_GRACE_MS", 20000),
         torch_threads=int(torch_threads) if torch_threads else None,
         log_level=_str("DECIS_LOG_LEVEL", "info"),
         log_payloads=_bool("DECIS_LOG_PAYLOADS"),
