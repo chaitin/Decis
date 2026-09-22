@@ -646,12 +646,12 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 | 单元 | `render` 快照、`answers` 公式、`question_keys` | 否 | ✅ |
 | 契约 | [api-compatibility §8](api-compatibility.md) 的 **L0–L3b**（schema 同源、形状、语义不变量、官方 SDK、**错误契约**） | 否 | ✅ |
 | 单元（引擎） | 每个引擎用 **tiny random fixture**（随机初始化的小模型 + WordLevel tokenizer，写进 tmp 目录）跑通 `predict` 到 `ProbDist` 的形状与归一化 | 否 | ✅ |
-| **批不变性** | `batch=1/8/32` 下 `noul` 与概率向量的最大偏差 < 阈值，且 **argmax 不变**（§6.6） | 否（tiny fixture） | ✅ |
+| **批不变性** | `batch=1/8/32` 下 `noul` 与概率向量的最大偏差 < 阈值，且 **argmax 不变**（§6.6）；`tests/test_batch_invariance.py` 还带一个必然失败的负向对照 | 否（tiny fixture） | ✅ |
 | 数值 | weight-backed：与存档的参考概率比对（容差），覆盖 kev 的 merged/unmerged、prefix/full、bucket 三条 parity 路径 | 是 | 夜间 |
 | 差分 | 同一请求打真 jev 与 Decis，比对 JSON schema **与错误码/错误体形状** | 否（需 key） | 手动（改契约前必跑） |
 | 上游契约 | 断言 `laya.common.build_sequence` / `collate_items` 存在且签名未变 | 否 | ✅ |
 | 安全 | 无 key → 403、错 key → 401、认证先于校验、未配 key + 非回环地址时**拒绝启动**、超大 body → 413、CORS 默认关闭 | 否 | ✅ |
-| 性能 | `benchmarks/` 输出原始逐样本 JSON（含输入 sha256），**README 的表格由脚本生成** | 是 | 手动/发布 |
+| 性能 | `benchmarks/run.py` 输出原始逐样本 JSON（含输入 sha256 与全部维度）；`benchmarks/report.py --check` 在 CI 里断言文档表格与原始 JSON 一致 | 运行 `run.py` 时需要 | `--check` ✅ / 采集 手动 |
 
 `tiny random fixture` 的做法直接从 [laya-mlx 的 `tests/conftest.py`](https://github.com/mizoreww/laya-mlx) 学：现场造 3 层 / 64 维的小模型，测试全在 CPU 上跑，不需要下载任何权重。这是让"引擎也要有测试"在 CI 里可行的关键。
 
@@ -859,8 +859,21 @@ Decis/
 已记录在 §5.1。kev-4b/9b 未注册（超出"轻量"定位）。
 vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是证伪/证实 §2 的抽象**：如果接 kev 需要改动 `answers.py` 或路由层，说明抽象错了，必须回去改。同时验证 §5.1 的 `WorkItem` 签名对 `rows` 与 `prefix` 两种模式都成立。
 
-**Stage 3 — 性能（5–7 天）** — ⬜ 未开始
-攒批器 + 进程池 + 指标 + `benchmarks/`；产出各引擎 × 设备 × 批大小的延迟/吞吐表。用数据决定 `DECIS_BATCH_MODE` 与 `DECIS_BATCH_MAX_WAIT_MS` 的默认值。**本阶段有三个必须先做的验证**：
+**Stage 3 — 性能（5–7 天）** — 🟡 进行中
+
+已完成的部分（都不依赖攒批器）：
+
+- ✅ `tests/test_batch_invariance.py`：CI 可跑的批不变性。无权重、无依赖，靠一个真会 padding
+  的 fixture 引擎，带负向对照证明断言有效。
+- ✅ `benchmarks/run.py`：逐样本延迟 + `input_sha256` + 完整维度（引擎/设备/dtype/线程/进程/
+  批大小/state 长度/问题数）的原始 JSON。**线程数在子进程里测**，因为 torch 的线程数初始化后
+  改不了，同进程测两个会静默报错一个。
+- ✅ `benchmarks/report.py`：由原始 JSON 生成 README 与 `docs/feasibility.md` 的表格，
+  **生成前断言同组各配置处理同一个输入**（`input_sha256` + token 数），不一致拒绝生成；
+  `--check` 已进 CI。它第一次运行就抓到了 `design-review.md §2-D12`。
+- ✅ `decis bench`：`benchmarks/run.py` 的薄包装（不是第二份实现）。
+
+未做：攒批器、进程池、`/metrics`、各引擎 × 设备 × 批大小的完整表。**本阶段有三个必须先做的验证**：
 
 1. **跨请求批处理的真实收益**（§6.2）——这是整个吞吐论点的基石，仍然**完全未实测**。
    Stage 1 只证明了"引擎层能正确地把不同 state 的问题合成一次前向"（
@@ -873,6 +886,10 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
    `tests/test_laya_inference.py` 以 `1e-5` 为界——比实测宽一个量级，但比"什么都不测"紧得多，
    足以在 mask 出问题时变红。注意这只覆盖了"同一进程内、
    不同 batch 组成"，**不覆盖**多进程/多 worker 之间的一致性。
+   **已补 CI 版本**：`tests/test_batch_invariance.py` 不再依赖权重——它用一个真的会 padding
+   并按 padding 宽度累加的 fixture 引擎，在 `batch=1/8/32` 上断言偏差上界与 argmax 稳定，
+   并且带一个**负向对照**（故意忽略 mask 的引擎必须让同一个断言失败），保证这个断言不是空转。
+   实测：正确引擎在 batch=32 上偏差 1.1e-16、0 次翻转；坏引擎偏差 2.3e-02 且翻转 1 次。
 3. `DECIS_BATCH_MODE=rows|prefix|auto` 的默认值与判据。
 
 **Stage 4 — 发布工程（3–5 天）** — ⬜ 未开始

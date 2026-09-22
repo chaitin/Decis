@@ -97,6 +97,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
+# benchmarks/report.py renders the Chinese section of docs/feasibility.md, so its
+# string literals contain full-width punctuation on purpose. Emitting it is the job.
+"benchmarks/report.py" = ["RUF001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["decis"]

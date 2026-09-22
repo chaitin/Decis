@@ -126,69 +126,95 @@ items = [it for group in batch for it in group]  # 展平多组问题
 <!-- MEASUREMENTS:START -->
 ### 主机
 
-aarch64 · 24 vCPU · 33.5 GB RAM · **无 GPU** · Python 3.12.3 · torch 2.14.0+cpu · transformers 5.17.0 · laya 0.3.5
+- aarch64 · 24 vCPU · 33.5 GB RAM · **no GPU** · torch 2.14.0+cpu · laya 0.3.5
+- aarch64 · 24 vCPU · 33.5 GB RAM · **no GPU** · torch 2.14.0+cpu · transformers 5.17.0
 
-这台机器代表"最低配的 Docker CPU 容器"，也就是用户在没有 GPU 的服务器上第一次跑 Decis 会遇到的情形。
+这台机器代表“最低配的 Docker CPU 容器”，也就是用户在没有 GPU 的服务器上第一次跑 Decis 会遇到的情形。
 
-### 结果 1：Laya 单次请求延迟（p50，线程数 × 单请求问题数）
+> 本节的每个数字都由 [`benchmarks/report.py`](../benchmarks/report.py) 从
+> [`benchmarks/results/`](../benchmarks/results/) 的原始 JSON 生成，**没有手写数字**。
+> 生成前脚本会断言同一组内各配置处理的是**同一个输入**（`input_sha256` 与 token 数一致），
+> 不一致就拒绝生成。改动本节请跑 `python benchmarks/report.py --write`。
 
-`laya-multilingual`（322M，`max_len=1024`）· 加载耗时 **72.9 s** · 峰值 RSS **4.84 GB**
+### 结果 1：laya 延迟（p50）
+
+device `cpu` · dtype `float32` · cold start 76.3 s · peak RSS 2.8 GB · processes 1, within-request batching
 
 | 线程 \ 问题数 | 1 | 3 | 10 | 30 |
 |---|---:|---:|---:|---:|
-| 1 | 316 ms | 628 ms | 2254 ms | 7391 ms |
-| 4 | 299 ms | 544 ms | 1790 ms | 4449 ms |
-| 8 | 256 ms | 466 ms | 1327 ms | 3983 ms |
-| **16** | **201 ms** | 392 ms | 1115 ms | 3660 ms |
-| 24 | 231 ms | 387 ms | **987 ms** | **3426 ms** |
+| 1 | 872 ms | 1,776 ms | 5,871 ms | 13,636 ms |
+| 2 | 744 ms | 1,487 ms | 4,649 ms | 11,340 ms |
+| 4 | 615 ms | 1,219 ms | 3,999 ms | 9,425 ms |
+| 8 | 527 ms | 1,041 ms | 3,507 ms | 8,370 ms |
+| 16 | 432 ms | 918 ms | 3,082 ms | 7,042 ms |
+| 24 | 446 ms | 822 ms | 3,222 ms | 7,032 ms |
 
-换算成**每个问题**的成本，批处理的收益非常清楚：
+换算成**每个问题**的成本（同一批数据，同一配置）：
 
 | 线程 | 1 问 | 3 问 | 10 问 | 30 问 |
 |---|---:|---:|---:|---:|
-| 16 | 200.8 ms | 130.7 ms | 111.5 ms | 122.0 ms |
-| 24 | 231.4 ms | 129.1 ms | **98.7 ms** | 114.2 ms |
+| 1 | 871.6 ms | 592.2 ms | 587.1 ms | 454.5 ms |
+| 2 | 744.2 ms | 495.6 ms | 464.9 ms | 378.0 ms |
+| 4 | 615.0 ms | 406.4 ms | 399.9 ms | 314.2 ms |
+| 8 | 527.1 ms | 347.1 ms | 350.7 ms | 279.0 ms |
+| 16 | 432.3 ms | 306.1 ms | 308.2 ms | 234.8 ms |
+| 24 | 445.8 ms | 274.0 ms | 322.1 ms | 234.4 ms |
 
-`laya`（英文，421M，`max_len=512`）· 加载耗时 **76.3 s** · 峰值 RSS **2.80 GB**
+### 结果 2：laya-multilingual 延迟（p50）
+
+device `cpu` · dtype `float32` · cold start 72.9 s · peak RSS 4.84 GB · processes 1, within-request batching
 
 | 线程 \ 问题数 | 1 | 3 | 10 | 30 |
 |---|---:|---:|---:|---:|
-| 8 | 527 ms | 1041 ms | 3507 ms | 8370 ms |
-| 16 | 432 ms | 919 ms | 3082 ms | 7042 ms |
-| 24 | 446 ms | 822 ms | 3222 ms | 7032 ms |
+| 1 | 316 ms | 628 ms | 2,254 ms | 7,391 ms |
+| 2 | 354 ms | 671 ms | 2,139 ms | 5,661 ms |
+| 4 | 299 ms | 544 ms | 1,790 ms | 4,449 ms |
+| 8 | 256 ms | 466 ms | 1,327 ms | 3,983 ms |
+| 16 | 201 ms | 392 ms | 1,115 ms | 3,660 ms |
+| 24 | 231 ms | 387 ms | 987 ms | 3,426 ms |
 
-### 结果 2：kev-0.8b dtype 对照（同一台机器，同一请求）
+换算成**每个问题**的成本（同一批数据，同一配置）：
 
-请求含 3 个问题（choice 3 选项 + noul + score 3 档），state 约 20 词。
+| 线程 | 1 问 | 3 问 | 10 问 | 30 问 |
+|---|---:|---:|---:|---:|
+| 1 | 315.9 ms | 209.2 ms | 225.3 ms | 246.3 ms |
+| 2 | 354.5 ms | 223.8 ms | 213.9 ms | 188.7 ms |
+| 4 | 299.0 ms | 181.2 ms | 179.0 ms | 148.3 ms |
+| 8 | 255.7 ms | 155.2 ms | 132.7 ms | 132.8 ms |
+| 16 | 200.8 ms | 130.7 ms | 111.5 ms | 122.0 ms |
+| 24 | 231.4 ms | 129.1 ms | 98.7 ms | 114.2 ms |
 
-| dtype | 服务端 `latency_ms` | 相对倍率 | 答案差异 |
-|---|---:|---:|---|
-| **fp32** | **1656 ms** | 1× | 基准 |
-| bf16 | **137174 ms** | **83× 慢** | 概率差 ≤0.01，argmax 相同 |
+### 结果 3：kev-0.8b 延迟（p50）
 
-日志同时给出原因：
+device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 
-```
-[transformers] `chunk_gated_delta_rule` is falling back to its reference PyTorch
-implementation because `flash-linear-attention` is not installed. This is correct
-but much slower; install `flash-linear-attention` for the optimized kernel.
-[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch
-implementation because `causal_conv1d` is not installed. ...
-```
+| dtype | p50 | 相对倍率 | 每问成本 | 答案是否相同 |
+|---|---:|---:|---:|---|
+| `fp32` | 1,656 ms | 1× | 552 ms | 基准 |
+| `bf16` | 137,174 ms | 83× | 45,725 ms | argmax 相同，概率差 ≤0.01 |
 
-`flash-linear-attention` / `causal_conv1d` 都是依赖 Triton/CUDA 内核的包，**在 CPU 上装不了**。所以这不是"忘了装依赖"，而是 kev 的 Qwen3.5 基座在 CPU 上的结构性劣势。
+线程数 16（记录于原始文件），单进程，within-request batching。**每个 dtype 只有一次观测**，所以这是比值而非统计量（`benchmarks/README.md` M3）。
 
-### 结果 3：原始数据
+> ⚠️ 该文件**没有记录输入哈希**，因此无法验证两次配置处理的是同一个输入，只能比对 token 数。
 
-逐样本原始 JSON（含每次调用的完整 `samples_ms`、输入 sha256、token 数、p50/p95）已整理进仓库：
+### 原始数据
 
-- [`benchmarks/results/laya-multilingual-sweep.json`](../benchmarks/results/laya-multilingual-sweep.json)
-- [`benchmarks/results/laya-english-sweep.json`](../benchmarks/results/laya-english-sweep.json)
+逐样本原始 JSON（含每次调用的完整 `samples_ms`、`input_sha256`、token 数、p50/p95）都已 checked in：
+
 - [`benchmarks/results/kev-0.8b-cpu-dtype.json`](../benchmarks/results/kev-0.8b-cpu-dtype.json)
+- [`benchmarks/results/laya-english-sweep.json`](../benchmarks/results/laya-english-sweep.json)
+- [`benchmarks/results/laya-multilingual-sweep.json`](../benchmarks/results/laya-multilingual-sweep.json)
 
-采集方法、主机规格、复现命令与已知局限见 [`benchmarks/README.md`](../benchmarks/README.md)；采集脚本在 [`benchmarks/probe/`](../benchmarks/probe/)。
+采集方法、主机规格、复现命令与已知局限见 [`benchmarks/README.md`](../benchmarks/README.md)；
+采集脚本在 [`benchmarks/probe/`](../benchmarks/probe/) 与 [`benchmarks/run.py`](../benchmarks/run.py)。
 
-> **口径声明（更新）**：这些是**实现 Decis 之前**对**引擎本身**的单机测量，不是 Decis 服务的性能。它们满足"数字必须有 checked-in 原始数据支撑"这条纪律，但按 `benchmarks/README.md` 的说明，正式基准要在 `src/decis/` 存在后由 `decis bench` 重新采集。
+**无法验证的部分**（脚本报告的出处缺口，不是隐瞒）：
+
+- kev-0.8b-cpu-dtype.json (3 question(s)): no input hash recorded, so identical input could only be checked via token counts
+
+> **口径声明**：`laya-*-sweep.json` 是**实现 Decis 之前**对**引擎本身**的单机测量，
+> 不是 Decis 服务的性能；`kev-0.8b-cpu-dtype.json` 每个 dtype 只有**一次观测**，
+> 记录的是比值的量级而非统计量。正式基准要由 `benchmarks/run.py` 重新采集。
 
 <!-- MEASUREMENTS:END -->
 

@@ -7,7 +7,7 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**327 个无权重测试通过**——
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**354 个无权重测试通过**——
 > 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。除 `mock` 外已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
 > 现在都能回答真实请求**；另有 24 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
@@ -254,7 +254,7 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 327 个测试，约 8 秒，无权重、无网络
+uv run pytest -q                        # 354 个测试，约 9 秒，无权重、无网络
 uv run pytest -m weights                # 14 个加载真实 Laya 权重的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token

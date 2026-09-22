@@ -48,6 +48,13 @@ jobs:
         # the vendored OpenAPI snapshot are the whole fixture set.
         run: uv run pytest -q
 
+      - name: The docs' performance tables match the raw benchmark JSON
+        # AGENTS.md §8: a number in the docs that was not rendered from
+        # benchmarks/results/ fails here. This is what makes the rule executable
+        # rather than aspirational; `tests/test_benchmark_report.py` guards the
+        # checker itself, including that a hand-edited digit is detected.
+        run: uv run python benchmarks/report.py --check
+
       - name: The server starts and answers, with a real HTTP client
         run: |
           uv run python - <<'PY'

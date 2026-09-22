@@ -1,8 +1,12 @@
 """`decis` command line.
 
-`serve`, `models`, `doctor` and `download`. `bench` arrives with the Stage 3
-scheduler, because a benchmark harness that cannot exercise cross-request batching
-would measure something other than what it claims to.
+`serve`, `models`, `doctor`, `download` and `bench`.
+
+`bench` is a thin wrapper around `benchmarks/run.py` rather than a second
+implementation: the measurement code has to be the same code whose output
+`benchmarks/report.py` renders, or the numbers in the docs would come from somewhere
+other than the runner (`AGENTS.md §8`). It measures **within-request** batching only --
+cross-request batching needs the Stage 3 scheduler, and the raw JSON says so.
 """
 
 from __future__ import annotations
@@ -57,10 +61,66 @@ def _build_parser() -> argparse.ArgumentParser:
     download.add_argument("--env-file", default=None)
     download.set_defaults(handler=_download)
 
+    bench = sub.add_parser("bench", help="measure latency and write raw JSON (see AGENTS.md §8)")
+    bench.add_argument("--engine", default=None, help="engine id to measure (default: the configured one)")
+    bench.add_argument("--threads", default="", help="comma-separated torch thread counts; default: one per vCPU")
+    bench.add_argument("--batch", default="1,3,10,30", help="comma-separated questions per request")
+    bench.add_argument("--iterations", type=int, default=8, help="measured samples per configuration")
+    bench.add_argument("--warmup", type=int, default=2, help="discarded calls before measuring")
+    bench.add_argument("--out", default="", help="output path (default: benchmarks/results/<engine>-thread-sweep.json)")
+    bench.add_argument("--env-file", default=None)
+    bench.set_defaults(handler=_bench)
+
     return parser
 
 
 # --- commands ----------------------------------------------------------------
+
+
+def _bench(args: argparse.Namespace) -> int:
+    """Run the checked-in benchmark harness in this process's interpreter.
+
+    The harness lives outside the package because it is not part of the served
+    artifact. Running it as a subprocess of the same interpreter keeps its two facts
+    true: it measures the installed `decis`, and the JSON it writes is exactly what
+    `benchmarks/report.py` reads.
+    """
+    import subprocess
+    from pathlib import Path
+
+    harness = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "run.py"
+    if not harness.is_file():
+        print(
+            f"error: {harness} is missing. `decis bench` runs the checked-in harness; it is not "
+            f"available in an installed wheel. Use a source checkout.",
+            file=sys.stderr,
+        )
+        return _EXIT_CONFIG_ERROR
+
+    settings = _load(args)
+    engine = args.engine or settings.default_engine
+    command = [
+        sys.executable,
+        str(harness),
+        "--engine",
+        engine,
+        "--batch",
+        args.batch,
+        "--iterations",
+        str(args.iterations),
+        "--warmup",
+        str(args.warmup),
+    ]
+    if args.threads:
+        command += ["--threads", args.threads]
+    if args.out:
+        command += ["--out", args.out]
+
+    print(f"measuring {engine} (this loads the model and may take minutes)...", file=sys.stderr)
+    completed = subprocess.run(command, check=False)
+    if completed.returncode != 0:
+        return completed.returncode
+    return 0
 
 
 def _serve(args: argparse.Namespace) -> int:

@@ -11,13 +11,13 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**327 个通过**，约 8 秒，不联网）；
-> `uv run pytest -m weights` 跑真实权重的那套（**24 个**：14 个 Laya + 10 个 kev，CPU 上约 113 秒）。
+> **测试**：`uv run pytest -q` 跑无权重的那套（**354 个通过**，约 9 秒，不联网）；
+> `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
 > **已注册引擎**：`mock`（无权重）、`laya`、`laya-multilingual`、`laya-typed-decisions`、
 > `kev-0.8b`（kev 的适配器 + Qwen3.5-0.8B 基座，见 `paths.BaseModel`）。
-> **未实现**：跨请求**攒批调度器**与 `decis bench`（Stage 3）、kev 的 prefix 缓存路径、
+> **未实现**：跨请求**攒批调度器**、进程池与 `/metrics`（Stage 3）、kev 的 prefix 缓存路径、
 > 多架构镜像矩阵（Stage 4）。
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 
@@ -177,7 +177,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个，327 个，约 8 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个，354 个，约 9 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -223,11 +223,22 @@ docker build -f docker/Dockerfile \
   -t decis:laya-multilingual .
 ```
 
+性能数据（`AGENTS.md §8` 的落地）：
+
+```bash
+uv run decis bench --engine laya-multilingual --batch 1,3,10,30   # 采集，写 benchmarks/results/
+uv run python benchmarks/report.py --write   # 由原始 JSON 生成 README 与 docs 里的表
+uv run python benchmarks/report.py --check   # CI 跑这个：手改过的数字会让它变红
+```
+
+`--check` 已在 CI 里。生成器在渲染前会断言同一组内各配置处理的是**同一个输入**
+（`input_sha256` + token 数），不一致就拒绝生成。它第一次运行就抓到了 §2-D12
+（README 曾把两个线程数的数字混进同一行）。没有 checked-in 原始 JSON 支撑的数字不许进文档。
+
 尚未实现（见 `docs/design.md §12`）：
 
 ```bash
-uv run decis bench --engine ... --batch 1,8,32
-uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
+uv run decis bench --cross-request   # 需要 Stage 3 的攒批器，目前只能测请求内批处理
 ```
 
 **两套测试各自都会漏东西，声称"测试通过"之前必须在两个环境里都跑过。**
@@ -275,6 +286,10 @@ uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 - ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会静默降质）
 - ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
 - ❌ 用"上游截断后的输出"反推 `measure()` 的数字（会得到永远等于上限的假测量）
+- ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` 标记块里的数字
+  （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）
+- ❌ 手改 `benchmarks/RESULTS.md`（它是生成物）
+- ❌ 让一行性能表的不同列取自不同配置（`design-review.md §2-D12`：线程数混用曾真实发生过）
 
 ---
 
