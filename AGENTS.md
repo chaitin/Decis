@@ -27,6 +27,10 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 GHCR，
 > 多架构（amd64 + arm64 原生 runner，不用 QEMU），带 SBOM 与 provenance；
 > PR 只构建 amd64 的 `mock` 以验证 Dockerfile。矩阵生成逻辑由 `tests/test_docker_workflow.py` 直接执行验证。
+> **已跑通一次**（2026-09-22，commit `17a084e`，
+> [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)：6 个构建腿 + 3 个 merge 全绿）。
+> **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、镜像体积、容器内冷启动、GHCR 包可见性。
+> 报镜像相关的结论时不要超出这个范围。
 
 ---
 

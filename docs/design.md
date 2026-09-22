@@ -937,8 +937,11 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   合并成多架构 manifest，push 时带 SBOM 与 provenance；PR 只构建 amd64 的 `mock` 验证 Dockerfile。
   矩阵生成逻辑是纯 bash，因此可以**离线执行测试**：`tests/test_docker_workflow.py` 把 `plan` 步骤的脚本
   从 YAML 里抠出来，按每种触发事件真跑一遍。
-- ⬜ `docker-compose.yml`；Docker Hub（目前只有 GHCR）；在真实 runner 上跑通一次并记录镜像体积与容器内冷启动；
-  README 定稿；首个 release。
+- ✅ **在真实 runner 上跑通一次**：2026-09-22 push 到 master 触发
+  [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)，6 个构建腿 + 3 个 merge 全绿，
+  `ghcr.io/kingfs/decis-{mock,laya-multilingual,kev-0.8b}:latest` 已是多架构 manifest。
+- ⬜ 记录镜像体积与容器内冷启动；验证 `-offline` 变体（需要推一个 `v*` tag 或手动 dispatch）；
+  核实 GHCR 包可见性；`docker-compose.yml`；Docker Hub（目前只有 GHCR）；README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
@@ -969,7 +972,14 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | CPU 上的延迟 | 有原始数据，但 Laya 那两份是**实现 Decis 之前对引擎本身**的测量，不是服务端到端；kev 每个 dtype 只有一次观测 |
 | kev 在 CPU 上可用 | 可用但比 Laya 慢一个数量级；bf16 再慢 83 倍（单次观测） |
 | `decis bench` 采集 | 已能用，但目前只能测**请求内**批处理；跨请求那部分由 `benchmarks/batch_gain.py` 单独测 |
-| 镜像大小与冷启动 | 有 `docker/Dockerfile` 与 CI 构建，但**没有实测记录**（镜像体积、容器内冷启动、arm64 上的可行性） |
+| 镜像可在两个架构上构建并推送 | **实测一次**：2026-09-22，commit `17a084e`，push 到 master 触发
+  [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)。6 个构建腿全部成功
+  （`mock` / `laya-multilingual` / `kev-0.8b` × amd64 / arm64，单腿 7m51s–15m52s），3 个 merge 任务成功，
+  合成多架构 manifest，例如 `ghcr.io/kingfs/decis-laya-multilingual:latest@sha256:e6651499f7ba355155af16f5d52cdc1393f44afc08c0981b48d9c2d046f0d6f5`
+  （amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了"能构建、能推送、能合并"** |
+| 镜像体积与容器内冷启动 | **仍未测**。上面那次运行没有记录体积，也没有在容器里起过服务量冷启动 |
+| `-offline` 变体（烘焙权重）与 release 路径 | **仍未验证**。那次是分支推送，只构建了非 offline 变体；`v*` tag 从未推过，所以 tag 触发的那条分支只在 `tests/test_docker_workflow.py` 里被模拟过 |
+| GHCR 包的可见性 | 未核实。GHCR 新建包默认私有，若为私有则 README 里的 `docker pull` 需要一个有权限的 token |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 
