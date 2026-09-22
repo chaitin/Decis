@@ -6,7 +6,13 @@
 
 Decis is a small, self-hostable server that speaks [TypeSafe's System One API](https://docs.typesafe.ai/api) — the same `/v1/systemone` contract as Jev — and answers those requests with an open decision model of your choosing. Point the official `typesafe-sdk` at Decis instead of `api.typesafe.ai` and nothing else changes.
 
-> **Status: the API server works and Laya runs behind it.** `Stage 0` and `Stage 1` are done. The wire contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the Dockerfile and CI are implemented, with **274 tests passing** without weights — including the official `typesafe-sdk` 0.7.1 driven over a real socket. Three real Laya checkpoints are registered alongside `mock`, and **`decis serve --engine laya-multilingual` answers real requests today**; 14 further tests load the real weights and check batch invariance. kev lands in Stage 2 (`docs/design.md §12`).
+> **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
+> contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
+> Dockerfile and CI are implemented, with **327 tests passing** without weights — including the official
+> `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered alongside `mock`,
+> and both **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
+> real requests today; 24 further tests load the real weights. Adding kev required **no change to
+> `render.py`, `answers.py` or the routes** — that is what Stage 2 was for (`docs/design-review.md §2`).
 >
 > The contract in [`docs/api-compatibility.md`](docs/api-compatibility.md) rests on the [official OpenAPI snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API actually returns](docs/contract/observations-2026-09-22.md) — not on inference. [`docs/design-review.md`](docs/design-review.md) is an adversarial audit of the design, including what is still unproven.
 
@@ -135,6 +141,11 @@ everything else, including the network:
 DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage uv run decis serve
 ```
 
+One caveat for kev: that directory is the **adapter** (the LoRA plus the pointer head), which is what
+you fine-tune. The Qwen3.5 **base** is referenced by its checkpoint metadata as a Hub repo id, so a
+separately mounted copy of the base is not picked up — `decis download` puts the base in the Hugging
+Face cache, and everything works offline from there. See `docs/design-review.md §2-D11`.
+
 ## The problem
 
 Jev proved that a *decision model* — a model that answers typed questions about a state and returns calibrated probabilities instead of generated text — belongs in your request path, not in a chat window. But it is a hosted, closed API:
@@ -163,8 +174,8 @@ Decis is that uniform way: one stable API, many engines, packaged as one contain
 | `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **shipped** | 100+ languages, ~2.2× faster — the intended default |
 | `laya` | ModernBERT-large | 421M | 807 MiB | **shipped** | English, strongest on English benchmarks |
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | **shipped** | The typed-decisions checkpoint from the same repo |
-| `kev-0.8b` | Qwen3.5-0.8B + LoRA | 0.8B | ~1.7 GB | Stage 2 | Different architecture, different error profile |
-| `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | Stage 2 | Higher accuracy, no longer "light-weight" |
+| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | available | Different architecture (prefill-only, no text generation), different error profile |
+| `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | not registered | Higher accuracy, no longer "light-weight" |
 | `remote` | — | — | — | planned | Forwards to the real `api.typesafe.ai`; A/B and test oracle |
 
 Adding an engine is one module plus one registry line, and **no change to the normalisation layer** —

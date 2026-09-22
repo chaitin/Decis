@@ -226,9 +226,14 @@ def test_models_prints_the_command_that_fixes_each_gap(cli) -> None:
     """The point of the remedy column: the user should not have to guess.
 
     Asserted against the state that *this* machine is in, because both states are
-    legitimate: a bare checkout lacks the `laya` module, and a `uv sync --extra laya`
-    checkout has the module but not the weights. An earlier version hardcoded the
-    first and failed on the second.
+    legitimate: a bare checkout lacks the engine modules, and a `uv sync --extra <engine>`
+    checkout has them but not the weights. An earlier version hardcoded the first and
+    failed on the second.
+
+    The expected extra comes from the registry rather than from a literal. It used to
+    say `laya` for every engine, which passed only while `laya` was the sole engine with
+    dependencies -- adding kev made the test report the *test's* staleness as a product
+    bug.
     """
     from decis.engines.registry import status as engine_status
 
@@ -239,7 +244,8 @@ def test_models_prints_the_command_that_fixes_each_gap(cli) -> None:
             continue
         line = next(part for part in output.splitlines() if part.startswith(f" *{engine_id}"))
         if state.summary == "deps missing":
-            assert "uv sync --extra laya" in line, line
+            extra = SPECS[engine_id].extra or "all"
+            assert f"uv sync --extra {extra}" in line, line
         elif state.summary == "needs weights":
             assert f"decis download --engine {engine_id}" in line, line
 

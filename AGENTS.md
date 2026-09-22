@@ -4,19 +4,21 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 本文件是**在这个仓库里工作的契约**。它写给 AI agent，也写给人类。规则不是建议，是约束；违反约束的改动即使"能跑"也不接受。
 
-> **当前状态**：**Stage 0 与 Stage 1 已完成，Stage 2 的地基已铺好**（引擎后台加载、请求预算、
-> 非阻塞路由——见 `design-review.md §2-D7/D8`）。API server 可用，且已经接了真实模型：
-> `uv sync --extra laya && uv run decis serve --engine laya-multilingual`。
+> **当前状态**：**Stage 0–2 已完成**。两个真实模型家族都跑在同一个契约后面：
+> `uv sync --extra laya && uv run decis serve --engine laya-multilingual`，
+> `uv sync --extra kev && uv run decis serve --engine kev-0.8b`。
 > 契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象、
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**292 个通过**，约 8 秒，不联网）；
-> `uv run pytest -m weights` 跑真实 Laya 推理的那套（14 个，需要权重，CPU 上约 110 秒）。
+> **测试**：`uv run pytest -q` 跑无权重的那套（**327 个通过**，约 8 秒，不联网）；
+> `uv run pytest -m weights` 跑真实权重的那套（**24 个**：14 个 Laya + 10 个 kev，CPU 上约 113 秒）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
-> **已注册引擎**：`mock`（无权重）、`laya`、`laya-multilingual`、`laya-typed-decisions`。
-> **未实现**：kev（Stage 2）、跨请求攒批调度器与 `decis bench`（Stage 3）、多架构镜像矩阵（Stage 4）。
+> **已注册引擎**：`mock`（无权重）、`laya`、`laya-multilingual`、`laya-typed-decisions`、
+> `kev-0.8b`（kev 的适配器 + Qwen3.5-0.8B 基座，见 `paths.BaseModel`）。
+> **未实现**：跨请求**攒批调度器**与 `decis bench`（Stage 3）、kev 的 prefix 缓存路径、
+> 多架构镜像矩阵（Stage 4）。
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 
 ---
@@ -60,6 +62,9 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 | 单请求等待预算（取锁上限、429 的退避值） | `src/decis/scheduler.py: InProcessScheduler.run` | 在路由或 `config.py` 里再判一次超时；把阻塞函数写成 `async def` 路由 |
 | 引擎加载状态（idle/loading/ready/failed 与失败原因） | `src/decis/scheduler.py: LoadStatus` | 在 CLI/路由里各写一份"就绪"判断；用 `ready` 一个布尔表示"为什么不能服务" |
 | 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
+| 「一个 checkpoint 需要哪些仓库」（适配器 + 它适配的基座） | `src/decis/paths.py: BaseModel` / `WeightSpec.bases` | 引擎自己下载基座；把基座写成引擎里第二个硬编码 repo id |
+| `(引擎, 设备) → dtype`、以及"能跑但已知很糟"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
+| 「某个 primitive 的选项在提示里长什么样」 | 各引擎自己的 record 构造 | 让 `render.py` 决定——kev 的 noul 是 `no`/`yes`、score 是裸层级文本，与 Decis 的 `Option.name` 不同（`design-review.md §2-D9`） |
 | 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
 | 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
@@ -139,8 +144,11 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 1. 在 `src/decis/engines/<name>.py` 实现 `DecisionEngine`：`info()` / `load()` / `predict()` / `close()`。
 2. 在 `registry.py` 注册：id → `"module:ClassName"`（**字符串路径，惰性 import**）+ 可选依赖 extra 名。
 3. 在 `pyproject.toml` 加 extra：`<name> = [...]`。**引擎的重依赖只能出现在 extra 里**，不能进 `[project.dependencies]`。
-4. 实现 `weights()`（声明权重来源、pin 的 commit、体积）与 `measure()`。`EngineInfo` 必须诚实声明 `max_options`、`max_sequence_tokens`、`max_question_tokens`、`primitives`、`device`、`dtype`。
+4. 实现 `weights()`（声明权重来源、pin 的 commit、体积）与 `measure()`。`EngineInfo` 必须诚实声明 `max_options`、`max_sequence_tokens`、`max_question_tokens`、`max_state_tokens`、`primitives`、`device`、`dtype`。
    - **`max_sequence_tokens` 是"state + 一个问题"的总预算**，不是 state 单独的预算。state 与 head 共享同一条序列，分开检查会让两边都合规、合起来超长的请求被静默截断（`design.md §4.1`）。
+   - **若引擎额外限制 state 本身**（kev：state ≤ 384 而 state+问题 ≤ 1024），必须填 `max_state_tokens`。不填就意味着"序列上限已经覆盖了"，而 kev 那种情况不填会让超长 state 通过校验后被静默截断（`design-review.md §2-D10`）。
+   - **`max_question_tokens` 要填最宽松的可靠上界**，不要用"最坏情况"（如 `max_sequence - max_state`）：那会拒掉引擎其实处理得了的请求。真正生效的比较是序列那一条。
+   - **`measure()` 必须报真实长度，不能从上游"截断后"的输出反推**：`encode` 会把 state 截到上限，反推出来的数字永远等于上限，上限检查就成了永不触发的摆设（D10 实际踩到过）。
    - **`measure()` 必须用真实 tokenizer 和真实的序列布局测量，不能退回 `len(text)//4`。** 如果上游会截断，就把它的不截断条件压成一个可验证的表达式（Laya 的做法：`budgeted_head`），并用上游函数本身断言这个表达式正确。
 5. 加**两套**测试：
    - 快速套（无权重，CI 必跑）：`tests/test_engines_laya.py` 的做法——假 tokenizer + stub 掉上游渲染，覆盖 `measure` 的算术与 `_internal` 的形状；
@@ -169,7 +177,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个，292 个，约 8 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个，327 个，约 8 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -183,7 +191,12 @@ uv run decis doctor                  # 环境自检：依赖、配置安全性�
 ```bash
 DECIS_REQUEST_TIMEOUT_MS=8000        # 单请求取锁预算；必须小于官方 SDK 的 10 s
 DECIS_SHUTDOWN_GRACE_MS=20000        # 关闭时等在途加载的上限；要小于 terminationGracePeriodSeconds
+DECIS_DEVICE=cpu                     # 强制设备；不设则自动选。也会影响 dtype 的选择
+DECIS_DTYPE=bf16                     # 强制精度；不设则查 registry.DTYPE_DEFAULTS。
+                                     #   已知很糟的组合（kev CPU 上 bf16）只告警不拒绝
 ```
+`DECIS_DTYPE` 只对**查 `DTYPE_DEFAULTS` 的引擎**生效（目前是 kev）；Laya 由它自己的
+`Agent` 决定精度，不受这个变量影响。
 
 真实模型：
 
@@ -192,7 +205,11 @@ uv sync --extra laya
 uv run decis download --engine laya-multilingual --dest ./models   # 约 647 MiB
 uv run decis serve --engine laya-multilingual --host 127.0.0.1     # CPU 冷启动约 75-90 秒
 #   冷启动期间 /healthz 立即可用，/readyz 报 {"status":"loading"}；加载失败则报 "failed"
-uv run pytest -m weights             # 真实推理 + 批不变性（CPU 上约 110 秒）
+uv run pytest -m weights             # 真实推理 + 批不变性（CPU 上约 113 秒）
+
+uv sync --extra kev
+uv run decis download --engine kev-0.8b   # adapter 43 MiB + 基座 1.65 GiB
+uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45 秒
 ```
 
 镜像：
@@ -255,6 +272,9 @@ uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 - ❌ 把调用阻塞函数的路径写成 `async def` 路由（会堵死事件循环，连探针一起堵）
 - ❌ 在请求路径上无限期等引擎（取锁必须有 `DECIS_REQUEST_TIMEOUT_MS` 上限）
 - ❌ 对"引擎永久加载失败"报 `retry-after`（等于让 SDK 永远重试一个不会恢复的服务）
+- ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会静默降质）
+- ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
+- ❌ 用"上游截断后的输出"反推 `measure()` 的数字（会得到永远等于上限的假测量）
 
 ---
 
@@ -262,7 +282,9 @@ uv run python benchmarks/report.py   # 由原始 JSON 生成文档里的表
 
 - Decis 自身：Apache-2.0。
 - **Laya**：通过 PyPI `laya` 依赖使用（Apache-2.0），不复制其源码。若将来需要 vendor，必须在 `NOTICE` 里保留 Convai Innovations / NandhaKishorM 的署名。
-- **kev**：计划 vendor 最小子集（Apache-2.0）。**必须在 `NOTICE` 记录**：来源 `https://github.com/jaredpalmer/kev`、pin 的 commit、被 vendor 的文件清单、许可证全文位置。
+- **kev**：已 vendor 最小子集（Apache-2.0），来源 `https://github.com/jaredpalmer/kev`，pin commit
+  `90990a5`，文件清单、sha256 与取舍见 `src/decis/engines/_kev_vendor/VENDOR.md`，`NOTICE` 已记录。
+  逐字节复制，**不得修改**；`tests/test_kev_vendor.py` 守卫其 sha256。
 - **laya-mlx**：仅作为工程做法参考（测试 fixture、基准方法论），**不复制代码**。若复制，其 `NOTICE` 要求保留对 Convai Innovations 的署名。
 - 新增任何第三方代码前，先在 `NOTICE` 加条目。
 

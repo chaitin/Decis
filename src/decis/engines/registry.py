@@ -49,6 +49,37 @@ def is_foreign_default(name: str) -> bool:
     return candidate in FOREIGN_DEFAULT_MODELS
 
 
+#: `(engine_id, device) -> dtype`. A dtype default cannot be global, because the same
+#: weights behave completely differently per engine and device: kev-0.8b on CPU in bf16
+#: measured **~83x slower** than fp32 (137 s vs 1.66 s per request) because Qwen3.5's
+#: Gated DeltaNet falls back to a reference implementation that is pathological in bf16
+#: on CPU (docs/feasibility.md §4). Engines absent from this table decide for themselves
+#: -- Laya's own `Agent` forces fp32 on cpu/mps, and duplicating that here would give the
+#: same fact two homes.
+DTYPE_DEFAULTS: dict[tuple[str, str], str] = {
+    ("kev-0.8b", "cpu"): "fp32",
+    ("kev-0.8b", "cuda"): "bf16",
+    ("kev-0.8b", "mps"): "fp32",
+}
+
+#: Combinations that work but are known to be bad, with the reason. A user who forces
+#: one gets a loud warning at load time instead of a service that is silently 83x slow.
+DEGRADED: dict[tuple[str, str, str], str] = {
+    ("kev-0.8b", "cpu", "bf16"): "kev bf16 on CPU is ~83x slower than fp32 (measured); use fp32",
+}
+
+
+def default_dtype(engine_id: str, device: str) -> str:
+    """The dtype to load `engine_id` with on `device`, absent an explicit override."""
+    return DTYPE_DEFAULTS.get((engine_id, device), "fp16" if device == "cuda" else "fp32")
+
+
+def degraded_reason(engine_id: str, device: str, dtype: str) -> str | None:
+    """Why this combination is a bad idea, or None. Purely declarative, so the engine
+    does not have to know which of its knobs are known-bad."""
+    return DEGRADED.get((engine_id, device, dtype))
+
+
 SPECS: dict[str, EngineSpec] = {
     "mock": EngineSpec(
         id="mock",
@@ -71,6 +102,14 @@ SPECS: dict[str, EngineSpec] = {
         target="decis.engines.laya:LayaEngine",
         extra="laya",
         aliases=("decis-laya", "laya-english"),
+    ),
+    # kev is an adapter over a published base model: `decis download` fetches both, and
+    # the base is declared on the WeightSpec so it cannot go missing (paths.BaseModel).
+    "kev-0.8b": EngineSpec(
+        id="kev-0.8b",
+        target="decis.engines.kev:KevEngine",
+        extra="kev",
+        aliases=("kev", "decis-kev", "kev-latest"),
     ),
     "laya-typed-decisions": EngineSpec(
         id="laya-typed-decisions",

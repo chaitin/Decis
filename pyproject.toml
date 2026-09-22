@@ -36,7 +36,13 @@ dependencies = [
 # compatibility claim we cannot back; the combination that *is* tested is recorded in
 # docs/design.md §7.2.
 laya = ["laya>=0.3.5,<0.4"]
-kev = ["torch>=2.4", "transformers>=4.44", "peft>=0.13", "accelerate>=1.0", "safetensors>=0.4"]
+# The floors are what the vendored copy actually needs, not a guess: it calls
+# `AutoModelForCausalLM.from_pretrained(..., dtype=...)` and
+# `DynamicCache(config=...)` (transformers 5) and `PeftModel.from_pretrained(...,
+# torch_device=...)` (peft 0.13+). The combination that is *tested* is recorded in
+# docs/design.md §7.2 -- a floor is a compatibility claim, and 4.44 was one we could
+# not back.
+kev = ["torch>=2.6", "transformers>=5.0", "peft>=0.18", "accelerate>=1.0", "safetensors>=0.4", "huggingface_hub>=0.30"]
 remote = ["httpx>=0.27"]
 metrics = ["prometheus-client>=0.20"]
 dev = [

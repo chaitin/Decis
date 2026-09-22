@@ -190,6 +190,8 @@ class EngineCapacity(Protocol):
     max_options: int
     max_sequence_tokens: int
     max_question_tokens: int
+    #: `0`/absent means the sequence limit is the only one; see `EngineInfo`.
+    max_state_tokens: int
 
 
 def validate_capacity(
@@ -219,6 +221,23 @@ def validate_capacity(
     Returns the measurement, so the caller can log it without measuring twice.
     """
     measured = measure(prepared)
+
+    # Some engines cap the state separately from the sequence. kev is the case that
+    # forced this: it allows 384 state tokens and 1024 state+question, so a 500-token
+    # state with a 10-token question measures 510, passes the sequence check below, and
+    # is then truncated by `encode` without a word. Laya needs no such cap -- it gives
+    # the state whatever a question leaves -- so `0` means "no separate limit" and
+    # behaviour there is unchanged. Read defensively so duck-typed capacities in tests
+    # keep working.
+    max_state = getattr(capacity, "max_state_tokens", 0)
+    if max_state and measured.state_tokens > max_state:
+        raise InvalidRequestError(
+            f"`state` is about {measured.state_tokens} tokens, over this model's limit of "
+            f"{max_state} for the content alone. Split the content, or summarise it first.",
+            loc=["body", "state"],
+            type="too_long",
+        )
+
     if measured.sequence_tokens > capacity.max_sequence_tokens:
         raise InvalidRequestError(
             f"`state` plus the longest question is about {measured.sequence_tokens} tokens (state "

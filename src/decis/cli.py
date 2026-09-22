@@ -203,7 +203,7 @@ def _download(args: argparse.Namespace) -> int:
     existing = resolve(spec, configured)
     if existing.is_local:
         print(f"{engine_id}: already present at {existing.path} ({describe_local(existing.path)})")
-        return 0
+        return _download_bases(spec)
 
     if not has_module("huggingface_hub"):
         print(
@@ -238,6 +238,40 @@ def _download(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"{engine_id}: ready at {resolved.path} ({describe_local(resolved.path)})")
+    return _download_bases(spec)
+
+
+def _download_bases(spec: object) -> int:
+    """Fetch the base models a checkpoint adapts, into the Hub cache.
+
+    kev's adapter is useless on its own (see `paths.BaseModel`), so a `download` that
+    fetched only the adapter would report success and leave `serve` unable to load.
+
+    The base goes to the **Hub cache**, not to `DECIS_MODEL_DIR`: it is a stock
+    transformers model, and the vendored `Checkpoint.load` resolves it by repository id
+    and revision. Downloading it with `local_dir` would put it somewhere the loader
+    never looks, and the load would silently re-fetch it.
+    """
+    from .paths import download_arguments, human_bytes
+
+    bases = spec.base_specs()  # type: ignore[attr-defined]
+    if not bases:
+        return 0
+    if not has_module("huggingface_hub"):
+        print(
+            "error: `huggingface_hub` is not installed, so this checkpoint's base model cannot be fetched.",
+            file=sys.stderr,
+        )
+        return _EXIT_CONFIG_ERROR
+
+    from huggingface_hub import snapshot_download
+
+    for base in bases:
+        size = f" ({human_bytes(base.expected_bytes)})" if base.expected_bytes else ""
+        print(f"{spec.engine_id}: base model {base.repo_id}{size} ...")  # type: ignore[attr-defined]
+        # No `local_dir`: an already-cached base is a no-op, and a pinned revision
+        # means this is reproducible rather than whatever `main` points at today.
+        snapshot_download(**download_arguments(base))  # type: ignore[arg-type]
     return 0
 
 

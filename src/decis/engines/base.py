@@ -41,6 +41,12 @@ class EngineInfo:
     dtype: str
     description: str
     release_date: str
+    #: Longest `state` alone, when the engine caps it separately from the sequence.
+    #: `0` means "no separate limit" -- the sequence limit already covers it, which is
+    #: true for an engine that gives the state whatever room a question leaves (Laya).
+    #: kev caps the state at 384 tokens *and* state+question at 1024, so a sequence
+    #: limit alone would let a 500-token state through and then truncate it silently.
+    max_state_tokens: int = 0
     aliases: tuple[str, ...] = field(default=())
 
     @property
@@ -58,6 +64,7 @@ class EngineInfo:
             "max_options": self.max_options,
             "max_sequence_tokens": self.max_sequence_tokens,
             "max_question_tokens": self.max_question_tokens,
+            "max_state_tokens": self.max_state_tokens,
             "languages": self.languages,
             "device": self.device,
             "dtype": self.dtype,

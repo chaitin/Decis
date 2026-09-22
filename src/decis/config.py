@@ -103,6 +103,14 @@ class Settings:
     #: `terminationGracePeriodSeconds`, or SIGKILL arrives mid-wait.
     shutdown_grace_ms: int = 20000
     torch_threads: int | None = None
+    #: `cuda`, `mps` or `cpu`. Unset means "pick the best available", which is what an
+    #: operator almost always wants; setting it lets a GPU host run a CPU-only
+    #: comparison without a code change.
+    device: str | None = None
+    #: Force fp32/fp16/bf16 for the served engine. Unset picks per (engine, device) from
+    #: `registry.DTYPE_DEFAULTS`. Mainly for re-measuring a dtype on your own hardware --
+    #: the defaults exist because some combinations are far worse than others.
+    dtype: str | None = None
     log_level: str = "info"
     log_payloads: bool = False
     env_file: str = DEFAULT_ENV_FILE
@@ -158,6 +166,8 @@ def load_settings(env_file: str | None = None) -> Settings:
         request_timeout_ms=_int("DECIS_REQUEST_TIMEOUT_MS", 8000),
         shutdown_grace_ms=_int("DECIS_SHUTDOWN_GRACE_MS", 20000),
         torch_threads=int(torch_threads) if torch_threads else None,
+        device=_str("DECIS_DEVICE") or None,
+        dtype=_str("DECIS_DTYPE") or None,
         log_level=_str("DECIS_LOG_LEVEL", "info"),
         log_payloads=_bool("DECIS_LOG_PAYLOADS"),
         env_file=path,

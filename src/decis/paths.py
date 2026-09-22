@@ -31,6 +31,32 @@ _CHECKPOINT_FILES = ("rl_agent_config.json", "model.safetensors", "tokenizer/*",
 
 
 @dataclass(frozen=True)
+class BaseModel:
+    """A published model a checkpoint *adapts*, without which it cannot run.
+
+    kev's checkpoints are LoRA adapters over a Qwen base: the adapter repository
+    holds `adapter_model.safetensors` and a pointer head, and not a single one of
+    the tensors that actually compute anything. A `WeightSpec` that named only the
+    adapter would let `decis download` report success and leave a checkpoint that
+    cannot produce a number, which is the failure this exists to prevent.
+
+    `checkpoint_files` is per-base rather than shared because a base is a normal
+    transformers model -- config, weights, tokenizer -- not a Decis checkpoint.
+    """
+
+    repo_id: str
+    revision: str | None = None
+    marker: str = "config.json"
+    expected_bytes: int | None = None
+    checkpoint_files: tuple[str, ...] = ("*.json", "*.safetensors", "tokenizer*", "*.txt", "*.jinja")
+
+    @property
+    def directory_name(self) -> str:
+        """The directory name a local mount would use, matching the Hub's own."""
+        return self.repo_id.rsplit("/", 1)[-1]
+
+
+@dataclass(frozen=True)
 class WeightSpec:
     """What an engine needs to load, declared before anything is downloaded.
 
@@ -61,9 +87,37 @@ class WeightSpec:
     #: without them (that is the point of the lazy imports in AGENTS.md §6), so
     #: without this the registry cannot distinguish "registered" from "runnable".
     requires: tuple[str, ...] = ()
+    #: Files that make up this checkpoint, relative to `subfolder`. Per-spec because
+    #: a Laya checkpoint and a kev adapter are made of different files.
+    checkpoint_files: tuple[str, ...] = _CHECKPOINT_FILES
+    #: Models this checkpoint adapts. Declared so `decis download` fetches them and
+    #: `decis doctor` reports on them; see `BaseModel`.
+    bases: tuple[BaseModel, ...] = ()
 
     def directory_name(self) -> str:
         return self.local_dir_name or self.engine_id
+
+    def base_specs(self) -> tuple[WeightSpec, ...]:
+        """This spec's bases, as specs, so one set of resolution rules covers them.
+
+        Derived rather than declared separately so a base cannot drift out of sync
+        with the checkpoint that names it. `engine_id` is namespaced because a base
+        is not independently servable and must not appear in `GET /v1/models` as one.
+        """
+        return tuple(
+            WeightSpec(
+                engine_id=f"{self.engine_id}->{base.repo_id}",
+                repo_id=base.repo_id,
+                revision=base.revision,
+                marker=base.marker,
+                local_dir_name=base.directory_name,
+                expected_bytes=base.expected_bytes,
+                license_name=self.license_name,
+                license_url=self.license_url,
+                checkpoint_files=base.checkpoint_files,
+            )
+            for base in self.bases
+        )
 
     def is_downloadable(self) -> bool:
         return self.repo_id is not None
@@ -170,7 +224,7 @@ def download_arguments(spec: WeightSpec) -> dict[str, object]:
     return {
         "repo_id": spec.repo_id,
         "revision": spec.revision,
-        "allow_patterns": [prefix + name for name in _CHECKPOINT_FILES],
+        "allow_patterns": [prefix + name for name in spec.checkpoint_files],
     }
 
 

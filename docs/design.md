@@ -516,7 +516,7 @@ resolve(spec, settings) →                                    src/decis/paths.p
 | `laya`（英文） | `convaiinnovations/laya`（根目录） | 807.0 MiB | 803.6 MiB | 421M 参数，ModernBERT-large |
 | `laya-multilingual` | 同上，`subfolder="multilingual"` | 646.8 MiB | 614.0 MiB | 322M 参数，mmBERT-base，~2.2× 快 |
 | `laya-typed-decisions` | 同上，`subfolder="typed-decisions"` | 807.0 MiB | 803.6 MiB | typed-decisions workflow 专用 |
-| `kev-0.8b` | adapter `jaredpalmer/kev-0.8b` + 基座 `Qwen/Qwen3.5-0.8B-Base` | 未实测 | adapter ≈113MB + 基座 ≈1.6GB (bf16) | 基座是大头 |
+| `kev-0.8b` | adapter `jaredpalmer/kev-0.8b`（pin `54f4f87`）+ 基座 `Qwen/Qwen3.5-0.8B-Base`（pin `dc7cdfe`） | **45,443,000 B (43.3 MiB) + 1,769,896,333 B (1.65 GiB)** | 43.3 MiB + 1.63 GiB | 实测自本机 Hub 缓存；**基座是大头**，adapter 只占 2.5% |
 | `kev-4b` / `kev-9b` | 同上 | 未实测 | ≈582MB + 8GB / ≈392MB + 18GB | 超出"轻量"定位，只做可选镜像 |
 
 三个 Laya checkpoint 共用同一个仓库，但 `allow_patterns` 只列出一个 checkpoint 的文件
@@ -833,7 +833,7 @@ Decis/
 正是 Decis 为 `choice` 选的归一化熵口径。`source: laya/common.py`。对 Laya 而言
 `decis.native_confidence == confidence`；两个字段仍然分开，因为 kev 的 `noul` 口径不同。
 
-**Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — 🟡 进行中
+**Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — ✅ 完成
 
 **已完成的先行项**（都是接 kev 之前必须先修的地基，详见 `design-review.md §2-D7/D8`）：
 
@@ -845,7 +845,18 @@ Decis/
 3. ✅ **§3-17 的请求预算真正实现**。取锁设 `DECIS_REQUEST_TIMEOUT_MS`（默认 8000）上限，
    超时返回 429 + `retry-after-ms`；见 `docs/design.md §6.5` 与 `tests/test_request_budget.py`。
 
-**尚未开始**：vendor kev 最小子集、`rows`/`prefix` 两种模式、LoRA parity 三条路径的测试。
+4. ✅ **kev 引擎落地**。vendor 了 `model.py`/`checkpoint.py`（pin `90990a5`，逐字节 + sha256 守卫），
+   实现了 `engines/kev.py`，注册为 `kev-0.8b`（别名 `kev`/`kev-latest`）。**`answers.py`、`render.py`
+   与路由层一行未改**——抽象成立。
+5. ✅ **抽象验证的实测结论**：Decis 构造的 record 与 kev 自己的 `api.to_record` 逐字段相等；`encode`
+   的 `ids/seg/pos/opt/decide_idx/opt_idx` 全等；概率与上游 `model.probs()` 差 `0.00e+00`；
+   官方 `typesafe-sdk` 通过 HTTP 拿到 `decis/kev-0.8b@vendored-90990a5` 的完整答案（20/20）。
+6. ✅ **新发现两处接口缺口并修掉**：选项文本必须由引擎自己决定（`design-review.md §2-D9`），
+   以及容量接口原本没有"state 单独上限"的位置（`§2-D10`，`EngineInfo.max_state_tokens`）。
+
+**未做**：`prefix` 缓存路径（`probs_and_prefix`/`probs_with_prefix`）尚未接进引擎——当前只走
+`forward_batch` 的批处理路径。多问题请求里 state 会被每行重复计算，属 Stage 3 的优化，
+已记录在 §5.1。kev-4b/9b 未注册（超出"轻量"定位）。
 vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是证伪/证实 §2 的抽象**：如果接 kev 需要改动 `answers.py` 或路由层，说明抽象错了，必须回去改。同时验证 §5.1 的 `WorkItem` 签名对 `rows` 与 `prefix` 两种模式都成立。
 
 **Stage 3 — 性能（5–7 天）** — ⬜ 未开始

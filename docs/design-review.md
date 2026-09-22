@@ -271,7 +271,7 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 另外记录一处**已知偏差，未实测影响**：Decis 的 `render_value` 对 dict **按键排序**（`render.py:46`），kev 的 `render` 保留插入顺序（`api.py:55`）。state 的渲染归 `render.py`（`AGENTS.md §2`），且 Laya 已按现行行为发布并测试，所以不改；但 kev 的 state 文本因此可能与它训练时见过的字段顺序不同。影响未测。
 
-### D10（中）容量接口没有"state 单独上限"的位置，而 kev 有一个
+### D10（中）容量接口没有"state 单独上限"的位置，而 kev 有一个 — 已修正
 
 kev 的 `encode(strict=True)` 同时施加两条**不同**的限制（`model.py:44,54`）：
 
@@ -284,7 +284,50 @@ kev 的 `encode(strict=True)` 同时施加两条**不同**的限制（`model.py:
 
 Laya 没有这个问题：它只有一个约束（`max_len`），state 按剩余空间截断，所以一个比较位就够。**这属于 `EngineCapacity`/`validate_capacity` 的接口缺口，不是 kev 的怪癖**——任何有独立 state 窗口的引擎都会撞上。
 
-修法与取舍见下方"待办"；在修好之前，kev 引擎的 `measure()` 必须自己把这个条件报出来，不能靠 schema 兜住。
+**已修正**：`EngineInfo` 增加 `max_state_tokens`（默认 `0` = "没有独立上限"，Laya 行为不变），
+`EngineCapacity` 协议同步，`validate_capacity` 在做序列比较之前先查 `measured.state_tokens`，
+错误定位到 `body.state` 并说明是"内容本身"超限。kev 的 `info()` 声明 384。
+
+实现这条时又踩到一个自己挖的坑，值得记下来：初版 `measure()` 从 `encode` 的输出反推 state 长度
+（`len(ids) - branch`），而 `encode` 会**把它截断到 384**，于是量出来的 state 永远等于 384，
+新加的上限检查**永远不会触发**——一个"实现了但从不生效"的检查。现在直接量原始 token 数
+（`1 + len(tokenizer(state))`），branch 用一个空 state 的 record 单独量，两边都不经过截断。
+
+**同时修掉一处会误拒的设计**：`max_question_tokens` 最初写成 `MAX_BRANCH - MAX_STATE`（640），
+这会把"100 token 的 state + 700 token 的问题"拒掉，而 kev 实际处理得了（800 ≤ 1024）。
+现在报告的是最宽松的**可靠**上界 `MAX_BRANCH`，真正生效的是序列比较；`measure` 仍然报每个问题
+自己的开销，所以 422 还是能指出是哪个问题。
+
+**顺带确认 Stage 2 的抽象结论**：接 kev 全程**没有改** `render.py`、`answers.py` 或路由层。
+需要改的只有 `paths.py`（`BaseModel`：适配器 + 基座是两个仓库）与 `schema.py`/`base.py`
+（state 上限）。这两处都不是"抽象错了"，而是原来的接口少了一个维度——正是 Stage 2 要发现的东西。
+
+### D11（中）kev 挂载"外部基座"无效：基座只能按 repo id 去 Hub 找 — 未修正，已记录
+
+需求里有一条是"支持挂载外部模型"。适配器这一半成立：`paths.resolve` 找到的本地目录会作为
+`Checkpoint(<目录>)` 传进去，`_resolve_run`（`_kev_vendor/checkpoint.py:30-36`）见到本地路径就
+直接用它，不发网络请求。
+
+**基座那一半不成立。** 基座是 checkpoint 元数据里的一个**字符串** `meta.base`（形如
+`Qwen/Qwen3.5-0.8B-Base`），vendored 加载器把它原样交给 `load_tokenizer(meta.base, ...)` 与
+`DecisionModel(meta.base, ...)`（`checkpoint.py:127-128`），于是无论适配器从哪来，基座都只会
+按 repo id 去 Hub 找（缓存命中或联网）。
+
+实测后果：用户若把基座单独下到本地目录、用 `DECIS_MODEL_PATH_KEV_0_8B` 指过去，**基座那份
+配置不会生效**——引擎仍然去 Hub 要 `Qwen/Qwen3.5-0.8B-Base`。离线机器上只要缓存里有基座就没
+问题（`decis download` 正是把它放进缓存的，`paths.BaseModel` 那条路径刻意不带 `local_dir`），
+所以这不是"离线不可用"，而是"**挂载基座不生效**"。
+
+**为什么现在不修**：修它要动 vendored 的 `checkpoint.py`，而那份文件是逐字节复制、有 sha256
+守卫、且刻意不做本地修改的（`VENDOR.md`）。可行的修法有两条，都留到真要支持"挂载自定义基座"
+时再做：
+1. 在 `load()` 里先把 `meta.base` 映射成 `paths.resolve` 找到的本地目录（若存在），再传给一个
+   **不改 vendored 代码** 的加载路径——但 vendored 的 `DecisionModel.__init__` 只接受 repo id，
+   所以这条路实际要复制它的加载逻辑，等于在 Decis 里维护第二份；
+2. 向上游提一个 PR 让 `meta.base` 支持本地路径，然后整体 re-vendor。**这是更干净的选项**，
+   因为它把"基座可以是目录"这件事留在唯一事实来源里。
+
+在此之前，README 与 `AGENTS.md` 不许把"挂载目录"说成对基座也成立——只能说的是适配器。
 
 ---
 
