@@ -708,70 +708,79 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 
 ## 11. 仓库结构
 
+**这是目标结构，并标注了当前状态**（✅ 已实现 / ⬜ 未实现）。规则：文件不在树里 = 不存在；
+`⬜` 的项在实现前不得在文档里被当成已有能力描述。
+
 ```
 Decis/
-├── README.md                     # 面向人类：项目价值、快速开始、文档索引（英文，默认）
-├── README.zh-CN.md               # 中文 README（与英文互链切换）
-├── AGENTS.md                     # 面向 AI agent：约束、唯一事实来源、命令、禁区
-├── LICENSE                       # Apache-2.0
-├── NOTICE                        # 第三方署名（kev vendored 代码、Laya 等）
-├── pyproject.toml                # uv / hatchling，extras: server,laya,kev,all
-├── uv.lock
-├── Dockerfile                    # 单文件 + ARG DECIS_ENGINE
-├── docker-compose.yml            # profiles: laya / laya-multilingual / kev-0.8b
+├── README.md                     # ✅ 面向人类：项目价值、快速开始、文档索引（英文，默认）
+├── README.zh-CN.md               # ✅ 中文 README（与英文互链切换）
+├── AGENTS.md                     # ✅ 面向 AI agent：约束、唯一事实来源、命令、禁区
+├── LICENSE                       # ✅ Apache-2.0
+├── NOTICE                        # ✅ 第三方署名（kev vendored 代码、Laya 等）
+├── pyproject.toml                # ✅ uv / hatchling，extras: server,laya,kev,all
+├── uv.lock                       # ✅
+├── docker/
+│   ├── Dockerfile                # ✅ 单文件 + ARG DECIS_ENGINE / DECIS_EXTRAS / DECIS_PREDOWNLOAD
+│   └── docker-compose.yml        # ⬜ profiles: laya / laya-multilingual / kev-0.8b
 ├── .github/workflows/
-│   ├── ci.yml                    # lint + 无权重测试
-│   └── docker-build.yml          # test → build(matrix) → merge
+│   ├── ci.yml                    # ✅ lint + 无权重测试 + report.py --check
+│   └── docker-build.yml          # ⬜ test → build(matrix) → merge → GHCR
 ├── docs/
-│   ├── api-compatibility.md      # jev 契约（唯一事实来源）
-│   ├── design.md                 # 本文
-│   ├── design-review.md          # 对本设计的自我审查：已知不足与改进项
-│   ├── feasibility.md            # 调查 + 可行性 + 实测 + 风险
+│   ├── api-compatibility.md      # ✅ jev 契约（唯一事实来源）
+│   ├── design.md                 # ✅ 本文
+│   ├── design-review.md          # ✅ 对本设计的自我审查：已知不足与改进项
+│   ├── feasibility.md            # ✅ 调查 + 可行性 + 实测 + 风险
 │   └── contract/
-│       ├── typesafe-openapi-0.2.0.json      # 官方 OpenAPI 快照（L0 测试的基准）
-│       └── observations-2026-09-22.md       # 线上实测记录（L 级证据的原始材料）
+│       ├── typesafe-openapi-0.2.0.json   # ✅ 官方 OpenAPI 快照（L0 测试的基准）
+│       ├── observations-2026-09-22.md    # ✅ 线上实测记录（L 级证据的原始材料）
+│       └── stage1-batch-invariance.json  # ✅ 批不变性实测原始记录
 ├── src/decis/
-│   ├── __init__.py
-│   ├── app.py                    # FastAPI 装配
-│   ├── routes.py                 # /v1/systemone, /v1/models, /healthz, /readyz
-│   ├── auth.py                   # Bearer 校验、常数时间比较、401/403 分工（唯一）
-│   ├── errors.py                 # 异常 → 契约错误形状的映射（唯一）
-│   ├── schema.py                 # 线格式 Pydantic + 域模型 + 引擎容量校验
-│   ├── render.py                 # JSON/state → 文本（唯一）
-│   ├── answers.py                # ProbDist → Answer + confidence（唯一）
-│   ├── batch.py                  # 攒批器
-│   ├── scheduler.py              # Scheduler 协议 + 进程内实现
-│   ├── config.py                 # 环境变量（DECIS_*）集中处
-│   ├── paths.py                  # 权重解析（唯一）
-│   ├── cli.py                    # decis serve|download|models|doctor|bench
+│   ├── __init__.py               # ✅
+│   ├── app.py                    # ✅ FastAPI 装配 + 后台加载线程
+│   ├── routes.py                 # ✅ /v1/systemone, /v1/models, /healthz, /readyz
+│   ├── auth.py                   # ✅ Bearer 校验、常数时间比较、401/403 分工（唯一）
+│   ├── errors.py                 # ✅ 异常 → 契约错误形状的映射（唯一）
+│   ├── schema.py                 # ✅ 线格式 Pydantic + 引擎容量校验
+│   ├── render.py                 # ✅ JSON/state → 文本（唯一）
+│   ├── answers.py                # ✅ ProbDist → Answer + confidence（唯一）
+│   ├── domain.py                 # ✅ 各层共享的领域类型（唯一，不依赖包内任何模块）
+│   ├── service.py                # ✅ 编排：解析模型、归一化、校验、组装响应
+│   ├── batch.py                  # ⬜ 攒批器（Stage 3）
+│   ├── scheduler.py              # ✅ Scheduler 协议 + 进程内实现（Stage 3 起负责攒批）
+│   ├── config.py                 # ✅ 环境变量（DECIS_*）集中处
+│   ├── paths.py                  # ✅ 权重解析（唯一）
+│   ├── cli.py                    # ✅ decis serve|download|models|doctor|bench
 │   ├── engines/
-│   │   ├── base.py               # DecisionEngine / EngineInfo / WorkItem
-│   │   ├── registry.py           # id → 引擎类、别名表、惰性 import、dtype 策略
-│   │   ├── laya.py
-│   │   ├── kev.py
-│   │   ├── remote.py
-│   │   ├── mock.py
-│   │   └── _kev_vendor/          # pinned subset + NOTICE
-│   └── observability.py
+│   │   ├── base.py               # ✅ DecisionEngine / EngineInfo / WorkItem
+│   │   ├── registry.py           # ✅ id → 引擎类、别名表、惰性 import、dtype 策略
+│   │   ├── laya.py               # ✅
+│   │   ├── kev.py                # ✅
+│   │   ├── remote.py             # ⬜ 把请求转发给另一个 Decis/jev
+│   │   ├── mock.py               # ✅
+│   │   └── _kev_vendor/          # ✅ pinned subset + NOTICE
+│   └── observability.py          # ✅
 ├── tests/
-│   ├── conftest.py               # MockEngine + tiny fixtures
-│   ├── test_contract_openapi.py  # L0：schema 与官方 OpenAPI 快照同源
-│   ├── test_contract_shape.py    # L1/L2
-│   ├── test_contract_errors.py   # L3b：403/401/422/404/405 + request-id
-│   ├── test_contract_sdk.py      # L3：官方 typesafe-sdk
-│   ├── test_auth.py              # 认证顺序、常数时间、拒绝不安全的默认启动
-│   ├── test_batch_invariance.py  # batch=1/8/32 的偏差与 argmax 稳定性
-│   ├── test_conventions.py       # "唯一事实来源"的守卫（照抄 kev 的思路）
-│   ├── test_engines_shape.py
-│   └── test_upstream_contract.py # laya 内部 API 未变
+│   ├── conftest.py               # ✅ MockEngine + tiny fixtures
+│   ├── test_contract_openapi.py  # ✅ L0：schema 与官方 OpenAPI 快照同源
+│   ├── test_contract_shape.py    # ✅ L1/L2
+│   ├── test_contract_errors.py   # ✅ L3b：403/401/422/404/405 + request-id
+│   ├── test_contract_sdk.py      # ✅ L3/线上差分（由 TYPESAFE_LIVE_API_KEY 门控）
+│   ├── test_auth.py              # ✅ 认证顺序、常数时间、拒绝不安全的默认启动
+│   ├── test_batch_invariance.py  # ✅ batch=1/8/32 的偏差与 argmax 稳定性（含负向对照）
+│   ├── test_benchmark_report.py  # ✅ 吃住 §8：文档表格必须与原始 JSON 一致
+│   ├── test_conventions.py       # ✅ "唯一事实来源"的守卫（照抄 kev 的思路）
+│   ├── test_engines_shape.py     # ✅
+│   └── test_upstream_contract.py # ✅ laya / kev 上游 API 未变
 ├── benchmarks/
-│   ├── run.py                    # 逐样本 JSON + 输入 sha256
-│   ├── report.py                 # 由 JSON 生成 docs 中的表格
-│   ├── probe/                    # 实现前的引擎探测脚本（已 checked in）
-│   └── results/                  # checked-in 原始结果
+│   ├── run.py                    # ✅ 逐样本 JSON + 输入 sha256 + 全部维度
+│   ├── report.py                 # ✅ 由 JSON 生成 docs 与 README 的表格（--check 进 CI）
+│   ├── RESULTS.md                # ✅ report.py 的生成物（勿手改）
+│   ├── probe/                    # ✅ 实现前的引擎探测脚本（已 checked in）
+│   └── results/                  # ✅ checked-in 原始结果
 └── examples/
-    ├── curl.md
-    └── python_sdk.py
+    ├── curl.md                   # ⬜
+    └── python_sdk.py             # ⬜
 ```
 
 ---
@@ -897,6 +906,60 @@ CI 三段式多架构多引擎镜像；GHCR + Docker Hub；`docker-compose.yml`�
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
+
+### 12.1 进度账（按"已经能对外承诺什么"排）
+
+判断标准不是"写了多少代码"，而是**"哪些说法现在有证据支撑"**。分三档。
+
+**A 档 — 可以对外承诺（有测试或原始数据守着）**
+
+| 能力 | 证据 |
+|---|---|
+| jev 线格式兼容 | L0 快照测试 + L1/L2 形状 + L3 官方 SDK + 线上差分（`tests/test_contract_*.py`） |
+| 401/403 分工、认证先于校验、request-id、429 带退避 | 线上实测 + `test_contract_errors.py` |
+| 单请求 10 s 预算不被超过 | `test_request_budget.py`，超时返回 429 + `retry-after-ms` |
+| 两个真实模型跑在同一契约后 | 14 个 Laya + 10 个 kev 真实权重测试 |
+| 批处理不改变答案 | 真实权重：batch=2/4/8/16 偏差 8.345e-07、翻转 0 次；CI 版本 + 负向对照 |
+| 冷启动期间服务不"假死" | `/healthz` 立即 200，`/readyz` 报 loading/failed（D7 选 B） |
+| 超长请求被拒而不是被静默截断 | 容量校验 + `measure()` 报真实长度（D10） |
+| 文档里的性能数字来自原始 JSON | `report.py --check` 在 CI 里，`test_benchmark_report.py` 守着检查器本身 |
+
+**B 档 — 能跑，但缺一维证据（可以说，必须带保留）**
+
+| 能力 | 缺什么 |
+|---|---|
+| CPU 上的延迟 | 有原始数据，但 Laya 那两份是**实现 Decis 之前对引擎本身**的测量，不是服务端到端；kev 每个 dtype 只有一次观测 |
+| kev 在 CPU 上可用 | 可用但比 Laya 慢一个数量级；bf16 再慢 83 倍（单次观测） |
+| `decis bench` 采集 | 已能用，但目前只能测**请求内**批处理 |
+
+**C 档 — 不能承诺（写了就是虚假宣传）**
+
+| 能力 | 为什么不能 |
+|---|---|
+| **吞吐 / QPS** | **M5：跨请求批处理从未被测过**。这是整个性能论证的核心假设，也是 §6 收益预期的唯一支柱 |
+| GPU 上的延迟 | 无 GPU 机器，从未测过 |
+| 多进程 / 多 worker 的扩展性 | 未测；当前是单进程 + 一把引擎锁 |
+| 429 在真实限流下的行为 | 无 API key，无法触发 |
+| 生产可用性（SLO、内存上限、并发数） | 无压测，无长时间运行观测 |
+| 镜像可移植性 | 只有 `docker/Dockerfile`；多架构矩阵、GHCR 推送、SBOM 都还没有 |
+
+**剩余工作，按"挡住对外承诺的程度"排序**
+
+1. **跨请求攒批器 + 它的触发测试**（Stage 3）——`batch.py`，同时补上 §3-18 的守卫。**这是唯一一件"不做完就没法回答'Decis 到底解决什么问题'"的事**：请求内批处理只对"一次问 10 个问题"有帮助，而真实流量是每次请求一个 state 一个问题，那种情况下当前实现**退化成一个串行的单请求服务**。
+2. **进程池 / 多 worker 的测量与选择**——决定"24 vCPU 上该起几个进程、每个几线程"。现在只有一个数据点。
+3. **`/metrics`**——让"攒批器真的触发了"在生产里可观测，而不只在测试里。
+4. **用 `run.py` 重采 Laya**（端到端，而不是引擎本身）——把 B 档的延迟升到 A 档。
+5. **`docker-compose.yml` + `docker-build.yml`（多架构矩阵 + GHCR + SBOM）**（Stage 4）。
+6. `examples/`（`curl.md`、`python_sdk.py`）——目前 README 里有片段，但没有可运行样例。
+7. `remote.py`——把请求转发给另一个 Decis/真 jev；需要先确认用户自有 key 的 ToS。
+8. `kev` 的 prefix 缓存路径——同一 state 多问题时的重复 prefill 优化（kev 是 prefill-only 架构，收益可能不小）。
+9. D11（挂载的 kev **基座**不被尊重）——只能靠上游 PR + re-vendor，不是本地补丁。
+10. ONNX / MLX 引擎、`Router`、高基数 choice（Stage 5，可选）。
+
+**一句话**：**契约层和引擎抽象已经完成并且有证据；性能层只有一个未经检验的假设。**
+现在的 Decis 是一个"格式正确、抽象正确、单请求正确"的服务，还不是一个"高吞吐"的服务。
+第 1 项不做完，README 里那句"one API to run all light-weight decision models"是对的，
+但"调用量会比较大"这个前提**没有答案**。
 
 ---
 
