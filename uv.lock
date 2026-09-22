@@ -175,6 +175,7 @@ dependencies = [
 all = [
     { name = "accelerate" },
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "laya" },
     { name = "peft" },
     { name = "prometheus-client" },
@@ -186,11 +187,16 @@ dev = [
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "typesafe-sdk" },
 ]
+download = [
+    { name = "huggingface-hub" },
+]
 kev = [
     { name = "accelerate" },
+    { name = "huggingface-hub" },
     { name = "peft" },
     { name = "safetensors" },
     { name = "torch" },
@@ -198,7 +204,6 @@ kev = [
 ]
 laya = [
     { name = "laya" },
-    { name = "torch" },
 ]
 metrics = [
     { name = "prometheus-client" },
@@ -214,22 +219,24 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'remote'", specifier = ">=0.27" },
+    { name = "huggingface-hub", marker = "extra == 'download'", specifier = ">=0.20" },
+    { name = "huggingface-hub", marker = "extra == 'kev'", specifier = ">=0.30" },
     { name = "laya", marker = "extra == 'laya'", specifier = ">=0.3.5,<0.4" },
-    { name = "peft", marker = "extra == 'kev'", specifier = ">=0.13" },
+    { name = "peft", marker = "extra == 'kev'", specifier = ">=0.18" },
     { name = "prometheus-client", marker = "extra == 'metrics'", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "safetensors", marker = "extra == 'kev'", specifier = ">=0.4" },
-    { name = "torch", marker = "extra == 'kev'", specifier = ">=2.4" },
-    { name = "torch", marker = "extra == 'laya'", specifier = ">=2.4" },
-    { name = "transformers", marker = "extra == 'kev'", specifier = ">=4.44" },
+    { name = "torch", marker = "extra == 'kev'", specifier = ">=2.6" },
+    { name = "transformers", marker = "extra == 'kev'", specifier = ">=5.0" },
     { name = "typesafe-sdk", marker = "extra == 'dev'", specifier = ">=0.7.1" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
-provides-extras = ["laya", "kev", "remote", "metrics", "dev", "all"]
+provides-extras = ["laya", "kev", "remote", "metrics", "dev", "all", "download"]
 
 [[package]]
 name = "fastapi"

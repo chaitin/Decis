@@ -1,0 +1,329 @@
+name: Docker images
+
+# Builds one image per engine and publishes them to GHCR.
+#
+# Why one image per engine rather than one image with everything: the engine extras
+# conflict and are large (`AGENTS.md §6`), and a `kev` image that also carried Laya's
+# dependency tree would be gigabytes of code that can never run. `docs/design.md §7` is
+# the packaging rationale.
+#
+# Why per-platform *native* runners instead of QEMU: the Dockerfile installs torch, and
+# the `laya`/`kev` extras pull hundreds of megabytes of wheels. Emulating that under QEMU
+# turns a five-minute build into a very long one. `ubuntu-24.04-arm` is a native arm64
+# runner, so each platform builds on real hardware and the manifests are merged after.
+#
+# If your repository cannot use `ubuntu-24.04-arm` (it needs a public repository or a paid
+# plan), delete the `linux/arm64 ubuntu-24.04-arm` entry from `platforms` in the plan job
+# below. Everything else keeps working and the images become amd64-only.
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      engines:
+        description: Space-separated engine ids to build
+        default: "mock laya-multilingual kev-0.8b"
+      bake_weights:
+        description: Also build the offline variants with weights baked in
+        type: boolean
+        default: false
+      push:
+        description: Push to GHCR (off by default so a dry run cannot publish)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
+  REGISTRY: ghcr.io
+
+jobs:
+  # The images are gated on the tests: publishing a broken image under a version tag is
+  # harder to undo than not publishing it.
+  test:
+    name: lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --extra dev
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: The docs' performance tables match the raw benchmark JSON
+        run: uv run python benchmarks/report.py --check
+
+  # What to build, and where, decided in one job so the matrix has a single definition.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      merges: ${{ steps.plan.outputs.merges }}
+      push: ${{ steps.plan.outputs.push }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          INPUT_ENGINES: ${{ inputs.engines }}
+          INPUT_BAKE: ${{ inputs.bake_weights }}
+          INPUT_PUSH: ${{ inputs.push }}
+        run: |
+          set -euo pipefail
+
+          # Every engine with an image. `mock` carries no dependencies and no weights and
+          # is what the contract tests use; the other two are the real models.
+          all_engines=(mock laya-multilingual kev-0.8b)
+          # Engines whose weights can be baked in. `mock` has none: `decis download
+          # --engine mock` exits 2 *by design* (it suspects a typo), which would fail the
+          # build rather than produce a smaller image.
+          bakeable=(laya-multilingual kev-0.8b)
+
+          case "$EVENT" in
+            pull_request)
+              # A PR validates that the Dockerfile still builds. One engine, one
+              # platform: the point is the Dockerfile, not the artifact.
+              engines=(mock)
+              platforms=("linux/amd64 ubuntu-latest")
+              push=false
+              ;;
+            workflow_dispatch)
+              # shellcheck disable=SC2206
+              engines=($INPUT_ENGINES)
+              platforms=("linux/amd64 ubuntu-latest" "linux/arm64 ubuntu-24.04-arm")
+              push=$INPUT_PUSH
+              ;;
+            *)
+              engines=("${all_engines[@]}")
+              platforms=("linux/amd64 ubuntu-latest" "linux/arm64 ubuntu-24.04-arm")
+              push=true
+              ;;
+          esac
+
+          # The offline variant bakes the weights in, so the image runs with no network at
+          # all. It is much larger, so it is built for release tags and on request, not on
+          # every commit.
+          offline=false
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$INPUT_BAKE" = "true" ]; then
+            offline=true
+          elif [ "$EVENT" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
+            offline=true
+          fi
+
+          # One build per engine x variant x platform, and one merge per engine x variant
+          # (the merge is what turns two platform images into one multi-arch manifest).
+          builds="["
+          merges="["
+          first_build=1
+          first_merge=1
+          for engine in "${engines[@]}"; do
+            variants=(runtime)
+            if [ "$offline" = "true" ] && [[ " ${bakeable[*]} " == *" $engine "* ]]; then
+              variants=(runtime offline)
+            fi
+            for variant in "${variants[@]}"; do
+              bake=""
+              [ "$variant" = "offline" ] && bake="$engine"
+              [ $first_merge -eq 1 ] || merges+=","
+              first_merge=0
+              merges+="{\"engine\":\"$engine\",\"variant\":\"$variant\"}"
+              for platform in "${platforms[@]}"; do
+                # shellcheck disable=SC2086
+                set -- $platform
+                [ $first_build -eq 1 ] || builds+=","
+                first_build=0
+                builds+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"bake\":\"$bake\",\"platform\":\"$1\",\"runner\":\"$2\",\"arch\":\"${1#linux/}\"}"
+              done
+            done
+          done
+          builds+="]"
+          merges+="]"
+
+          echo "matrix={\"include\":$builds}" >> "$GITHUB_OUTPUT"
+          echo "merges={\"include\":$merges}" >> "$GITHUB_OUTPUT"
+          echo "push=$push" >> "$GITHUB_OUTPUT"
+
+          # The moving tag each image also gets. A branch push must not move `latest`.
+          if [[ "$REF" == refs/tags/v* ]]; then
+            tag="$REF_NAME"
+          elif [ "$REF_NAME" = "master" ] || [ "$REF_NAME" = "main" ]; then
+            tag=latest
+          else
+            # Prefer the SHA the runner was given: `git rev-parse` needs a commit to
+            # exist, and a shallow checkout or a detached HEAD can leave it unable to
+            # answer, which would fail the run before it built anything.
+            tag="sha-${GITHUB_SHA:0:7}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "builds: $builds"
+          echo "merges: $merges"
+          echo "push=$push tag=$tag"
+
+  build:
+    name: ${{ matrix.engine }} ${{ matrix.variant }} (${{ matrix.arch }})
+    needs: [test, plan]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+      # Needed for provenance attestation: it is what lets a consumer check that an image
+      # was built from this commit by this workflow.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image name and tags
+        id: meta
+        env:
+          ENGINE: ${{ matrix.engine }}
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+          MOVING_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # GHCR requires lowercase repository names, and a repository owner may not be.
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${owner}/decis-${ENGINE}"
+          # The offline variant is the same server plus weights, so it is a suffixed
+          # repository rather than a tag: it is a genuinely different artifact to pull.
+          if [ "$VARIANT" = "offline" ]; then
+            image="${image}-offline"
+          fi
+          short="${GITHUB_SHA::12}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          # The platform-specific tag is what the merge job consumes. It must stay
+          # platform-qualified or the two legs would overwrite each other.
+          echo "platform_tag=sha-${short}-${ARCH}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "${image}:${MOVING_TAG}-${ARCH}"
+            echo "${image}:sha-${short}-${ARCH}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to attest
+        id: attest
+        env:
+          PUSHING: ${{ needs.plan.outputs.push }}
+        run: |
+          # Attestation requires a push; requesting it on a build-only run fails.
+          if [ "$PUSHING" = "true" ]; then
+            echo "sbom=true" >> "$GITHUB_OUTPUT"
+            echo "provenance=mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "sbom=false" >> "$GITHUB_OUTPUT"
+            echo "provenance=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          # On a PR nothing is pushed, but the build still has to happen: that is the
+          # check. Nothing is loaded locally because a single-platform build of a matrix
+          # leg has no consumer here.
+          push: ${{ needs.plan.outputs.push == 'true' }}
+          build-args: |
+            DECIS_EXTRAS=${{ matrix.engine == 'mock' && '' || (matrix.engine == 'kev-0.8b' && 'kev' || 'laya') }}
+            DECIS_ENGINE=${{ matrix.engine }}
+            DECIS_PREDOWNLOAD=${{ matrix.bake }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.tag }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          sbom: ${{ steps.attest.outputs.sbom }}
+          provenance: ${{ steps.attest.outputs.provenance }}
+          cache-from: type=gha,scope=${{ matrix.engine }}-${{ matrix.variant }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.engine }}-${{ matrix.variant }}-${{ matrix.arch }}
+
+  # A multi-arch manifest is what makes one tag correct on a laptop and on an arm server.
+  # The build legs push per-architecture images; this job stitches them into one manifest.
+  merge:
+    name: merge ${{ matrix.engine }} ${{ matrix.variant }}
+    needs: [plan, build]
+    if: needs.plan.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.merges) }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the multi-arch manifest
+        env:
+          ENGINE: ${{ matrix.engine }}
+          VARIANT: ${{ matrix.variant }}
+          MOVING_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${owner}/decis-${ENGINE}"
+          if [ "$VARIANT" = "offline" ]; then
+            image="${image}-offline"
+          fi
+          short="${GITHUB_SHA::12}"
+
+          # The per-arch tags exist only if that platform's leg ran. Merging a digest that
+          # is not there would fail the release over a platform that was intentionally
+          # skipped, so only the tags that resolve are merged -- and what was merged is
+          # printed, so an amd64-only release cannot look like a multi-arch one.
+          sources=()
+          for arch in amd64 arm64; do
+            ref="${image}:sha-${short}-${arch}"
+            if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              sources+=("$ref")
+            else
+              echo "note: $ref was not built; leaving it out of the manifest" >&2
+            fi
+          done
+          [ ${#sources[@]} -gt 0 ] || { echo "nothing to merge for $image" >&2; exit 1; }
+
+          docker buildx imagetools create --tag "${image}:${MOVING_TAG}" "${sources[@]}"
+          docker buildx imagetools inspect "${image}:${MOVING_TAG}"
