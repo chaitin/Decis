@@ -106,3 +106,89 @@ Things this generator could **not** verify. Listed rather than assumed:
 
 - kev-0.8b-cpu-dtype.json (3 question(s)): no input hash recorded, so identical input could only be checked via token counts
 
+## Cross-request batching
+
+<!-- BATCHING:START -->
+Measured cross-request batching. Raw JSON lives in `benchmarks/results/`; this
+table is produced by `python benchmarks/report.py --write`. **Do not edit.**
+
+The positive control (identical items, padding 1.00) reaches **1.92x** (`shared_short`, batch 8), which confirms the bottleneck is per-call fixed overhead and that this harness can detect a gain. For the shape real traffic has -- different states -- the best case is 1.09x (`uniform`, batch 8) and the worst is 0.34x (`skewed`, batch 8). When lengths are skewed, padding reaches 2.47x (`skewed`, batch 16): every row is padded to the longest in its batch, and that wasted compute shows up directly as a higher per-item cost.
+
+`shared_short` and `shared` are the positive controls: every item is identical, so padding is exactly 1.00 and the only variable left is the sequence length. The short one has to show a gain, or this harness cannot detect one and nothing else here is trustworthy. It reproduces the request-internal result already published: 217.8 -> 113.7 ms/item here, 231 -> 98.7 ms/question in `laya-multilingual-sweep.json`.
+
+### Process count vs throughput
+
+The total thread budget is held constant (processes x threads = 24), so this compares sharing the machine between processes with giving all of it to one, not thread oversubscription.
+
+| processes | threads | items/s | ms/item | vs best | source |
+|---:|---:|---:|---:|---:|---|
+| 1 | 24 | 1.23 | 814.1 | 0.93x | `laya-multilingual-batch-gain.json` |
+| 2 | 12 | 1.12 | 890.4 | 0.85x | `laya-multilingual-multiprocess-p2.json` |
+| 4 | 6 | 1.32 | 759.0 | 1.00x | `laya-multilingual-multiprocess-p4.json` |
+
+The slowest and fastest differ by only 1.18x: on this host **adding processes does not add throughput**. A single Laya forward pass already uses 24 threads well, so splitting the budget only reallocates the same capacity.
+
+The 1-process row comes from the serial configuration inside the batching file (`laya-multilingual-batch-gain.json`) -- the same item set and the same thread budget, not a separate experiment.
+
+### `laya-multilingual` — 1 process(es) x 24 threads
+
+- `benchmarks/results/laya-multilingual-batch-gain.json` · cpu · float32
+- load 82.0 s · peak RSS 4.83 GB
+
+| item set | batch | n | ms/item (p50) | vs serial | break-even wait ms | padding |
+|---|---:|---:|---:|---:|---:|---:|
+| shared_short (control) | 1 | 64 | 217.8 | 1.00x | 0.0 | 1.00 |
+| shared_short (control) | 2 | 32 | 152.4 | 1.43x | 65.5 | 1.00 |
+| shared_short (control) | 4 | 16 | 127.8 | 1.71x | 90.0 | 1.00 |
+| shared_short (control) | 8 | 8 | 113.7 | 1.92x | 104.1 | 1.00 |
+| shared_short (control) | 16 | 4 | 117.1 | 1.86x | 100.8 | 1.00 |
+| shared (control) | 1 | 64 | 464.9 | 1.00x | 0.0 | 1.00 |
+| shared (control) | 2 | 32 | 422.7 | 1.10x | 42.2 | 1.00 |
+| shared (control) | 4 | 16 | 696.6 | 0.67x | -231.7 | 1.00 |
+| shared (control) | 8 | 8 | 500.4 | 0.93x | -35.5 | 1.00 |
+| shared (control) | 16 | 4 | 374.0 | 1.24x | 90.9 | 1.00 |
+| uniform | 1 | 64 | 814.1 | 1.00x | 0.0 | 1.00 |
+| uniform | 2 | 32 | 769.6 | 1.06x | 44.5 | 1.06 |
+| uniform | 4 | 16 | 1535.9 | 0.53x | -721.9 | 1.10 |
+| uniform | 8 | 8 | 748.8 | 1.09x | 65.2 | 1.10 |
+| uniform | 16 | 4 | 885.2 | 0.92x | -71.2 | 1.13 |
+| skewed | 1 | 64 | 322.1 | 1.00x | 0.0 | 1.00 |
+| skewed | 2 | 32 | 1514.6 | 0.21x | -1192.6 | 1.37 |
+| skewed | 4 | 16 | 1176.8 | 0.27x | -854.7 | 2.38 |
+| skewed | 8 | 8 | 932.5 | 0.34x | -610.4 | 2.41 |
+| skewed | 16 | 4 | 933.6 | 0.34x | -611.5 | 2.47 |
+
+sequence tokens (state + one question): shared_short 115-115, shared 393-393, uniform 530-674, skewed 140-821
+
+- not measured: queue wait, cancellation and partial-failure behaviour -- they need the batcher
+- not measured: cross-state prefix sharing, which a real engine could exploit and this cannot
+- not measured: p99 under sustained load
+
+### `laya-multilingual` — 2 process(es) x 12 threads
+
+- `benchmarks/results/laya-multilingual-multiprocess-p2.json` · cpu · float32
+- load 104.1 s · peak RSS 4.82 GB
+
+| processes | threads | items | wall s | ms/item | items/s |
+|---:|---:|---:|---:|---:|---:|
+| 2 | 12 | 128 | 113.97 | 890.4 | 1.12 |
+
+- not measured: whether the OS scheduler actually keeps them on separate cores
+- not measured: p99 under this load
+
+### `laya-multilingual` — 4 process(es) x 6 threads
+
+- `benchmarks/results/laya-multilingual-multiprocess-p4.json` · cpu · float32
+- load 86.1 s · peak RSS 4.81 GB
+
+| processes | threads | items | wall s | ms/item | items/s |
+|---:|---:|---:|---:|---:|---:|
+| 4 | 6 | 256 | 194.29 | 759.0 | 1.32 |
+
+- not measured: whether the OS scheduler actually keeps them on separate cores
+- not measured: p99 under this load
+
+**Scope**: batches are synthesised by calling the engine directly, with no queue, no waiting, no client giving up and no partial failure. These figures are an **upper bound** on a real batcher; every mechanism listed above makes it worse.
+
+<!-- BATCHING:END -->
+

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import sys
 
 from . import __version__
@@ -69,6 +70,17 @@ def _build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--warmup", type=int, default=2, help="discarded calls before measuring")
     bench.add_argument("--out", default="", help="output path (default: benchmarks/results/<engine>-thread-sweep.json)")
     bench.add_argument("--env-file", default=None)
+    bench.add_argument(
+        "--cross-request",
+        action="store_true",
+        help="measure whether joining questions from different requests pays (needs the batcher to not exist yet)",
+    )
+    bench.add_argument(
+        "--processes",
+        type=int,
+        default=1,
+        help="with --cross-request: run this many engine processes sharing the thread budget",
+    )
     bench.set_defaults(handler=_bench)
 
     return parser
@@ -78,17 +90,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _bench(args: argparse.Namespace) -> int:
-    """Run the checked-in benchmark harness in this process's interpreter.
+    """Run a checked-in benchmark harness in this process's interpreter.
 
-    The harness lives outside the package because it is not part of the served
-    artifact. Running it as a subprocess of the same interpreter keeps its two facts
+    The harnesses live outside the package because they are not part of the served
+    artifact. Running one as a subprocess of the same interpreter keeps its two facts
     true: it measures the installed `decis`, and the JSON it writes is exactly what
     `benchmarks/report.py` reads.
+
+    Two harnesses, one entry point, because they answer different questions.
+    `run.py` asks "how long does one request take"; `batch_gain.py` asks "is joining
+    requests worth it at all" and is the one that must be run *before* building a
+    scheduler (`design-review.md §4-M5`). The flag picks the harness rather than a mode
+    inside it, and neither is reimplemented here (`AGENTS.md §2`).
     """
     import subprocess
     from pathlib import Path
 
-    harness = Path(__file__).resolve().parent.parent.parent / "benchmarks" / "run.py"
+    name = "batch_gain.py" if args.cross_request else "run.py"
+    harness = Path(__file__).resolve().parent.parent.parent / "benchmarks" / name
     if not harness.is_file():
         print(
             f"error: {harness} is missing. `decis bench` runs the checked-in harness; it is not "
@@ -99,20 +118,48 @@ def _bench(args: argparse.Namespace) -> int:
 
     settings = _load(args)
     engine = args.engine or settings.default_engine
-    command = [
-        sys.executable,
-        str(harness),
-        "--engine",
-        engine,
-        "--batch",
-        args.batch,
-        "--iterations",
-        str(args.iterations),
-        "--warmup",
-        str(args.warmup),
-    ]
-    if args.threads:
-        command += ["--threads", args.threads]
+
+    if args.cross_request:
+        per_process = args.processes
+        if per_process < 1:
+            print("error: --processes must be at least 1", file=sys.stderr)
+            return _EXIT_CONFIG_ERROR
+        # The harness takes the thread count *per process*. Dividing the machine's cores
+        # across the processes is what keeps the total budget constant: comparing
+        # `1 x 24 threads` with `4 x 24 threads` measures thread oversubscription, not
+        # process scaling (`AGENTS.md §9`).
+        total_threads = int(args.threads.split(",")[0]) if args.threads else (os.cpu_count() or 4)
+        command = [
+            sys.executable,
+            str(harness),
+            "--engine",
+            engine,
+            "--batches",
+            args.batch,
+            "--iterations",
+            str(args.iterations),
+            "--warmup",
+            str(args.warmup),
+            "--threads",
+            str(max(1, total_threads // per_process)),
+            "--processes",
+            str(per_process),
+        ]
+    else:
+        command = [
+            sys.executable,
+            str(harness),
+            "--engine",
+            engine,
+            "--batch",
+            args.batch,
+            "--iterations",
+            str(args.iterations),
+            "--warmup",
+            str(args.warmup),
+        ]
+        if args.threads:
+            command += ["--threads", args.threads]
     if args.out:
         command += ["--out", args.out]
 

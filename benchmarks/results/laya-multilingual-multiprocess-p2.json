@@ -1,0 +1,51 @@
+{
+  "schema": "decis-batch-gain/1",
+  "engine": "laya-multilingual",
+  "engine_version": "0.3.5",
+  "device": "cpu",
+  "dtype": "float32",
+  "processes": 2,
+  "threads": 12,
+  "items": 128,
+  "iterations": 4,
+  "warmup": 1,
+  "host": {
+    "platform": "Linux-6.8.0-139-generic-aarch64-with-glibc2.39",
+    "machine": "aarch64",
+    "cpu_count": 24,
+    "mem_gb": 31.2,
+    "gpu": false
+  },
+  "runtime": {
+    "python": "3.12.3",
+    "torch": "2.14.0+cpu",
+    "transformers": "5.17.0",
+    "laya": "0.3.5",
+    "numpy": "2.5.3"
+  },
+  "load_s": 104.1,
+  "peak_rss_gb_per_process": 4.82,
+  "aggregate": {
+    "wall_s": 113.97,
+    "load_overlapped_s": 104.1,
+    "launch_to_done_s": 218.4,
+    "items_answered": 128,
+    "per_item_ms": 890.36,
+    "items_per_second": 1.12,
+    "child_wall_s": [
+      113.97,
+      110.37
+    ]
+  },
+  "methodology": {
+    "traffic_shape": "one question per item, a different state per item, the same generator as the single-process run",
+    "kind": "2 independent engine instances, one per process, each answering the same full item set serially and concurrently. No batching anywhere. This is the baseline a batcher would have to beat.",
+    "aggregate": "per_item_ms is wall / (processes x items x rounds): the cost of one item when the machine is shared by that many processes. The children overlap, so the effective duration is the slowest child's measurement window, which excludes cold-start load.",
+    "memory": "peak RSS per process is reported; the total is roughly processes x that, which is the constraint that caps how far this scales. Laya needs several GB per process, so this host's 33.5 GB caps the useful process count well before the core count does.",
+    "not_measured": [
+      "whether the OS scheduler actually keeps them on separate cores",
+      "p99 under this load"
+    ]
+  },
+  "skews": {}
+}

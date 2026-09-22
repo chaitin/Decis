@@ -4,22 +4,29 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 本文件是**在这个仓库里工作的契约**。它写给 AI agent，也写给人类。规则不是建议，是约束；违反约束的改动即使"能跑"也不接受。
 
-> **当前状态**：**Stage 0–2 已完成**。两个真实模型家族都跑在同一个契约后面：
+> **当前状态**：**Stage 0–2 已完成，Stage 3 部分完成，Stage 4（镜像）已接上 GitHub Actions**。两个真实模型家族都跑在同一个契约后面：
 > `uv sync --extra laya && uv run decis serve --engine laya-multilingual`，
 > `uv sync --extra kev && uv run decis serve --engine kev-0.8b`。
 > 契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象、
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**354 个通过**，约 9 秒，不联网）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**408 通过 / 31 跳过**，约 10 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**430 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
 > **已注册引擎**：`mock`（无权重）、`laya`、`laya-multilingual`、`laya-typed-decisions`、
 > `kev-0.8b`（kev 的适配器 + Qwen3.5-0.8B 基座，见 `paths.BaseModel`）。
-> **未实现**：跨请求**攒批调度器**、进程池与 `/metrics`（Stage 3）、kev 的 prefix 缓存路径、
-> 多架构镜像矩阵（Stage 4）。
+> **已实测的关键负结论**：`docs/design-review.md §4-M5` 已关闭，答案是**否定**——
+> 跨请求批处理在本机 CPU 上不提升吞吐（真实长度下最高 1.09x，长度倾斜时慢 3–5 倍），加进程也不提升。
+> **因此跨请求攒批器不应按 `design.md §6` 的原设计实现**，`/metrics` 与进程池的必要性也随之下降。
+> **未实现**：kev 的 prefix 缓存路径、`/metrics`、`docker-compose.yml`。
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
+>
+> **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 GHCR，
+> 多架构（amd64 + arm64 原生 runner，不用 QEMU），带 SBOM 与 provenance；
+> PR 只构建 amd64 的 `mock` 以验证 Dockerfile。矩阵生成逻辑由 `tests/test_docker_workflow.py` 直接执行验证。
 
 ---
 
@@ -35,7 +42,12 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 冲突时优先级：`api-compatibility.md` > `design.md` > 其余。
 
-**`design-review.md` 不是历史文档，是活文档。** 它列的"尚未验证"清单（尤其 M5：跨请求批处理的收益从未被测过）在对应验证完成前一直有效。**在 M5 有数据之前，不得在任何对外材料里承诺 QPS。**
+**`design-review.md` 不是历史文档，是活文档。** 它列的"尚未验证"清单在对应验证完成前一直有效。
+
+**M5 已经有数据了（§4-M5），结论是否定**：跨请求批处理不提升吞吐。所以原来那条"不得承诺 QPS"的理由消失了，
+但**新理由接上**：现在可以报的是一条**负结论**加一个**实测的吞吐上界**（单进程 24 线程，`laya-multilingual`，
+CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），**不得**把它包装成"批处理带来的高 QPS"，
+也**不得**把它外推到 GPU、kev 或真实并发负载——那三样都没有数据。
 
 ---
 
@@ -77,8 +89,9 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 每一条都必须有测试守着。改坏它们等于破坏项目存在的理由。
 
-**唯一例外是第 18 条**：攒批器要到 Stage 3 才存在，所以那条现在**没有守卫**——它是写给
-将来那个实现的约束，不是对现有代码的描述。实现攒批器时必须同时把守卫补上，否则这条就是空文。
+**唯一例外是第 18 条**：目前没有攒批器，所以那条**没有守卫**——它是写给将来那个实现的约束，
+不是对现有代码的描述。**而且 M5 的实测结论已经让"要不要实现攒批器"本身成了待决项**：如果实现，
+这条依然有效，且必须同时把守卫补上，否则它就是空文。
 
 1. **`score` 的 `legend` 与 `probabilities` 的键是字符串** `"0"`、`"1"`、…。不是数组，不是整数。
 2. **`noul` answer 是标量** `{"type":"noul","noul":p}`，**没有 `confidence`，没有 `probabilities`**。
@@ -177,7 +190,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个，354 个，约 9 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：408 通过 / 31 跳过，约 10 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -231,15 +244,23 @@ uv run python benchmarks/report.py --write   # 由原始 JSON 生成 README 与 
 uv run python benchmarks/report.py --check   # CI 跑这个：手改过的数字会让它变红
 ```
 
-`--check` 已在 CI 里。生成器在渲染前会断言同一组内各配置处理的是**同一个输入**
-（`input_sha256` + token 数），不一致就拒绝生成。它第一次运行就抓到了 §2-D12
-（README 曾把两个线程数的数字混进同一行）。没有 checked-in 原始 JSON 支撑的数字不许进文档。
-
-尚未实现（见 `docs/design.md §12`）：
+跨请求批处理的收益（M5）——`decis bench --cross-request` 转调 `benchmarks/batch_gain.py`
+（第二个 harness，不是第二份实现）：
 
 ```bash
-uv run decis bench --cross-request   # 需要 Stage 3 的攒批器，目前只能测请求内批处理
+uv run decis bench --engine laya-multilingual --batch 1,2,4,8,16 --threads 24   # 串行 vs 合成批 + 正对照
+uv run decis bench --engine laya-multilingual --cross-request --threads 24 --processes 4   # 多进程
 ```
+
+`--threads` 是**每个进程**的线程数，`--processes N` 时 CLI 会把它除以 N，**总预算保持不变**；
+直接调 `batch_gain.py` 时这个除法要自己算，忘了就是在测线程超配。别加 `--items` 时改小它：
+item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值。
+
+`--check` 已在 CI 里，且**覆盖两个 README**。生成器在渲染前会断言同一组内各配置处理的是**同一个输入**
+（`input_sha256` + token 数），不一致就拒绝生成；对攒批数据还会拒绝**没有正对照**的文件
+（测不出收益的 harness 无法区分"机制没用"和"测量坏了"）。它第一次运行就抓到了 §2-D12
+（README 曾把两个线程数的数字混进同一行）——**同一缺陷当时还留在 `README.zh-CN.md` 里**，
+因为那个文件靠手工抄表；现在两个 README 由同一个生成器写。没有 checked-in 原始 JSON 支撑的数字不许进文档。
 
 **两套测试各自都会漏东西，声称"测试通过"之前必须在两个环境里都跑过。**
 
@@ -286,10 +307,16 @@ uv run decis bench --cross-request   # 需要 Stage 3 的攒批器，目前只�
 - ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会静默降质）
 - ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
 - ❌ 用"上游截断后的输出"反推 `measure()` 的数字（会得到永远等于上限的假测量）
-- ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` 标记块里的数字
+- ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` / `<!-- BATCHING -->` 标记块里的数字
   （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）
 - ❌ 手改 `benchmarks/RESULTS.md`（它是生成物）
 - ❌ 让一行性能表的不同列取自不同配置（`design-review.md §2-D12`：线程数混用曾真实发生过）
+- ❌ 手工把一张表从一个文件抄到另一个文件（`README.zh-CN.md` 抄过，于是它**只在中文版里**带着 D12）：
+  抄写就是第二处实现（§2），要么生成，要么不要放
+- ❌ 报跨请求批处理的结论时省略它的范围：**上界**（合成批、无队列）、**CPU**、**只有 Laya**
+- ❌ 用"一个大小测到底"的顺序做批次扫描（序效应会伪装成批大小的效果，`§4-M2` 与 M5 各踩过一次）
+- ❌ 增加一个收益类机制却没有正对照或能证明它触发的指标（`§2-D1`）
+- ❌ 比较不同进程数时让总线程预算不一致（那测的是线程超配，不是进程扩展性）
 
 ---
 
@@ -321,4 +348,6 @@ uv run decis bench --cross-request   # 需要 Stage 3 的攒批器，目前只�
 - 涉及契约的 PR，描述里必须贴出**官方 `typesafe-sdk` 跑通**的证据（测试名或输出）。
 - **改契约或错误码之前，必须先跑一次线上差分（L5）**，把结果贴进 PR。理由：L0 只能保证"我们和自己的 OpenAPI 快照一致"，**没有任何离线测试能发现线上服务端偏离它自己的 OpenAPI**。`docs/design-review.md §4-M1` 记录了这个教训——初版的 401/403 结论就是被一次手工差分推翻的。
 - 涉及性能的 PR，描述里必须贴出 `benchmarks/results/` 里新增的 JSON 路径。
+- **测量类 PR 必须带正对照**：一个测不出收益的 harness，无法区分"机制没用"和"测量坏了"。
+  结论为负时，正对照是让这个负结论可信的唯一东西。
 - **实现一个"设计文档说是核心卖点"的机制时（批处理、缓存、并发），PR 必须附带一个能证明它真的被触发的测试或指标**，而不只是"实现完了"。`docs/design-review.md §2-D1` 的教训是：一个从不触发的批处理实现，和没有批处理，在测试上是无法区分的。

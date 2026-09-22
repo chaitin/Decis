@@ -378,10 +378,28 @@ all    = ["decis[laya,kev]"]
 
 ## 6. 并发与批处理：QPS 的核心
 
+> ### ⚠️ 实测更正（2026-09-22）：本节的吞吐前提在本机不成立
+>
+> 本节的核心断言是"跨请求批处理把每问成本降下来，这是高 QPS 的来源"。**实测否定了它**，见
+> [`design-review.md §4-M5`](design-review.md) 与 `benchmarks/results/laya-multilingual-batch-gain.json`：
+>
+> - 正对照（所有项完全相同、padding 恒为 1.00）在 **115 token** 时确实有 **1.92x**，证明测量本身有效；
+> - 同样的正对照在 **393 token** 时只剩 **1.10x**——收益来自摊薄每次调用的固定开销，几百 token 的前向摊不出东西；
+> - **真实流量形状（不同 state、140–821 token）在每个批大小上都不比串行快**（最高 1.09x），长度倾斜时慢 **3–5 倍**（padding 2.47x）；
+> - 固定总线程预算（24）下，1/2/4 进程吞吐差 1.18x，即**加进程也不增加吞吐**：单个前向已用满 24 线程。
+>
+> **因此**：按本节原设计实现的攒批器在真实流量下是 3–5 倍回归，比不实现更差。**本节以下内容保留为设计记录，但
+> §6.1 的收益推断与 §6.2 的攒批器方案均已失效**；是否彻底放弃待决（见 §12.1 的待决策项）。
+> **本结论只适用于 CPU，且只测了 Laya**——GPU 上批处理通常是提升利用率的标准手段，M6 之前不得反推 GPU 行为。
+>
+> 仍然成立的部分：§6.3 的引擎形态差异、§6.5 的背压与超时、§6.6 的数值不确定性（后者与是否攒批无关，已是事实）。
+
 ### 6.1 事实基础
 
 - kev 与 Laya **都是同步、阻塞、单模型实例**的推理路径，没有 server、没有异步、没有跨请求 batching。
 - 两者的算力瓶颈都在**一次前向的 GEMM**，单条问题的 batch=1 前向严重浪费算力。Laya 的官方基准已经证明这点：T4 上 1 问 39.5ms，10 问 158.6ms → **15.9ms/问**；50 问 771ms。即批处理把单问成本降了一半以上，且问题越多越接近稳态吞吐（103–332 q/s）。
+  - **⚠️ 这条是上游在 GPU（T4）上的宣传数字，不是 Decis 的实测**（`AGENTS.md §8` 禁止把它当作自己的数据）。
+    Decis 自己在 CPU 上的实测结论相反，见上面的更正框：**该 GPU 数字不适用于 CPU，也不适用于不同 state 的流量形状**。
 - Python GIL：`torch` 的算子会释放 GIL，tokenization 不会。所以纯线程池收益有限，**真正的并行单位是进程**。
 
 ### 6.2 调度单位是"问题"，不是"请求"
@@ -882,13 +900,21 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   **生成前断言同组各配置处理同一个输入**（`input_sha256` + token 数），不一致拒绝生成；
   `--check` 已进 CI。它第一次运行就抓到了 `design-review.md §2-D12`。
 - ✅ `decis bench`：`benchmarks/run.py` 的薄包装（不是第二份实现）。
+- ✅ `benchmarks/batch_gain.py` + `results/laya-multilingual-batch-gain.json`：**跨请求批处理的收益，
+  在实现它之前先测**（详下）。
+- ✅ `benchmarks/report.py` 现在也生成 `README.zh-CN.md` 与 `docs/design-review.md` 的批处理段，
+  并拒绝渲染**没有正对照**的攒批数据。
 
-未做：攒批器、进程池、`/metrics`、各引擎 × 设备 × 批大小的完整表。**本阶段有三个必须先做的验证**：
+未做：攒批器（**很可能不该做**，见下）、进程池、`/metrics`、`docker-compose.yml`、
+各引擎 × 设备 × 批大小的完整表。**本阶段有三个必须先做的验证**：
 
-1. **跨请求批处理的真实收益**（§6.2）——这是整个吞吐论点的基石，仍然**完全未实测**。
+1. ✅ **跨请求批处理的真实收益**（§6.2）——**已测，结论为否定**，见 `design-review.md §4-M5`：
+   短序列正对照 1.92x，393 token 时降到 1.10x，真实流量形状（不同 state、长度倾斜）下**每个批大小都比串行慢**；
+   固定线程预算下 1/2/4 进程吞吐差 1.18x。**所以本阶段的第一件事从"实现攒批器"变成"不要实现它"**，
+   或者先决定 `§12.2` 的待决策项。
    Stage 1 只证明了"引擎层能正确地把不同 state 的问题合成一次前向"（
    `tests/test_laya_inference.py: test_one_predict_call_handles_every_state_in_one_forward_pass`），
-   那是必要条件，不是收益证据；攒批窗口能不能攒到东西，取决于真实流量的到达分布。
+   那是必要条件，不是收益证据——事实证明收益也不存在。
 2. ✅ **批不变性**（§6.6）——已在 Stage 1 用真实权重测过（它是阶段 1 的前置，因为若 argmax
    会翻转，整个批处理设计要重估）：16 条不同 state、三种原语、batch=2/4/8/16 共 12 组配置下，
    **最大绝对偏差 8.345e-07，argmax 翻转 0 次**（原始记录
@@ -900,10 +926,19 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
    并按 padding 宽度累加的 fixture 引擎，在 `batch=1/8/32` 上断言偏差上界与 argmax 稳定，
    并且带一个**负向对照**（故意忽略 mask 的引擎必须让同一个断言失败），保证这个断言不是空转。
    实测：正确引擎在 batch=32 上偏差 1.1e-16、0 次翻转；坏引擎偏差 2.3e-02 且翻转 1 次。
-3. `DECIS_BATCH_MODE=rows|prefix|auto` 的默认值与判据。
+3. ⬜ `DECIS_BATCH_MODE=rows|prefix|auto` 的默认值与判据。**但攒批器若不做，这个开关也没有实现处**——
+   先决定第 1 项，不要为一个可能不存在的机制先加配置项。
 
-**Stage 4 — 发布工程（3–5 天）** — ⬜ 未开始
-CI 三段式多架构多引擎镜像；GHCR + Docker Hub；`docker-compose.yml`；SBOM 与 provenance（`--provenance`）；README 定稿；`AGENTS.md` 定稿；首个 release。
+**Stage 4 — 发布工程（3–5 天）** — 🟡 已开始
+
+- ✅ 三段式多引擎镜像工作流 `.github/workflows/docker-build.yml`：`test → plan → build(matrix) → merge`，
+  按引擎分镜像（`decis-mock` / `decis-laya-multilingual` / `decis-kev-0.8b`，
+  以及带权重的 `-offline` 变体），多架构用**原生** `ubuntu-24.04-arm` 而不是 QEMU（QEMU 装 torch 太慢），
+  合并成多架构 manifest，push 时带 SBOM 与 provenance；PR 只构建 amd64 的 `mock` 验证 Dockerfile。
+  矩阵生成逻辑是纯 bash，因此可以**离线执行测试**：`tests/test_docker_workflow.py` 把 `plan` 步骤的脚本
+  从 YAML 里抠出来，按每种触发事件真跑一遍。
+- ⬜ `docker-compose.yml`；Docker Hub（目前只有 GHCR）；在真实 runner 上跑通一次并记录镜像体积与容器内冷启动；
+  README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
@@ -924,6 +959,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 冷启动期间服务不"假死" | `/healthz` 立即 200，`/readyz` 报 loading/failed（D7 选 B） |
 | 超长请求被拒而不是被静默截断 | 容量校验 + `measure()` 报真实长度（D10） |
 | 文档里的性能数字来自原始 JSON | `report.py --check` 在 CI 里，`test_benchmark_report.py` 守着检查器本身 |
+| **跨请求批处理的收益有一个带正对照的实测结论** | `benchmarks/batch_gain.py` + `results/laya-multilingual-batch-gain.json`；正对照达标（1.92x）才允许出结论，`verify_batch_gains` 拒绝没有正对照的文件 |
+| **镜像按引擎自动构建、多架构、可校验** | `.github/workflows/docker-build.yml`；矩阵逻辑由 `tests/test_docker_workflow.py` 真跑（引擎名、extra 映射、build-arg、PR 不推送） |
 
 **B 档 — 能跑，但缺一维证据（可以说，必须带保留）**
 
@@ -931,24 +968,40 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 |---|---|
 | CPU 上的延迟 | 有原始数据，但 Laya 那两份是**实现 Decis 之前对引擎本身**的测量，不是服务端到端；kev 每个 dtype 只有一次观测 |
 | kev 在 CPU 上可用 | 可用但比 Laya 慢一个数量级；bf16 再慢 83 倍（单次观测） |
-| `decis bench` 采集 | 已能用，但目前只能测**请求内**批处理 |
+| `decis bench` 采集 | 已能用，但目前只能测**请求内**批处理；跨请求那部分由 `benchmarks/batch_gain.py` 单独测 |
+| 镜像大小与冷启动 | 有 `docker/Dockerfile` 与 CI 构建，但**没有实测记录**（镜像体积、容器内冷启动、arm64 上的可行性） |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 
 | 能力 | 为什么不能 |
 |---|---|
-| **吞吐 / QPS** | **M5：跨请求批处理从未被测过**。这是整个性能论证的核心假设，也是 §6 收益预期的唯一支柱 |
+| **吞吐 / QPS** | **M5 已测且为负**：跨请求批处理在本机的真实流量形状下不增加吞吐（长度倾斜时慢 3–5 倍），加进程也不增加。可报的只有"单进程 24 线程约 1.2 项/秒"这个**实测上界**，且仅限 CPU、仅限 Laya。见 §4-M5 |
 | GPU 上的延迟 | 无 GPU 机器，从未测过 |
-| 多进程 / 多 worker 的扩展性 | 未测；当前是单进程 + 一把引擎锁 |
+| 多进程 / 多 worker 的扩展性 | **已测且为负**：固定总线程预算下 1/2/4 进程吞吐差 1.18x，加进程不增加吞吐。见 §4-M5 |
 | 429 在真实限流下的行为 | 无 API key，无法触发 |
 | 生产可用性（SLO、内存上限、并发数） | 无压测，无长时间运行观测 |
-| 镜像可移植性 | 只有 `docker/Dockerfile`；多架构矩阵、GHCR 推送、SBOM 都还没有 |
+| 镜像可移植性 | 工作流已就位（多架构、GHCR、SBOM/provenance），但**从未在真实 GitHub runner 上跑过**，也没有任何一次成功的构建记录 |
 
 **剩余工作，按"挡住对外承诺的程度"排序**
 
-1. **跨请求攒批器 + 它的触发测试**（Stage 3）——`batch.py`，同时补上 §3-18 的守卫。**这是唯一一件"不做完就没法回答'Decis 到底解决什么问题'"的事**：请求内批处理只对"一次问 10 个问题"有帮助，而真实流量是每次请求一个 state 一个问题，那种情况下当前实现**退化成一个串行的单请求服务**。
-2. **进程池 / 多 worker 的测量与选择**——决定"24 vCPU 上该起几个进程、每个几线程"。现在只有一个数据点。
-3. **`/metrics`**——让"攒批器真的触发了"在生产里可观测，而不只在测试里。
+1. **决定攒批器怎么办**（见下面的待决策项）。M5 的实测已经把"实现它"从"必做"变成了"很可能不该做"：
+   在 CPU 上它不增加吞吐，在异构 state 下是 3–5 倍回归。**在这一项决定之前，不要写 `batch.py`。**
+2. **`/metrics`**——本来的理由是"让攒批器真的触发了在生产里可观测"。攒批器若不做，这条的理由要重新论证；
+   仍然值得有的是**单进程饱和度的可观测性**（队列深度、排队时间、`decis.batch_size` 分布），因为
+   M5 说明这台机器的瓶颈是算力本身，不是攒批。
+3. **`docker-compose.yml`**——把"挂载外部模型"的路径写成一个能跑的示例（`DECIS_MODEL_DIR` 已支持）。
+4. **镜像的实测记录**——在真实 runner 上跑一次工作流，把镜像体积与容器内冷启动记进 `benchmarks/`。
+5. **GPU 上的同一组测量**（M6）——本结论**不适用于 GPU**，而 GPU 是 kev 的目标场景。
+   在 GPU 上重跑 `batch_gain.py` 之前，不得对 GPU 的吞吐做任何承诺。
+
+### 12.2 待决策项（需要产品判断）
+
+| # | 问题 | 现状 | 建议 |
+|---|---|---|---|
+| 1 | 跨请求攒批器：做 / 不做 / 改条件做 | M5 实测在 CPU 上无收益、异构 state 下为负 | **不做**。若将来上 GPU，先用 `batch_gain.py` 在 GPU 上重测再决定 |
+| 2 | `DECIS_BATCH_MAX_WAIT_MS` 初值 | 攒批器不存在，该配置项也没有实现处 | 随第 1 项一起推迟；**不要**先加一个没有实现处的配置项 |
+| 3 | D13：`noul.criteria` 里的未知 key 静默忽略 | 仍为宽松行为；官方 SDK 会抛错，裸 JSON 不会 | 接受但报告（记日志 + 响应里 `decis.ignored_fields`）。理由见 `design-review.md §2-D13` |
+| 4 | 部署内存预算 → 进程数的关系 | 实测 `laya-multilingual` 峰值 RSS 4.83 GB/进程；本机 33.5 GB | 单进程用满线程即可（M5），容量按 `1 × 5 GB` 而不是 `N × 5 GB` 规划 |
 4. **用 `run.py` 重采 Laya**（端到端，而不是引擎本身）——把 B 档的延迟升到 A 档。
 5. **`docker-compose.yml` + `docker-build.yml`（多架构矩阵 + GHCR + SBOM）**（Stage 4）。
 6. ~~`examples/`（`curl.md`、`python_sdk.py`）~~ ✅ 已完成：三个文件，且**由
