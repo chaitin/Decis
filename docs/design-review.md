@@ -251,6 +251,41 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 这个 bug 与 D7 属于同一族——**"服务在忙时不回答探针"**——但成因和修法完全不同，所以分开记录。
 
+### D9（严重，会静默降质）引擎的"选项文本"不能由 Decis 统一决定 — kev 揭示的抽象缺口
+
+接 kev 时发现的，属于 Stage 2 存在的意义。`render.py` 是"任意 JSON → 可读文本"的唯一所在，但**选项在序列里长什么样是引擎自己的格式**。Stage 1 的 Laya 没有暴露这个区别，因为 Laya 恰好也用 `"name: description"`（choice）和 `"level N: "`（score）；kev 用的是另一套：
+
+| primitive | Decis `PreparedQuestion`（`render.py`） | kev 训练与服务的文本（`api.py:102`） |
+|---|---|---|
+| choice | `Option(name=criteria 键, description=渲染值)` | `f"{name}: {description}"`（无描述则裸 `name`）— **与 Decis 一致** |
+| noul | `Option("false", …)`、`Option("true", …)` | `"no"`、`"yes"`（`option_text("no", …)`）— **不同** |
+| score | `Option("0".."n-1", description=层级文本)` | **只有层级文本**，不带 `"0: "` 前缀 — **不同** |
+
+若 kev 引擎直接照搬 Decis 的 `Option.name`，模型会收到它训练时从未见过的文本（`"false: …"`、`"0: Can wait"`），**准确率下降而没有任何报错**——正是本项目最不能接受的那类 bug。
+
+**证据（不是推断）**：kev 的 `data.py:395 materialize()` 明确写着 "Labelled request -> internal record **via the serving path (api.to_record)**"——训练数据与线上服务走的是同一个函数。所以 `api.py` 的渲染约定**就是**模型学到的约定。
+
+**结论：抽象是对的，不需要改 `render.py` 或 `answers.py`。** 需要的是承认"选项文本"属于引擎的序列格式（`AGENTS.md §2` 已按 Stage 1 的结论这么规定），因此 kev 引擎自己把 `PreparedQuestion` 映射成 kev 的文本。已实测验证：用 Decis 的 `PreparedRequest` 构造出的 record 与 kev 自己的 `api.to_record` **逐字段相等**，`encode` 出来的 `ids/seg/pos/opt/decide_idx/opt_idx` 全等，概率与上游 `model.probs()` **差 0.00e+00**（kev-0.8b，CPU fp32，`.scratch/kev_probe.py`）。
+
+顺带得到两条独立佐证（与 Laya 的一样，属"未计划的一致性"）：kev 的 `question_keys`（`api.py:94`）与 Decis 的 `answers.py: question_keys` **逐字相同**；kev 的 `choice_confidence`（`api.py:120`）与 Decis 的 choice confidence **公式相同**。kev 的 `score_confidence`（`api.py:125`，"距离众数层级"）与 Decis 的归一化熵**不同**，且它自称是"未公开公式的近似"——这正好是 `decis.native_confidence` 存在的理由；但它在 `noul` 上没有定义，而 `native_confidences` 是按 item 对齐的列表，混合请求里没有连贯的值可报，所以 kev 引擎不填这个字段（`answers.py` 的 `confidence` 三个 primitive 都覆盖）。
+
+另外记录一处**已知偏差，未实测影响**：Decis 的 `render_value` 对 dict **按键排序**（`render.py:46`），kev 的 `render` 保留插入顺序（`api.py:55`）。state 的渲染归 `render.py`（`AGENTS.md §2`），且 Laya 已按现行行为发布并测试，所以不改；但 kev 的 state 文本因此可能与它训练时见过的字段顺序不同。影响未测。
+
+### D10（中）容量接口没有"state 单独上限"的位置，而 kev 有一个
+
+kev 的 `encode(strict=True)` 同时施加两条**不同**的限制（`model.py:44,54`）：
+
+1. `len(state) + 1 <= MAX_STATE`（384）
+2. 每个问题 `len(state) + len(branch) <= MAX_BRANCH`（1024）
+
+而 `validate_capacity` 只有两个比较位：`sequence_tokens <= max_sequence_tokens` 和每个问题 `head_tokens[qid] <= max_question_tokens`（`schema.py:222,260`）。`MeasuredTokens.state_tokens` **只被报告、从不校验**。
+
+于是 (2) 可以落在 `sequence_tokens` 上，而 (1) 无处安放：state 500 token、问题 10 token 的请求 `sequence_tokens = 510 <= 1024` 会通过校验，然后被 `encode` 截断（`strict=False` 时它静默 `state_tokens[:max_state-1]`，并在 `state_truncated` 里留一个没人看的标记）。
+
+Laya 没有这个问题：它只有一个约束（`max_len`），state 按剩余空间截断，所以一个比较位就够。**这属于 `EngineCapacity`/`validate_capacity` 的接口缺口，不是 kev 的怪癖**——任何有独立 state 窗口的引擎都会撞上。
+
+修法与取舍见下方"待办"；在修好之前，kev 引擎的 `measure()` 必须自己把这个条件报出来，不能靠 schema 兜住。
+
 ---
 
 ## 3. 标准符合性对照
