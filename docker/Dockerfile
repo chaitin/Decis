@@ -92,8 +92,11 @@ USER 10001:10001
 
 EXPOSE 8000
 
-# Liveness only: /readyz would report unhealthy during a ~75 s cold start and get the
-# container killed mid-load.
+# Liveness only, and the start period is load-bearing: the engine is loaded during
+# startup, before the HTTP loop begins, so for the first ~80 s (CPU, laya-multilingual)
+# this probe cannot connect at all. Measured cold start: 79.7 s. Do not lower this
+# without measuring your engine -- too short a start period turns a healthy load into a
+# restart loop. See docs/design-review.md §2-D7.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=180s --retries=6 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"
 

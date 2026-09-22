@@ -102,9 +102,11 @@ uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB, on
 uv run decis serve --engine laya-multilingual --host 127.0.0.1
 ```
 
-Cold start is about **75 s on CPU**, so `/healthz` is up immediately while `/readyz` reports
-not-ready until the weights are in memory. In a container, put the weights in the image and it runs
-with no network:
+Cold start is about **80 s on CPU**, and **the server answers nothing until it finishes** — the
+engine is loaded during startup, before the HTTP protocol loop begins, so a probe during that window
+hangs rather than returning 503. If you put this behind a probe, give it a generous start period
+(the image's `HEALTHCHECK` uses 180 s) or the orchestrator will restart a container that is loading
+correctly. Weights in the image means it then runs with no network:
 
 ```bash
 docker build -f docker/Dockerfile \

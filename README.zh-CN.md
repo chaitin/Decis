@@ -102,8 +102,10 @@ uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB，�
 uv run decis serve --engine laya-multilingual --host 127.0.0.1
 ```
 
-CPU 上冷启动约 **75 秒**，所以 `/healthz` 立刻可用，而 `/readyz` 在权重进内存之前一直报未就绪。
-容器里把权重打进镜像即可离线运行：
+CPU 上冷启动约 **80 秒**，而且**在此之前服务不回答任何请求**——引擎在启动过程中加载，
+此时 HTTP 协议循环还没开始，所以这期间探针是挂起而不是收到 503。要放到探针后面的话，
+把启动宽限期设得足够长（本镜像的 `HEALTHCHECK` 用的是 180 秒），否则编排系统会反复重启一个
+其实在正常加载的容器。把权重打进镜像后它就能离线运行：
 
 ```bash
 docker build -f docker/Dockerfile \

@@ -151,6 +151,10 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 已写入 `design.md §10.1–10.3`。
 
+> **Stage 1 补充**：上面第一条"必须先加载、后监听"实现之后，代价才显现出来——
+> 它意味着冷启动的 80 秒里**服务完全不响应**，`/healthz` 也挂起。这不是本条写错了，
+> 而是当时只算了"先 bind 会让流量排在加载后面"这一侧的风险。完整记录与两个选项见 **D7**。
+
 ### D6（轻）单请求超时预算与官方 SDK 不匹配 — 已修正
 
 初版写"超时返回 529"。但官方 SDK 的 `DEFAULT_TIMEOUT` 是 **10.0 s / 次 HTTP 操作**，且**连接错误与超时也在默认重试集合里**。所以：
@@ -159,6 +163,42 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 - 529 不在 SDK 的"已知状态码"表里（表里只有 400/401/403/404/422/429），会落到 `TypeSafeInternalServerError` 并被重试。
 
 已改为：`DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量），超时返回 **504**；**队列等待计入这个预算**；过载优先用 **429 + `retry-after-ms`**（在重试集合内且语义准确）。`design.md §6.5`。
+
+### D7（中，未修正——需要一次决策）冷启动期间服务完全不响应，且文档说的是反的
+
+接 Laya 之后第一次真的用真实权重起服务时实测到的：
+
+```
+18:14:04  loading engine laya-multilingual; /readyz reports 503 until this finishes
+18:14:06  loading laya-multilingual from convaiinnovations/laya/multilingual@1c5edc17...
+18:15:23  loaded laya-multilingual (device=cpu dtype=float32 max_len=1024 head_max_len=256)
+18:15:23  {"method":"GET","path":"/healthz","status":200, ...}   ← 第一条 HTTP 响应
+```
+
+**冷启动 79.7 秒内，服务不返回任何 HTTP 响应。** 原因是结构性的：`app.py` 的 lifespan 里
+`service.load()` 是同步阻塞的，而 uvicorn 要等 lifespan 跑完才进入协议循环——socket 已 bind，
+所以探针是**挂起**而不是拿到连接错误。
+
+两个后果：
+
+1. **文档与实现相反。** README 原文写"`/healthz` 立刻可用，而 `/readyz` 在权重进内存之前报未就绪"。
+   已改成实测到的事实，并补上"必须给足 start-period"这条操作性警告——本仓库的镜像用 180 秒，
+   但按默认探针配置部署到 k8s 的人会遇到重启循环，而原文档不会告诉他。
+2. **"未就绪"是一个生产上到不了的状态。** `/readyz` 的 503、`/v1/systemone` 的 503、
+   以及 `tests/test_readiness.py` 里那几个断言，都只能靠 `load_engine=False`（测试专用开关）触达。
+   也就是说 `AGENTS.md §9` 要求的"用 `/readyz` 明确报告未就绪"这条路当前是死代码。
+
+**为什么还没改**：这是 Stage 0 的一个**有意选择**（见 D5 第一条）——`test_an_engine_that_fails_to_load_stops_startup`
+断言"加载失败必须让启动失败"，理由是启动一个永远 503 的服务比直接退出更难察觉。
+这个理由成立，所以不能顺手把它反过来。两条路都要付代价：
+
+| 方案 | 好处 | 代价 |
+|---|---|---|
+| A. 维持同步加载 | 加载失败立刻让进程退出，最不容易被忽略 | 冷启动窗口内无任何响应；探针必须调好，否则重启循环；"未就绪"路径在生产上是死代码 |
+| B. 后台线程加载，失败时 `/readyz` 报 `failed` 并返回非 200 | 冷启动期间 `/healthz` 200、`/readyz` 503 且能说明原因；未就绪路径在生产上可达；探针可区分"还在加载"和"崩了" | 加载失败不再让进程退出，需要靠 `/readyz` 的 `failed` + 日志告警；要改掉那个 Stage 0 测试 |
+
+倾向 B（可观测性更好，且让已写好的 503 逻辑不再是死代码），但这会改动已记录的启动语义，
+所以留待明确决定，不擅自改。
 
 ---
 

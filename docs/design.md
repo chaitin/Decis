@@ -776,8 +776,10 @@ Decis/
 1. ✅ **`decis serve --engine laya-multilingual` 用真实权重回答真实请求**。三个原语
    （`noul`/`choice`/`score`）都产出合法分布；`tests/test_laya_inference.py` 用真实权重验证，
    共 14 个用例，CPU 上约 90 秒。
-2. ✅ **`/readyz` 在 warmup 完成后才转绿**。冷启动约 75 秒（CPU），期间 `/healthz` 立即可用，
-   所以 HEALTHCHECK 打的是 `/healthz`，容器不会被 75 秒的加载期误杀。
+2. ⚠️ **`/readyz` 在 warmup 完成后才转绿，但冷启动期间服务完全不响应**——这条与初版设计不符，
+   实测记录在 `design-review.md §2-D7`。冷启动实测 **79.7 秒**（CPU）：引擎在 lifespan 里同步加载，
+   而 uvicorn 是在 lifespan 跑完之后才进入协议循环的，所以这期间 `/healthz` 也是挂起的，
+   不是返回 503。镜像的 HEALTHCHECK 因此必须给足 `start-period`（现为 180 秒）。
 3. ✅ **`decis download` 可用**，且**只**拉目标 checkpoint 的文件（三个 checkpoint 共用一个
    仓库，`allow_patterns` 保证不互相牵连）。
 4. ✅ **带权重的镜像可用**：`DECIS_PREDOWNLOAD=<engine>` 在构建期落地权重，
