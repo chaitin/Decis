@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# uv
+.uv-cache/
+
+# Test / coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Model weights — never commit these
+models/
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+*.onnx
+*.gguf
+*.npz
+!tests/fixtures/**/*.safetensors
+
+# Hugging Face / local caches
+.cache/
+hf/
+uv-cache/
+
+# Local scratch (probes, benchmark runs, downloads)
+.scratch/
+benchmarks/results/*.tmp.json
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

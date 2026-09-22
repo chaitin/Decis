@@ -1,0 +1,77 @@
+Decis
+Copyright 2026 Decis contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Third-party components
+================================================================================
+
+--------------------------------------------------------------------------------
+kev  (planned: vendored subset)
+--------------------------------------------------------------------------------
+Source:  https://github.com/jaredpalmer/kev
+License: Apache License 2.0
+Author:  Jared Palmer
+
+Status: NOT YET VENDORED. This entry is a placeholder for the planned vendoring of
+kev's inference kernel into src/decis/engines/_kev_vendor/.
+
+When vendoring is performed, this entry MUST be updated with:
+  - the exact commit SHA that was pinned
+  - the list of files copied
+  - any local modifications made to those files
+
+The intended subset is limited to the inference path:
+  kev/model.py      -> encode(), branch_mask_batch(), PointerHead, DecisionModel
+  kev/checkpoint.py -> Checkpoint, Meta, LoadOptions
+kev/api.py is deliberately NOT vendored: Decis implements the wire contract in
+src/decis/answers.py so that every engine shares one answer/confidence definition.
+kev's training, evaluation and dataset modules are not used.
+
+--------------------------------------------------------------------------------
+Laya  (runtime dependency, not vendored)
+--------------------------------------------------------------------------------
+Source:  https://github.com/NandhaKishorM/laya
+         https://huggingface.co/convaiinnovations/laya
+         https://pypi.org/project/laya/
+License: Apache License 2.0
+Author:  Convai Innovations
+
+Used as a pip dependency (the `laya` distribution). No source code is copied into
+this repository. Model weights are downloaded separately by the user or baked into
+an image at build time; they are not redistributed by this repository.
+
+--------------------------------------------------------------------------------
+Model weights (not redistributed)
+--------------------------------------------------------------------------------
+Decis does not redistribute model weights. Images built from this repository
+download weights at build time from their upstream publishers. Users are
+responsible for complying with each model's license:
+
+  convaiinnovations/laya                Apache-2.0
+  convaiinnovations/laya-multilingual   Apache-2.0
+  convaiinnovations/laya-typed-decisions Apache-2.0
+  jaredpalmer/kev-*                     Apache-2.0
+  Qwen/Qwen3.5-*-Base                   Apache-2.0
+
+--------------------------------------------------------------------------------
+Engineering references (no code copied)
+--------------------------------------------------------------------------------
+The following projects informed Decis's design without any code being copied.
+If code is ever copied from them, this NOTICE must be updated.
+
+  https://github.com/mizorewww/laya-mlx   Apache-2.0
+      Referenced for: the tiny-random-checkpoint test fixture pattern, and the
+      "generate benchmark reports from raw checked-in JSON, asserting identical
+      input hashes" methodology.
+
+  https://github.com/kingfs/UniTS-Hub     Apache-2.0
+      Referenced for: the single-Dockerfile-with-build-arg image pattern and the
+      GitHub Actions test -> build(matrix, push-by-digest) -> imagetools-merge
+      release pipeline.
+
+  https://docs.typesafe.ai                (documentation reference only)
+      The System One wire contract implemented by Decis is documented by TypeSafe
+      AI. Decis implements the interface; it does not include any TypeSafe code,
+      models, or weights.

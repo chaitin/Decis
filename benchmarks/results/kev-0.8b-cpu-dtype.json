@@ -1,0 +1,52 @@
+{
+  "engine": "kev",
+  "checkpoint": "jaredpalmer/kev-0.8b",
+  "base_model": "Qwen/Qwen3.5-0.8B-Base",
+  "server": "python -m kev.serve --run jaredpalmer/kev-0.8b",
+  "host": {
+    "platform": "Linux-6.8.0-139-generic-aarch64-with-glibc2.39",
+    "cpu_count": 24,
+    "machine": "aarch64",
+    "gpu": false,
+    "mem_gb": 33.5,
+    "torch_version": "2.14.0+cpu",
+    "transformers_version": "5.17.0"
+  },
+  "request": {
+    "questions": 3,
+    "question_types": ["choice(3 options)", "noul", "score(3 levels)"],
+    "state_words_approx": 20,
+    "usage": {"input_tokens": 101, "output_tokens": 162}
+  },
+  "method": "two separate server processes (one per dtype), OMP_NUM_THREADS=16, KEV_DTYPE set explicitly. One warm-up request, then two measured requests; the figure below is kev's own server-side latency_ms from the final response, which excludes tokenization and HTTP overhead. Transcribed by hand from the response body: this is a single observation per dtype, not an aggregate, so it is recorded verbatim rather than summarised.",
+  "reproduce": "bash .scratch/run_kev_dtype.sh",
+  "results": [
+    {
+      "dtype": "fp32",
+      "server_latency_ms": 1656.1,
+      "answers": {
+        "department": {"type": "choice", "choice": "returns", "confidence": 0.08,
+                       "probabilities": {"returns": 0.39, "shipping": 0.38, "billing": 0.24}},
+        "escalate": {"type": "noul", "noul": 0.59},
+        "frustration": {"type": "score", "score": 1.29, "confidence": 0.81,
+                        "probabilities": {"0": 0.04, "1": 0.63, "2": 0.33}}
+      }
+    },
+    {
+      "dtype": "bf16",
+      "server_latency_ms": 137173.7,
+      "answers": {
+        "department": {"type": "choice", "choice": "returns", "confidence": 0.08,
+                       "probabilities": {"returns": 0.39, "shipping": 0.37, "billing": 0.24}},
+        "escalate": {"type": "noul", "noul": 0.59},
+        "frustration": {"type": "score", "score": 1.29, "confidence": 0.82,
+                        "probabilities": {"0": 0.04, "1": 0.63, "2": 0.33}}
+      }
+    }
+  ],
+  "warnings_emitted_by_the_server": [
+    "`chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.",
+    "`causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel."
+  ],
+  "conclusion": "bf16 is ~83x slower than fp32 on CPU with a <=0.01 probability delta and identical argmax. Both packages that would provide optimised kernels require Triton/CUDA and cannot be installed on CPU-only Linux. kev should therefore be treated as a GPU-first engine; the CPU image trades one order of magnitude of latency for functionality."
+}
