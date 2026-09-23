@@ -198,24 +198,59 @@ def test_every_engine_in_the_workflow_is_a_registered_engine(push_to_master: dic
     assert not unknown, f"the workflow builds engines that are not registered: {sorted(unknown)}"
 
 
-def test_the_extra_mapping_matches_the_registry(push_to_master: dict) -> None:
-    """`DECIS_EXTRAS` is chosen by a ternary in YAML; a new engine would silently get `laya`."""
+def test_the_planned_extra_matches_the_registry(push_to_master: dict) -> None:
+    """Each image must install exactly the dependencies its engine declares.
+
+    Asserted against the *planned matrix*, not against the YAML text: the value used to
+    come from `engine == 'mock' && '' || 'laya'`, and an empty string is falsy in a GitHub
+    expression, so `mock` silently installed Laya and shipped 3.1 GB of torch. Only
+    executing the step catches that.
+    """
     sys.path.insert(0, str(ROOT / "src"))
     from decis.engines.registry import SPECS
 
-    # The workflow encodes this mapping in one expression; keep it in step with what the
-    # registry declares, or an engine image installs the wrong dependencies.
-    expected = {"mock": "", "laya-multilingual": "laya", "kev-0.8b": "kev"}
-    for engine, extra in expected.items():
+    planned = {build["engine"]: build["extra"] for build in push_to_master["builds"]}
+    assert set(planned) == {"mock", "laya-multilingual", "kev-0.8b"}, sorted(planned)
+    for engine, extra in planned.items():
         assert engine in SPECS, f"{engine} is in the workflow but not the registry"
-        assert SPECS[engine].extra == extra, f"{engine}: registry says {SPECS[engine].extra!r}, workflow says {extra!r}"
+        assert SPECS[engine].extra == extra, (
+            f"{engine}: the registry declares extra {SPECS[engine].extra!r}, the workflow would install {extra!r}"
+        )
+
+    # `mock` is the one every user pulls first and the one the contract tests share; it
+    # must not drag in a model runtime. This is the regression that shipped.
+    assert planned["mock"] == "", f"the mock image would install {planned['mock']!r}"
 
     # And every engine the registry can serve is either imaged or deliberately not.
-    unimaged = set(SPECS) - set(expected)
+    unimaged = set(SPECS) - set(planned)
     assert unimaged == {"laya", "laya-typed-decisions"}, (
         f"{sorted(unimaged)} are registered but have no image. Either add them to the "
         f"workflow's engine list or say here why they share an image."
     )
+
+
+def test_an_engine_with_no_mapped_extra_stops_the_plan(tmp_path: Path, plan_script: str) -> None:
+    """An image that installs nothing is better than one that installs the wrong thing."""
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    completed = run_shell(
+        plan_script,
+        tmp_path,
+        {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
+            "GITHUB_OUTPUT": str(output),
+            "HAVE_CREDENTIALS": "true",
+            "EVENT": "workflow_dispatch",
+            "REF": "refs/heads/master",
+            "REF_NAME": "master",
+            "INPUT_ENGINES": "laya-typed-decisions",
+            "INPUT_BAKE": "false",
+            "INPUT_PUSH": "false",
+        },
+    )
+    assert completed.returncode != 0, "an engine with no extras mapping was planned anyway"
+    assert "no pip extra is mapped" in completed.stderr, completed.stderr
 
 
 def test_the_workflow_passes_only_dockerfile_declared_build_args(push_to_master: dict) -> None:

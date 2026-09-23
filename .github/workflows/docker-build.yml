@@ -154,6 +154,26 @@ jobs:
             offline=true
           fi
 
+          # Which pip extra provides an engine's dependencies. The matrix carries this
+          # rather than the build step computing it from the engine name, because the
+          # obvious spelling -- `engine == 'mock' && '' || 'laya'` -- is wrong: an empty
+          # string is falsy in a GitHub expression, so the `||` branch wins and the mock
+          # image installs Laya and torch. It did, and shipped 3.1 GB of it. Deciding here
+          # also gives the mapping one home, and this script is executed by the tests, so
+          # an engine with no extra is a loud failure instead of a silent default.
+          extra_for() {
+            case "$1" in
+              mock) echo "" ;;
+              laya-multilingual) echo "laya" ;;
+              kev-0.8b) echo "kev" ;;
+              *)
+                echo "error: no pip extra is mapped for engine '$1'." >&2
+                echo "       Add it here and to the build-args test's expectations." >&2
+                return 1
+                ;;
+            esac
+          }
+
           # One build per engine x variant x platform, and one merge per engine x variant
           # (the merge is what turns two platform images into one multi-arch manifest).
           builds="["
@@ -161,6 +181,7 @@ jobs:
           first_build=1
           first_merge=1
           for engine in "${engines[@]}"; do
+            extra="$(extra_for "$engine")" || exit 1
             variants=(runtime)
             if [ "$offline" = "true" ] && [[ " ${bakeable[*]} " == *" $engine "* ]]; then
               variants=(runtime offline)
@@ -176,7 +197,7 @@ jobs:
                 set -- $platform
                 [ $first_build -eq 1 ] || builds+=","
                 first_build=0
-                builds+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"bake\":\"$bake\",\"platform\":\"$1\",\"runner\":\"$2\",\"arch\":\"${1#linux/}\"}"
+                builds+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"bake\":\"$bake\",\"extra\":\"$extra\",\"platform\":\"$1\",\"runner\":\"$2\",\"arch\":\"${1#linux/}\"}"
               done
             done
           done
@@ -289,7 +310,7 @@ jobs:
           # leg has no consumer here.
           push: ${{ needs.plan.outputs.push == 'true' }}
           build-args: |
-            DECIS_EXTRAS=${{ matrix.engine == 'mock' && '' || (matrix.engine == 'kev-0.8b' && 'kev' || 'laya') }}
+            DECIS_EXTRAS=${{ matrix.extra }}
             DECIS_ENGINE=${{ matrix.engine }}
             DECIS_PREDOWNLOAD=${{ matrix.bake }}
           tags: ${{ steps.meta.outputs.tags }}

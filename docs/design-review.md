@@ -412,6 +412,55 @@ JSON Schema 中缺失即允许额外属性，所以**接受额外键是符合契
 
 ---
 
+### D14（中，已修正）`mock` 镜像装了 Laya 和 torch：3.2 GB 里 3.1 GB 是它不需要的
+
+**发现方式**：镜像第一次真正推到 Docker Hub 之后，用 registry API 逐层列体积。
+`mock-latest` 是 **3203 MB**，和 `laya-multilingual-latest` **一模一样**——
+
+```
+layer                size  history
+...（python:3.13-slim + uv，约 66 MB）
+41887076501f        3137MB  RUN |3 DECIS_EXTRAS=laya DECIS_ENGINE=mock DECIS_PREDOWNLOAD= ...
+TOTAL               3203MB
+```
+
+`DECIS_EXTRAS=laya`，而 `DECIS_ENGINE=mock`。**`mock` 镜像里装了 torch、transformers、peft。**
+一个"什么都不需要、起来就有"的引擎，镜像比 python 基础镜像大 60 倍。
+
+**根因是一行 YAML 里的三元表达式惯用法**：
+
+```yaml
+DECIS_EXTRAS=${{ matrix.engine == 'mock' && '' || (matrix.engine == 'kev-0.8b' && 'kev' || 'laya') }}
+```
+
+GitHub Actions 的表达式里没有真正的三元运算符，社区惯用 `A && B || C`。这个惯用法
+**在 `B` 为假值时是错的**：`'mock' == 'mock'` 为真 → `''`，然后 `'' || …` 因为**空字符串是假值**
+而继续求值右边 → `'laya'`。于是"没有 extra"这个分支永远不可能被选中。
+`kev-0.8b` 和 `laya-multilingual` 恰好都落在默认值上，所以**只有 `mock` 是错的**，
+而它偏偏是每个用户第一次 `docker pull` 的那个（也是 CI 里"镜像能起来并服务"那条腿用的那个）。
+
+**为什么原来的测试没抓到**：`test_the_extra_mapping_matches_the_registry` 里写着一份
+**手抄的** `expected = {"mock": "", …}`，然后拿它和 registry 比——它比的是两份硬编码常量，
+从来没有读过 YAML 里的那个表达式。这正是 §2"抄写就是第二处实现"的又一个实例：
+第一处实现（表达式）错了，第二处实现（测试里的常量）是对的，于是测试恒绿。
+现在的测试改成读**执行 plan 脚本后产出的矩阵**：表达式已经不存在了，
+映射搬进了 plan 脚本（`extra_for()`），而那个脚本的测试是真跑的。
+
+**修法**：把 `引擎 → pip extra` 的映射从 YAML 表达式搬进 `plan` 步骤，
+矩阵里直接带 `extra` 字段，构建步骤只做 `DECIS_EXTRAS=${{ matrix.extra }}`。
+顺带得到两个好处：(1) 该映射只剩一处，且与 `registry.SPECS[...].extra` 有测试比对；
+(2) 出现一个没有映射的引擎时 `plan` **直接失败**，而不是静默落进 `laya` 默认值。
+
+**教训（可以推广的）**：`A && B || C` 不能用来表达"可能为空的三元"。空字符串、`0`、
+空数组在 GitHub 表达式里都是假值，所以这个惯用法只在所有分支都为真值时才等价于三元。
+凡是"选一个可以合法为空的值"，都不要用它。
+
+**同一批发现里更值得记住的一点**：这个缺陷是**镜像体积**这种维度暴露的，
+而它此前躲过了全部 422 个测试。体积不是被断言出来的，是推上去之后用 registry API 量出来的——
+`AGENTS.md §8` 那条"数字必须来自实测"在这里救了一次场。
+
+---
+
 ## 3. 标准符合性对照
 
 用户问"是否尊重标准"。逐条对照，**包括我们有意不遵守的地方**：
