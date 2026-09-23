@@ -8,7 +8,7 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 > **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
 > contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **480 tests passing** without weights — including the official
+> Dockerfile and CI are implemented, with **498 tests passing** without weights — including the official
 > `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
 > **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
 > real requests today; 27 further tests load the real weights. Adding kev required **no change to
@@ -368,6 +368,19 @@ failing. Set `DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip the search.
 The proxy also rewrites `model` to the id the engine reported at `/readyz`, so the pages can ask
 for `jev-latest` and still work under either profile without `DECIS_ACCEPT_FOREIGN_DEFAULTS`.
 
+The four pages share one stylesheet (`playground/web/theme.css`) and one i18n mechanism
+(`playground/web/i18n.js`); each page carries its own strings and its own layout, and no page
+restates the palette. That keeps a change to the design — or a missing translation — from being
+a change in four places.
+
+The interface is bilingual, English and Simplified Chinese. The language comes from
+`navigator.languages` unless `?lang=zh` says otherwise, the switch in the app bar overrides it,
+and the choice is remembered in `localStorage`. **Only the interface is translated**: the
+`state`, `instructions` and `criteria` sent to the model stay English, because that is the
+language the prompts are written in and because the token budget these pages were sized against
+is the budget of those exact strings. Where a page shows a value it also sends -- an option
+name, a placement id -- the label around it may be localised, but the value on the wire is not.
+
 Building it is one Dockerfile and no Python dependencies:
 
 ```bash
@@ -440,13 +453,13 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 - **[kev](https://github.com/jaredpalmer/kev)** (Jared Palmer) — a Jev-style decision model built on Qwen3.5, and already a TypeSafe-compatible server for its own weights. Decis reuses kev's inference kernel (vendor-pinned, Apache-2.0, attributed in `NOTICE`) and generalises the serving layer to many engines.
 - **[Laya](https://huggingface.co/convaiinnovations/laya)** (Convai Innovations) — Apache-2.0, multilingual, non-autoregressive, one forward pass. Decis uses the official `laya` package as an engine.
 - **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)** — the multi-model container build pattern Decis follows (one Dockerfile with a build arg, GitHub Actions matrix pushing by digest, then `imagetools create`).
-- **[djev-run](https://github.com/taeold/djev-run)** (Daniel Lee) — the Snake, Dino and Tetris pages in `playground/web/` are adapted from it. Decis changed their endpoint to the playground's own origin (so the API key stays server-side), removed the borrowed latency baselines, and cut Tetris from sixteen verbose options to six terse ones so it fits the default engine's per-question token budget. Attribution is in `NOTICE`; the games' physics and planner code comes from the projects that repository credits.
+- **[djev-run](https://github.com/taeold/djev-run)** (Daniel Lee) — the Snake, Dino and Tetris pages in `playground/web/` are adapted from it. Decis changed their endpoint to the playground's own origin (so the API key stays server-side), removed the borrowed latency baselines, cut Tetris from sixteen verbose options to five terse ones so it fits the default engine's per-question token budget, and restyled and translated the interface (the text sent to the model is untouched). Attribution is in `NOTICE`; the games' physics and planner code comes from the projects that repository credits.
 
 ## Development
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 480 tests, ~22 s, no weights, no network
+uv run pytest -q                        # 498 tests, ~25 s, no weights, no network
 uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token

@@ -4,144 +4,230 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Decis playground</title>
+  <link rel="stylesheet" href="/theme.css">
+  <script src="/i18n.js"></script>
   <style>
-    :root {
-      --bg: #f8fafc;
-      --panel: #ffffff;
-      --ink: #0f172a;
-      --muted: #64748b;
-      --line: #e2e8f0;
-      --accent: #2a78d6;
-      --ok: #16a34a;
-      --wait: #d97706;
+    /* Page layout only: the palette, the app bar, the cards and the footer are in
+       /theme.css, which every page shares. */
+    .shell { width: 100%; max-width: 940px; margin: 0 auto; padding: 40px 20px 56px; }
+
+    .hero { margin-bottom: 6px; }
+
+    .hero h1 {
+      font-size: clamp(26px, 4.4vw, 40px);
+      line-height: 1.15;
+      letter-spacing: -0.025em;
+      font-weight: 700;
+      margin: 0;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--ink);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      line-height: 1.5;
-      min-height: 100vh;
-      display: flex;
-      justify-content: center;
-      padding: 48px 20px;
+
+    .hero h1 .grad {
+      background: linear-gradient(100deg, var(--accent) 10%, var(--accent-3) 48%, var(--accent-2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
-    main { width: 100%; max-width: 880px; }
-    h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; }
-    .lede { color: var(--muted); margin-top: 8px; max-width: 62ch; }
-    .lede code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
-    .status {
-      margin-top: 20px;
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      font-size: 13px;
+
+    .lede { color: var(--ink-dim); margin: 14px 0 0; max-width: 66ch; font-size: 14.5px; }
+
+    .status-note {
+      margin-top: 10px;
+      font-family: var(--mono);
+      font-size: 11px;
       color: var(--muted);
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 10px;
-      padding: 10px 14px;
+      min-height: 15px;
+      word-break: break-all;
     }
-    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--wait); flex: none; }
-    .dot.ready { background: var(--ok); }
-    .status strong { color: var(--ink); font-weight: 600; }
-    .status code { font-size: 12px; color: var(--muted); }
-    .grid { margin-top: 24px; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
-    a.card {
-      display: block;
-      text-decoration: none;
-      color: inherit;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 18px;
-      transition: border-color .15s ease, transform .15s ease;
+
+    .how {
+      margin-top: 26px;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     }
-    a.card:hover { border-color: var(--accent); transform: translateY(-2px); }
-    .card h2 { font-size: 16px; font-weight: 620; display: flex; align-items: center; gap: 8px; }
-    .card .glyph {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 26px; height: 26px; border-radius: 7px;
-      background: #eef4fd; color: var(--accent); font-size: 15px;
+
+    .how div {
+      border-left: 2px solid var(--line-strong);
+      padding-left: 12px;
+      font-size: 12.5px;
+      color: var(--ink-dim);
     }
-    .card p { margin-top: 9px; color: var(--muted); font-size: 13.5px; }
-    .card .api { margin-top: 10px; font-size: 12px; color: var(--accent); }
-    footer { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
-    footer a { color: var(--accent); text-decoration: none; }
+
+    .how b { display: block; color: var(--ink); font-weight: 600; font-size: 12.5px; margin-bottom: 2px; }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Decis playground</h1>
-    <p class="lede">
-      Three games that play themselves by asking a real decision model. Every move is a
-      <code>POST /v1/systemone</code> call; this page and the games are served by the
-      playground, which forwards those calls to the running engine and attaches the API
-      key, so the browser never holds one.
-    </p>
+  <header class="app-bar">
+    <a class="brand" href="/">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Decis <span class="brand-sub" data-i18n="brand.sub">playground</span></span>
+    </a>
+    <nav class="app-nav">
+      <a href="/snake" data-i18n="nav.snake">Snake</a>
+      <a href="/dino" data-i18n="nav.dino">Dino</a>
+      <a href="/tetris" data-i18n="nav.tetris">Tetris</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="status-chip" id="status-chip">
+      <span id="dot" class="dot busy"></span>
+      <span id="status-text" data-i18n="status.searching" data-i18n-dynamic>Looking for the engine&hellip;</span>
+    </span>
+    <div data-lang-switch></div>
+  </header>
 
-    <div class="status">
-      <span id="dot" class="dot"></span>
-      <span id="status-text">Looking for the engine…</span>
-      <span id="status-detail" style="margin-left:auto;"></span>
+  <main class="shell">
+    <div class="hero">
+      <h1><span class="grad" data-i18n="hero.title">Decis playground</span></h1>
     </div>
+    <p class="lede" data-i18n="hero.lede">
+      Three games that play themselves by asking a real decision model. Every move is a
+      POST /v1/systemone call; the playground serves the pages and forwards those calls to
+      the running engine with the API key attached, so the browser never holds one.
+    </p>
+    <div class="status-note" id="status-note"></div>
 
-    <div class="grid">
+    <section class="cards">
       <a class="card" href="/snake">
-        <h2><span class="glyph">&#9679;</span>Snake</h2>
-        <p>
-          A 12×12 grid with a flood-fill safety analysis. The model picks between four
+        <h2><span class="glyph">&#9679;</span><span data-i18n="card.snake.title">Snake</span></h2>
+        <p data-i18n="card.snake.desc">
+          A 12&times;12 grid with a flood-fill safety analysis. The model picks between four
           moves from the safe-move set; the probability bars show what it weighed.
         </p>
-        <div class="api">choice · 4 options</div>
+        <div class="api mono">choice &middot; 4 options</div>
       </a>
       <a class="card" href="/dino">
-        <h2><span class="glyph">&#9650;</span>Dino</h2>
-        <p>
-          The Chromium offline runner, with a physics planner that marks jump, duck and
-          run safe, unsafe or best. The model chooses; an optional shield vetoes.
+        <h2><span class="glyph">&#9650;</span><span data-i18n="card.dino.title">Dino</span></h2>
+        <p data-i18n="card.dino.desc">
+          The Chromium offline runner, with a physics planner that marks jump, duck and run
+          safe, unsafe or best. The model chooses; an optional shield vetoes.
         </p>
-        <div class="api">choice · 3 options</div>
+        <div class="api mono">choice &middot; 3 options</div>
       </a>
       <a class="card" href="/tetris">
-        <h2><span class="glyph">&#9638;</span>Tetris</h2>
-        <p>
-          Each turn the page enumerates the placements of the current piece and asks
-          which to play, plus a strategy, a stack-health score and a boolean.
+        <h2><span class="glyph">&#9638;</span><span data-i18n="card.tetris.title">Tetris</span></h2>
+        <p data-i18n="card.tetris.desc">
+          Each turn the page enumerates the placements of the current piece and asks which
+          to play, plus a strategy, a stack-health score and a boolean.
         </p>
-        <div class="api">choice · score · noul</div>
+        <div class="api mono">choice &middot; score &middot; noul</div>
       </a>
-    </div>
+    </section>
 
-    <footer>
-      Games adapted from <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a>.
-      The API is documented in the <a href="https://github.com/kingfs/Decis" target="_blank" rel="noopener">Decis</a> repository;
-      <a href="/v1/systemone" onclick="return false;">/v1/systemone</a> is proxied, <code>/readyz</code> reports the engine.
+    <section class="how">
+      <div>
+        <b data-i18n="how.one.title">One request per decision</b>
+        <span data-i18n="how.one.body">No batching, no cache: the payload of the last call is on every page.</span>
+      </div>
+      <div>
+        <b data-i18n="how.two.title">The engine is discovered</b>
+        <span data-i18n="how.two.body">The playground probes /readyz and connects to whichever engine answers.</span>
+      </div>
+      <div>
+        <b data-i18n="how.three.title">The key stays server-side</b>
+        <span data-i18n="how.three.body">The browser calls this origin; the proxy attaches the token. No page holds a key.</span>
+      </div>
+    </section>
+
+    <footer class="page-foot">
+      <span data-i18n="foot.adapted">Games adapted from</span>
+      <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a>.
+      <span data-i18n="foot.docs">The API is documented in the</span>
+      <a href="https://github.com/kingfs/Decis" target="_blank" rel="noopener">Decis</a>
+      <span data-i18n="foot.repo">repository</span>;
+      <code>/v1/systemone</code> <span data-i18n="foot.proxied">is proxied, and</span>
+      <code>/readyz</code> <span data-i18n="foot.readyz">reports the engine.</span>
     </footer>
   </main>
 
   <script>
+    I18N.add({
+      en: {
+        "hero.title": "Decis playground",
+        "hero.lede": "Three games that play themselves by asking a real decision model. Every move is a POST /v1/systemone call; the playground serves the pages and forwards those calls to the running engine with the API key attached, so the browser never holds one.",
+        "card.snake.title": "Snake",
+        "card.snake.desc": "A 12\u00d712 grid with a flood-fill safety analysis. The model picks between four moves from the safe-move set; the probability bars show what it weighed.",
+        "card.dino.title": "Dino",
+        "card.dino.desc": "The Chromium offline runner, with a physics planner that marks jump, duck and run safe, unsafe or best. The model chooses; an optional shield vetoes.",
+        "card.tetris.title": "Tetris",
+        "card.tetris.desc": "Each turn the page enumerates the placements of the current piece and asks which to play, plus a strategy, a stack-health score and a boolean.",
+        "how.one.title": "One request per decision",
+        "how.one.body": "No batching and no cache: the payload of the last call is shown on every page.",
+        "how.two.title": "The engine is discovered",
+        "how.two.body": "The playground probes /readyz and connects to whichever engine answers first.",
+        "how.three.title": "The key stays server-side",
+        "how.three.body": "The browser calls this origin; the proxy attaches the token. No page ever holds a key.",
+        "status.readyPrefix": "Connected to ",
+        "status.candidates": "waiting on {candidates}",
+        "status.upstream": "upstream {upstream}",
+        "status.readyDetail": "every move is one POST to it"
+      },
+      zh: {
+        "hero.title": "Decis \u6f14\u793a\u573a",
+        "hero.lede": "\u4e09\u4e2a\u6e38\u620f\uff0c\u9760\u771f\u5b9e\u7684\u51b3\u7b56\u6a21\u578b\u81ea\u5df1\u73a9\u81ea\u5df1\u3002\u6bcf\u4e00\u6b65\u90fd\u662f\u4e00\u6b21 POST /v1/systemone\uff1bplayground \u8d1f\u8d23\u63d0\u4f9b\u9875\u9762\uff0c\u5e76\u5728\u8f6c\u53d1\u65f6\u9644\u4e0a API \u5bc6\u94a5\uff0c\u6240\u4ee5\u6d4f\u89c8\u5668\u91cc\u59cb\u7ec8\u6ca1\u6709\u5bc6\u94a5\u3002",
+        "card.snake.title": "\u8d2a\u5403\u86c7",
+        "card.snake.desc": "12\u00d712 \u68cb\u76d8\uff0c\u914d\u4e00\u4e2a flood-fill \u5b89\u5168\u6027\u5206\u6790\u3002\u6a21\u578b\u5728\u5b89\u5168\u65b9\u5411\u96c6\u91cc\u56db\u9009\u4e00\uff1b\u6982\u7387\u6761\u5c55\u793a\u5b83\u6743\u8861\u4e86\u4ec0\u4e48\u3002",
+        "card.dino.title": "\u6050\u9f99",
+        "card.dino.desc": "Chromium \u79bb\u7ebf\u5c0f\u6050\u9f99\uff0c\u914d\u4e00\u4e2a\u7269\u7406\u89c4\u5212\u5668\uff0c\u628a jump / duck / run \u6807\u6210\u5b89\u5168\u3001\u4e0d\u5b89\u5168\u6216\u6700\u4f18\u3002\u9009\u62e9\u7531\u6a21\u578b\u505a\uff1b\u53ef\u9009\u7684\u62a4\u76fe\u53ef\u4e00\u7968\u5426\u51b3\u3002",
+        "card.tetris.title": "\u4fc4\u7f57\u65af\u65b9\u5757",
+        "card.tetris.desc": "\u6bcf\u4e00\u56de\u5408\u9875\u9762\u679a\u4e3e\u5f53\u524d\u65b9\u5757\u7684\u6240\u6709\u843d\u70b9\uff0c\u95ee\u8be5\u8d70\u54ea\u4e00\u4e2a\uff0c\u53e6\u5916\u8fd8\u95ee\u4e00\u4e2a\u7b56\u7565\u3001\u4e00\u4e2a\u5806\u53e0\u5065\u5eb7\u5ea6\u5206\u548c\u4e00\u4e2a\u5e03\u5c14\u503c\u3002",
+        "how.one.title": "\u6bcf\u4e00\u6b65\u4e00\u6b21\u8bf7\u6c42",
+        "how.one.body": "\u4e0d\u6512\u6279\u3001\u4e0d\u7f13\u5b58\uff1a\u6bcf\u4e2a\u9875\u9762\u90fd\u628a\u4e0a\u4e00\u6b21\u8c03\u7528\u7684\u8bf7\u6c42\u4f53\u539f\u6837\u663e\u793a\u51fa\u6765\u3002",
+        "how.two.title": "\u5f15\u64ce\u662f\u81ea\u5df1\u627e\u5230\u7684",
+        "how.two.body": "playground \u4f9d\u6b21\u63a2\u6d4b /readyz\uff0c\u8c01\u5148\u7b54\u5c31\u8fde\u8c01\u3002",
+        "how.three.title": "\u5bc6\u94a5\u53ea\u5728\u670d\u52a1\u7aef",
+        "how.three.body": "\u6d4f\u89c8\u5668\u8bf7\u6c42\u7684\u662f\u540c\u4e00\u4e2a\u57df\uff1b\u4ee3\u7406\u5728\u670d\u52a1\u7aef\u9644\u4e0a token\uff0c\u9875\u9762\u91cc\u6c38\u8fdc\u6ca1\u6709\u5bc6\u94a5\u3002",
+        "status.readyPrefix": "\u5df2\u8fde\u63a5 ",
+        "status.candidates": "\u6b63\u5728\u7b49\u5f85 {candidates}",
+        "status.upstream": "\u4e0a\u6e38 {upstream}",
+        "status.readyDetail": "\u6bcf\u4e00\u6b65\u90fd\u662f\u5411\u5b83\u53d1\u4e00\u6b21 POST"
+      }
+    });
+
     const $ = (id) => document.getElementById(id);
+    let lastConfig = null;
+
+    function renderStatus() {
+      const dot = $("dot");
+      const text = $("status-text");
+      const note = $("status-note");
+      if (!lastConfig) {
+        dot.className = "dot busy";
+        text.textContent = I18N.t("status.searching");
+        note.textContent = "";
+        return;
+      }
+      const config = lastConfig;
+      if (config.ready) {
+        dot.className = "dot live";
+        // The engine id is the one thing in this chip that is not translated: it is a wire
+        // value, and it goes into a <strong> rather than into the string.
+        text.textContent = I18N.t("status.readyPrefix");
+        const strong = document.createElement("strong");
+        strong.textContent = config.engine;
+        text.appendChild(strong);
+        note.textContent = I18N.t("status.upstream", { upstream: config.upstream || "" }) + " \u00b7 " + I18N.t("status.readyDetail");
+      } else {
+        dot.className = "dot warn";
+        text.textContent = I18N.t("status.searching");
+        note.textContent = I18N.t("status.candidates", { candidates: (config.candidates || []).join("  ") });
+      }
+    }
 
     async function refresh() {
       try {
         const resp = await fetch("/api/config", { cache: "no-store" });
-        const config = await resp.json();
-        if (config.ready) {
-          $("dot").className = "dot ready";
-          $("status-text").innerHTML = `Connected to <strong>${config.engine}</strong>`;
-          $("status-detail").textContent = config.upstream || "";
-        } else {
-          $("dot").className = "dot";
-          $("status-text").textContent = "Waiting for the engine to answer /readyz…";
-          $("status-detail").textContent = (config.candidates || []).join("  ");
-        }
+        lastConfig = await resp.json();
       } catch (err) {
-        $("dot").className = "dot";
-        $("status-text").textContent = `Playground unreachable: ${err.message}`;
+        lastConfig = null;
+        $("dot").className = "dot err";
+        $("status-text").textContent = I18N.t("status.unreachable", { message: err.message });
+        $("status-note").textContent = "";
+        return;
       }
+      renderStatus();
     }
 
+    I18N.onChange(renderStatus);
     refresh();
     setInterval(refresh, 3000);
   </script>

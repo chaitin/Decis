@@ -14,6 +14,7 @@ point -- the playground image does not contain it.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -378,3 +379,273 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     for hardcoded in ("slice(0, 6)", "slice(0, 16)", "slice(0, 5)"):
         assert hardcoded not in text, f"tetris.html hardcodes the shortlist as {hardcoded}"
     assert text.count("PLACEMENT_SHORTLIST") >= 3, "the constant is declared but no longer used"
+    # The panel that reports the option count has to read the same constant. When the
+    # shortlist was cut from six to five this label kept a literal `6`, and the page went
+    # on claiming one option more than it sent -- a hand-copied constant, which is the
+    # failure this whole guard exists for (AGENTS.md §9).
+    meta = text.split('I18N.t("json.meta"', 1)[1].split("});", 1)[0]
+    assert "PLACEMENT_SHORTLIST" in meta, "the option count in the UI is written out again"
+    # Only the shortlist's own values, not every clamp in the file: `Math.min(100, pct)` is
+    # arithmetic, `Math.min(6, …)` is the shortlist written out a second time.
+    leftover = re.search(r"Math\.min\(\s*(?:5|6|16)(?!\d)", text)
+    assert leftover is None, f"a numeric option count survived as a literal: {leftover and leftover.group(0)}"
+
+
+# --- one design system, one i18n, four pages ---------------------------------------
+#
+# The pages are separately authored but must not be separately designed or separately
+# translated. Both mechanisms have one home (`theme.css`, `i18n.js`) and every page uses
+# it; the guards below are what keep a fourth page from growing its own palette or its own
+# half-finished dictionary. A browser can check the result (`.scratch/webcheck.py` reports
+# missing strings, unapplied ones, overflow and JS errors) but it cannot run in CI, so the
+# shape is asserted here and the rendering is checked by hand.
+
+#: Tokens a page would be redefining the shared palette with. A page may add its own
+#: layout variables; it may not restate these.
+THEME_TOKENS = ("--bg:", "--ink:", "--muted:", "--line:", "--accent:", "--surface:", "--radius:")
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_every_page_uses_the_shared_design_system(name: str) -> None:
+    text = (WEB / name).read_text(encoding="utf-8")
+    assert 'href="/theme.css"' in text, f"{name} does not link the shared stylesheet"
+    assert 'src="/i18n.js"' in text, f"{name} does not load the shared i18n"
+    assert "data-lang-switch" in text, f"{name} has no language switch"
+    # A page that restates the palette is the second implementation this project forbids.
+    style = text.split("<style>", 1)[-1].split("</style>", 1)[0]
+    for token in THEME_TOKENS:
+        assert token not in style, f"{name} redefines {token} instead of using theme.css"
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_every_page_marks_up_its_translatable_text(name: str) -> None:
+    """Static text is tagged; a page with no tags is a page nobody translated."""
+    text = (WEB / name).read_text(encoding="utf-8")
+    assert text.count("data-i18n=") >= 8, f"{name} has almost no tagged strings"
+    assert "I18N.add(" in text, f"{name} declares no strings of its own"
+
+
+def test_the_shared_assets_are_served(playground_url: str) -> None:
+    """`theme.css` and `i18n.js` are served by the same file rule as the pages."""
+    for path, content_type in (("/theme.css", "text/css"), ("/i18n.js", "text/javascript")):
+        status, headers, body = get(playground_url + path)
+        assert status == 200, path
+        assert headers["content-type"].startswith(content_type), path
+        assert len(body) > 500, path
+    # The rule that serves them still refuses to walk out of the web directory.
+    assert get(playground_url + "/../server.py")[0] == 404
+
+
+def test_the_pages_are_served_without_a_stale_cache(playground_url: str) -> None:
+    """Editing a page during development must not need a hard refresh."""
+    status, headers, _ = get(playground_url + "/index.html")
+    assert status == 200
+    assert headers["cache-control"] == "no-store"
+
+
+# --- the dictionaries ---------------------------------------------------------------
+#
+# Parsed out of the JavaScript rather than duplicated here: a test that carried its own
+# copy of the strings would stay green while the page said something else (AGENTS.md §9).
+#
+# The scanner is deliberately small -- the dictionaries are flat maps of string to string,
+# which is all it has to read. A nested value is skipped rather than interpreted, so the
+# day one of these files grows structure the test fails loudly instead of misreading it.
+
+
+def _js_blank(text: str, index: int, *, commas: bool = False) -> int:
+    """Advance past whitespace and JS comments.
+
+    The pages are written by people: a `//` note inside the dictionary is normal, and the
+    scanner has to read the strings rather than choke on the prose around them.
+    """
+    separators = " \t\r\n," if commas else " \t\r\n"
+    while index < len(text):
+        if text[index] in separators:
+            index += 1
+        elif text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+        elif text.startswith("/*", index):
+            end = text.find("*/", index)
+            index = len(text) if end < 0 else end + 2
+        else:
+            return index
+    return index
+
+
+def _js_string(text: str, index: int) -> tuple[str, int]:
+    """The JS string literal at `index`, and the index just after it."""
+    quote = text[index]
+    assert quote in "\"'", f"expected a string at {index}: {text[index : index + 24]!r}"
+    out: list[str] = []
+    i = index + 1
+    while i < len(text):
+        char = text[i]
+        if char == "\\":
+            escape = text[i + 1]
+            if escape == "u":
+                out.append(chr(int(text[i + 2 : i + 6], 16)))
+                i += 6
+            else:
+                out.append({"n": "\n", "t": "\t"}.get(escape, escape))
+                i += 2
+            continue
+        if char == quote:
+            return "".join(out), i + 1
+        out.append(char)
+        i += 1
+    raise AssertionError("unterminated string")
+
+
+def _js_braces(text: str, open_index: int) -> str:
+    """The `{...}` that starts at `open_index`, nested braces included."""
+    assert text[open_index] == "{", text[open_index : open_index + 24]
+    depth = 0
+    i = open_index
+    while i < len(text):
+        char = text[i]
+        if char in "\"'":
+            _, i = _js_string(text, i)
+            continue
+        if text.startswith("//", i) or text.startswith("/*", i):
+            i = _js_blank(text, i)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_index : i + 1]
+        i += 1
+    raise AssertionError("unbalanced braces")
+
+
+def _js_pairs(literal: str) -> dict[str, str]:
+    """The top-level `"key": "value"` entries of a flat object literal."""
+    pairs: dict[str, str] = {}
+    i = 1  # past the opening brace
+    end = len(literal) - 1
+    while i < end:
+        i = _js_blank(literal, i, commas=True)
+        if i >= end:
+            break
+        key, i = _js_string(literal, i)
+        i = _js_blank(literal, i)
+        assert literal[i] == ":", literal[i - 20 : i + 20]
+        i = _js_blank(literal, i + 1)
+        if literal[i] not in "\"'":
+            # A nested array or object: take its text as-is rather than pretending to
+            # understand it, so a page that grows structure fails the comparison loudly.
+            if literal[i] in "[{":
+                nested = _js_braces(literal, i) if literal[i] == "{" else None
+                pairs[key] = nested if nested is not None else literal[i : literal.index("]", i) + 1]
+                i += len(pairs[key])
+                continue
+            raise AssertionError(f"unsupported value for {key!r}: {literal[i : i + 24]!r}")
+        value, i = _js_string(literal, i)
+        pairs[key] = value
+    return pairs
+
+
+def _dictionary(text: str, marker: str) -> dict[str, dict[str, str]]:
+    """The `{ en: {...}, zh: {...} }` written after `marker`."""
+    start = text.index(marker) + len(marker)
+    while text[start] in " \t\r\n(":
+        start += 1
+    outer = _js_braces(text, start)
+    found: dict[str, dict[str, str]] = {}
+    for language in ("en", "zh"):
+        match = re.search(rf"(?<![\w$]){language}\s*:\s*\{{", outer)
+        assert match, f"no {language!r} dictionary after {marker}"
+        found[language] = _js_pairs(_js_braces(outer, match.end() - 1))
+    return found
+
+
+def _page_strings(name: str) -> dict[str, dict[str, str]]:
+    return _dictionary((WEB / name).read_text(encoding="utf-8"), "I18N.add(")
+
+
+def _shell_strings() -> dict[str, dict[str, str]]:
+    return _dictionary((WEB / "i18n.js").read_text(encoding="utf-8"), "var SHELL = ")
+
+
+#: Strings deliberately identical in both languages because they are identifiers rather
+#: than prose: a product name, or a value the model itself sees. Being on this list is a
+#: decision, which is the point -- the test makes someone write it down.
+KEPT_IN_ENGLISH = {"foot.repo"}
+
+
+def _reads_as_prose(value: str) -> bool:
+    """A sentence or a phrase, as opposed to a label or an identifier."""
+    words = [word for word in value.split() if any(char.isalpha() for char in word)]
+    return len(words) >= 2 or len(value) >= 16
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_every_page_declares_both_languages_completely(name: str) -> None:
+    """Every key in both, and nothing left in English that reads as a sentence."""
+    english, chinese = (_page_strings(name)[language] for language in ("en", "zh"))
+    assert len(english) >= 10, f"{name} declares only {len(english)} strings"
+    assert not set(english) - set(chinese), f"{name} has no Chinese for: {sorted(set(english) - set(chinese))}"
+    assert not set(chinese) - set(english), f"{name} translates unknown keys: {sorted(set(chinese) - set(english))}"
+    untranslated = sorted(k for k, v in english.items() if chinese[k] == v and _reads_as_prose(v))
+    assert set(untranslated) <= KEPT_IN_ENGLISH, f"{name} left prose in English: {untranslated}"
+
+
+def test_the_shell_strings_are_complete() -> None:
+    english, chinese = (_shell_strings()[language] for language in ("en", "zh"))
+    assert set(english) == set(chinese)
+    for key, value in english.items():
+        if chinese[key] == value and _reads_as_prose(value):
+            assert key in KEPT_IN_ENGLISH, f"i18n.js left {key!r} in English"
+
+
+def test_the_language_comes_from_the_browser_and_can_be_switched() -> None:
+    """Detection order, persistence and the switch -- the mechanism, not the rendering.
+
+    The rendering is checked in a real browser by `.scratch/webcheck.py`; what has to hold
+    in the weightless suite is that a Chinese browser gets Chinese without touching
+    anything (the whole point of the feature), that the choice sticks, that `?lang=` works
+    for a shared link, and that text is assigned as text.
+    """
+    text = (WEB / "i18n.js").read_text(encoding="utf-8")
+    assert "navigator.languages" in text and "navigator.language" in text
+    assert 'indexOf("zh")' in text, "the Chinese tags are not recognised"
+    assert "localStorage" in text, "the choice is not remembered"
+    assert 'get("lang")' in text, "a link cannot name a language"
+    assert "document.documentElement.lang" in text, "the page language is never set"
+    # Assigned as text, never as markup: the comment in the file may name the alternative.
+    assert not re.search(r"\.innerHTML\s*=", text), "translated text must be text, not markup"
+
+
+def test_the_dictionary_scanner_reads_javascript_not_just_json() -> None:
+    """The scanner is the thing that reads the pages, so it gets its own test.
+
+    It was written for JSON-shaped literals and the first page to carry a `//` note inside
+    its dictionary broke it. A `//` inside a *string* is the case that makes this
+    interesting: it has to be kept, while the same two characters outside a string are a
+    comment to skip.
+    """
+    sample = """I18N.add({
+      // a note above the block
+      en: {
+        "a": "one", // trailing note
+        /* block */ "b": "two",
+        "c": "three, with a comma and a // not-a-comment",
+      },
+      zh: { "a": "\\u4e00", "b": "二", "c": "三" },
+    });"""
+    strings = _dictionary(sample, "I18N.add(")
+    assert strings["en"] == {
+        "a": "one",
+        "b": "two",
+        "c": "three, with a comma and a // not-a-comment",
+    }
+    assert strings["zh"] == {"a": "一", "b": "二", "c": "三"}
+
+
+def test_the_scanner_refuses_a_dictionary_with_no_chinese() -> None:
+    """A page that declares one language is a page that was not translated."""
+    with pytest.raises(AssertionError, match="zh"):
+        _dictionary('I18N.add({ en: { "a": "one" } });', "I18N.add(")

@@ -58,9 +58,12 @@ listed in each file's header comment and in README.md ("Relationship to other
 projects"); in substance: the endpoint is the playground's own origin (so the API
 key stays server-side and the browser never holds it), a head-to-head latency
 comparison against another deployment was removed rather than re-published with
-stale numbers, and the Tetris placement question was cut from sixteen verbose
-options to six terse ones so that it fits the default engine's per-question token
-budget.
+stale numbers, the Tetris placement question was cut from sixteen verbose options
+to five terse ones so that it fits the default engine's per-question token
+budget, and the interface was restyled onto a stylesheet shared by all four pages
+and translated into Simplified Chinese. The text sent to the model is unchanged:
+`state`, `instructions` and `criteria` are still the upstream English strings,
+which is also what the token budget above was measured against.
 
 The upstream repository declares no license (it has no LICENSE file), so this
 adaptation is recorded as a fact a distributor can act on rather than as a claim

@@ -7,7 +7,7 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**480 个无权重测试通过**——
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**498 个无权重测试通过**——
 > 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
 > 现在都能回答真实请求**；另有 27 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
@@ -337,6 +337,16 @@ playground 自己的 `/readyz` 报 `searching`，页面会如实显示而不是�
 转发时它还会把 `model` 改写成引擎在 `/readyz` 里报的 id，所以页面可以继续发 `jev-latest`，
 在两个 profile 下都能用，不需要 `DECIS_ACCEPT_FOREIGN_DEFAULTS`。
 
+四个页面共用一份样式表（`playground/web/theme.css`）和一套 i18n 机制
+（`playground/web/i18n.js`）；每个页面只带自己的文案和自己的布局，没有任何一页重抄调色板。
+所以改一次设计、或者漏一条翻译，都不会变成要改四个地方。
+
+界面是中英双语的：默认按 `navigator.languages` 选，`?lang=zh` 可以指定，顶栏的开关可以随时
+切换，选过之后记在 `localStorage` 里。**只有界面被翻译**：发给模型的 `state`、`instructions`
+和 `criteria` 仍然是英文，因为提示词就是英文写的，而且这些页面的 token 预算正是按那些字符串
+量出来的。页面要显示某个同时也要发出去的值时（选项名、落点 id），可以本地化它周围的标签，
+但发上线格式的那个值本身不动。
+
 构建它只需要一个 Dockerfile，没有任何 Python 依赖：
 
 ```bash
@@ -404,13 +414,13 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 - **[kev](https://github.com/jaredpalmer/kev)**（Jared Palmer）——基于 Qwen3.5 的 Jev 风格决策模型，本身已经是一个只服务自己权重的 TypeSafe 兼容服务端。Decis 复用 kev 的推理内核（vendor 固定版本，Apache-2.0，署名见 `NOTICE`），并把服务层泛化到多个引擎。
 - **[Laya](https://huggingface.co/convaiinnovations/laya)**（Convai Innovations）——Apache-2.0，多语言，非自回归，一次前向。Decis 把官方的 `laya` 包当作一个引擎使用。
 - **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)**——Decis 沿用的多模型容器构建方式（一个 Dockerfile 加一个 build arg，GitHub Actions matrix 按 digest 推送，再用 `imagetools create` 合并）。
-- **[djev-run](https://github.com/taeold/djev-run)**（Daniel Lee）——`playground/web/` 里的 snake、dino、tetris 三个页面改编自它。Decis 的改动是：请求地址改成 playground 自己的源（密钥留在服务端），删掉借来的延迟对比数字，把 tetris 从 16 个冗长选项压到 6 个精简选项以适配默认引擎的单题 token 预算。署名见 `NOTICE`；游戏里的物理与规划代码来自那个仓库致谢的项目。
+- **[djev-run](https://github.com/taeold/djev-run)**（Daniel Lee）——`playground/web/` 里的 snake、dino、tetris 三个页面改编自它。Decis 的改动是：请求地址改成 playground 自己的源（密钥留在服务端），删掉借来的延迟对比数字，把 tetris 从 16 个冗长选项压到 5 个精简选项以适配默认引擎的单题 token 预算，并重新统一了界面风格、加了中文界面（发给模型的文本一字未动）。署名见 `NOTICE`；游戏里的物理与规划代码来自那个仓库致谢的项目。
 
 ## 开发
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 480 个测试，约 22 秒，无权重、无网络
+uv run pytest -q                        # 498 个测试，约 25 秒，无权重、无网络
 uv run pytest -m weights                # 27 个加载真实权重（Laya + kev）的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token

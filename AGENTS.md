@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**480 通过 / 33 跳过**，约 22 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**504 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**498 通过 / 33 跳过**，约 25 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**522 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -114,10 +114,28 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 的 config 提供而非代码默认）：snake 的 head 79 / 序列 287，dino 78 / 128，tetris 的四个问题
 > 分别 178、100、97、69，state 233、序列 415——**全部落在代码兜底的 512/192 之内**。
 > 正是这个测量把 tetris 的落点候选从 6 压到 5：6 个约 207 > 192。
+> **playground 的界面已实测**（2026-09-23，headless Chromium 1223 走 CDP，工具是 `.scratch/webcheck.py`；
+> 页面连的是本机 8299 上那个替身引擎，所以棋真的在下）：四个页面 × 中英各跑一遍（`.scratch/final_sweep.py`
+> 一把跑完八次并把结果留在 `.scratch/final_sweep.json`），**`bad` 全空**——没有未捕获异常、没有 console
+> 输出、没有横向溢出（`documentScrollWidth == viewport`）、没有看不见的字、每个 canvas 都真有像素
+> （snake 1 个、dino 4 个、tetris 2 个）。窄视口也是实测的：**四个页面在 380 与 700 都验过**
+> （索引页另有 420/1024，tetris 另有 400/420/460）。对比度按 WCAG AA 逐节点算（渐变取平均色、
+> 半透明逐层合成，**是近似不是读数**）：index 34 / snake 50 / dino 61–62 / tetris 66 个样本，
+> **没有一个低于阈值**。语言行为也是实测的：`--lang=zh-CN` 起的浏览器**不带参数进来就是中文**，
+> `?lang=en` 覆盖它，点顶栏开关切换后**刷新仍是切换后的语言**。真实页面在浏览器里发出的请求被
+> 替身引擎记了下来：snake 9 次 `move`、dino 28 次 `action`、tetris 8 次四问，`state`/`instructions`/
+> `criteria` 仍是英文原文，tetris 的落点候选**恰好 5 个**。
+> **这轮验证抓到并修掉两个真实缺陷**，两个都不是改版引入的、是原来就在的：
+> 一是 tetris 的 `#json-meta` 把候选数写成**字面量 6**——短名单从 6 压到 5 时这句没跟着改，
+> 于是页面显示的选项数比它实际发出去的多一个（已改成读 `PLACEMENT_SHORTLIST`，并在
+> `tests/test_playground.py` 里加了守卫：面板里的数字必须是那个常量，且 `Math.min(5|6|16, …)`
+> 这种写法不许再出现）；二是 tetris 在 380–430px 会横向溢出（stage 是 282px 棋盘 + 96px 侧栏，
+> 而媒体查询只把外层压成一列），已加 440px 断点让 stage 竖排、操作栏换行。
 > **playground 未验证**：没有用 `docker compose up` 起过（是 `docker run` 起在等价网络上），
-> 所以 compose 的 profile 交互与健康检查只经 `docker compose config` 校验；
-> kev profile 下没跑过；**没有任何浏览器渲染验证**——页面在真实浏览器里的显示、点击、
-> canvas 绘制都没测过，测的只是它们发出去的请求与拿回来的答案；那条 CI job 也还没在 GitHub 上跑过。
+> 所以 compose 的 profile 交互与健康检查只经 `docker compose config` 校验；kev profile 下没跑过；
+> 那条 CI job 也还没在 GitHub 上跑过。界面这一层**没有任何人眼看过**（截图在 `.scratch/shots/`，
+> 上面那些结论全部来自程序化审计），窄视口只测了溢出与对比度、**没有真机**，
+> 引擎"加载中"那一档 chip 也没有对着真的在加载的引擎跑过。
 
 ---
 
@@ -171,6 +189,8 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
 | 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
+| playground 页面的调色板 / 字体 / 组件样式 | `playground/web/theme.css` | 页面在自己的 `<style>` 里再抄一套颜色或按钮样式（`tests/test_playground.py` 盯着） |
+| playground 的界面语言（检测、切换、顶栏文案） | `playground/web/i18n.js` | 页面自己实现语言检测或切换；把要发给模型的 `state`/`instructions`/`criteria` 翻译掉——那是 API 的语言，也是上面那些 token 数字量出来的那份字符串 |
 
 `tests/test_conventions.py` 是这些规则的守卫（照抄 kev 的做法：一张"唯一事实来源"表 + 断言）。**新增一个 canonical helper 时，同时加一行守卫。**
 
@@ -281,7 +301,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：480 通过 / 33 跳过，约 22 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：498 通过 / 33 跳过，约 25 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）

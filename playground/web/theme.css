@@ -1,0 +1,462 @@
+/* The playground's design system: one palette, one set of primitives.
+ *
+ * Every page links this file and styles only its own layout. Anything that appears on
+ * more than one page -- the app bar, the engine chip, the language switch, panels,
+ * buttons, probability bars, metrics -- lives here, so the four pages cannot drift into
+ * four different products, and a colour is changed in one place (AGENTS.md §2).
+ *
+ * Two deliberate choices:
+ *
+ *   * **No web fonts, and none needed.** The UI font stack names the system UI faces of
+ *     every platform this runs on, CJK included (`PingFang SC`, `Microsoft YaHei`,
+ *     `Noto Sans CJK SC`), because the pages are bilingual and a font that lacks Chinese
+ *     glyphs would fall back per-glyph and look broken. Nothing here is fetched from a
+ *     CDN: the playground works with no network at all.
+ *   * **The game boards keep their own art.** snake and dino draw a light board, tetris
+ *     draws a dark one; recolouring hand-tuned canvas art untested would be a regression
+ *     dressed as a restyle. The page around them is a dark stage and `.board` gives
+ *     either board a deliberate card, so the contrast reads as intended rather than as a
+ *     mistake.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #070b16;
+  --bg-glow-1: rgba(91, 140, 255, 0.16);
+  --bg-glow-2: rgba(57, 224, 208, 0.10);
+
+  --surface: rgba(255, 255, 255, 0.035);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-solid: #0d1424;
+
+  --line: rgba(255, 255, 255, 0.10);
+  --line-strong: rgba(255, 255, 255, 0.18);
+
+  --ink: #e9eefb;
+  --ink-dim: #aebbd4;
+  --muted: #808ea9;
+
+  --accent: #6f9bff;
+  --accent-2: #3fe3d1;
+  --accent-3: #b98cff;
+  --ok: #3ddc97;
+  --warn: #ffc061;
+  --err: #ff7089;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --radius-pill: 999px;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+
+  --shadow: 0 18px 40px -22px rgba(0, 0, 0, 0.9);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  /* Two soft washes instead of a flat fill: enough to read as a stage, not a gradient. */
+  background-image:
+    radial-gradient(1100px 520px at 12% -8%, var(--bg-glow-1), transparent 70%),
+    radial-gradient(900px 480px at 88% 0%, var(--bg-glow-2), transparent 72%);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+a { color: var(--accent); }
+
+code, pre, .mono { font-family: var(--mono); }
+
+code {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 5px;
+  font-size: 0.86em;
+}
+
+pre {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-dim);
+  overflow: auto;
+}
+
+/* ---------------------------------------------------------------- app bar -- */
+
+.app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 18px;
+  background: rgba(7, 11, 22, 0.78);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  text-decoration: none;
+  color: var(--ink);
+  flex: none;
+}
+
+.brand-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-3) 55%, var(--accent-2));
+  box-shadow: 0 0 18px -4px var(--accent);
+  position: relative;
+  flex: none;
+}
+
+/* A cut-out square, so the mark is a shape rather than a plain blob. */
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 7px 7px auto auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--bg);
+}
+
+.brand-name { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+.brand-sub { color: var(--muted); font-weight: 500; }
+
+.app-nav { display: flex; align-items: center; gap: 4px; min-width: 0; }
+
+.app-nav a {
+  color: var(--ink-dim);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 5px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.app-nav a:hover { color: var(--ink); background: var(--surface-2); }
+
+.app-nav a[aria-current="page"] {
+  color: var(--ink);
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.spacer { flex: 1 1 auto; min-width: 0; }
+
+/* ------------------------------------------------------- status & switch -- */
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--ink-dim);
+  max-width: 46vw;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-chip strong { color: var(--ink); font-weight: 600; }
+.status-chip .mono { font-size: 11.5px; color: var(--muted); }
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.dot.live { background: var(--ok); box-shadow: 0 0 10px -1px var(--ok); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 10px -1px var(--warn); }
+.dot.err { background: var(--err); box-shadow: 0 0 10px -1px var(--err); }
+.dot.busy { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  flex: none;
+}
+
+.lang-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.lang-btn:hover { color: var(--ink); }
+
+.lang-btn[aria-pressed="true"] {
+  color: var(--bg);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+/* ------------------------------------------------------------- primitives -- */
+
+.btn {
+  appearance: none;
+  height: 32px;
+  padding: 0 14px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.btn:hover { background: rgba(255, 255, 255, 0.1); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary {
+  color: #071021;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+
+.btn-primary:hover { filter: brightness(1.08); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.panel-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-dim);
+}
+
+.metric { display: inline-flex; align-items: baseline; gap: 5px; font-variant-numeric: tabular-nums; }
+.metric-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.metric-val { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--ink); }
+
+.tag {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.tag.ok { color: var(--ok); border-color: rgba(61, 220, 151, 0.4); }
+.tag.warn { color: var(--warn); border-color: rgba(255, 192, 97, 0.4); }
+.tag.blocked { color: var(--err); border-color: rgba(255, 112, 137, 0.4); }
+
+/* --------------------------------------------------------------- the board -- */
+
+.board {
+  background: #0a0f1c;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 10px;
+  box-shadow: var(--shadow);
+  display: flex;
+  justify-content: center;
+}
+
+.board canvas { display: block; border-radius: var(--radius-sm); max-width: 100%; }
+
+/* ------------------------------------------------------ probability bars -- */
+
+.prob-row {
+  display: grid;
+  grid-template-columns: 84px 1fr 52px auto;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.dir-name { color: var(--ink-dim); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.dir-name.chosen { color: var(--ink); font-weight: 700; }
+
+.bar-track {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.25s ease;
+}
+
+.bar-fill.chosen { box-shadow: 0 0 14px -2px var(--accent-2); }
+
+.prob-pct { font-family: var(--mono); font-size: 11.5px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+.prob-pct.dim { color: var(--muted); }
+
+/* ------------------------------------------------------------------ cards -- */
+
+.cards {
+  margin-top: 22px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+}
+
+.card {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  text-decoration: none;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: -1px -1px auto -1px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-3), var(--accent-2));
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.card:hover { transform: translateY(-3px); border-color: var(--line-strong); background: var(--surface-2); }
+.card:hover::before { opacity: 1; }
+
+.card h2 { font-size: 15px; font-weight: 650; margin: 0; display: flex; align-items: center; gap: 9px; }
+
+.card .glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  font-size: 14px;
+  flex: none;
+}
+
+.card p { margin: 10px 0 0; color: var(--ink-dim); font-size: 13px; }
+
+.card .api {
+  margin-top: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-2);
+  letter-spacing: 0.02em;
+}
+
+/* ------------------------------------------------------------------- misc -- */
+
+/* Focus is visible on every control: the pages are keyboard-navigable. */
+:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; border-radius: 4px; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.page-foot {
+  margin-top: 30px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.page-foot a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+.page-foot a:hover { color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  .card:hover { transform: none; }
+}
+
+@media (max-width: 720px) {
+  .app-bar { flex-wrap: wrap; gap: 8px 12px; }
+  .app-nav { order: 3; width: 100%; }
+  .status-chip { max-width: 60vw; }
+}

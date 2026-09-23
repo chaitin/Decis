@@ -5,225 +5,100 @@
   /v1/systemone and attaches the API key server-side), the engine comparison that
   quoted another deployment's latencies is gone, and tetris asks with five terse
   options instead of sixteen verbose ones so that it fits the engine's per-question
-  token budget.
+  token budget. It also wears the shared /theme.css and translates its interface through
+  /i18n.js; the `state` and the `questions` stay English on purpose -- they are the API's
+  language, and the option count was measured against those exact strings.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Decis / tetris</title>
+  <link rel="stylesheet" href="/theme.css">
+  <script src="/i18n.js"></script>
   <style>
-    :root {
-      --bg-canvas: #090a0f;
-      --bg-subtle: #0d0f17;
-      --bg-surface: #121520;
-      --border: #1e2336;
-      --border-muted: #161a29;
-      --text-primary: #e2e8f0;
-      --text-muted: #64748b;
-      --text-secondary: #94a3b8;
-      --accent-blue: #38bdf8;
-      --accent-green: #10b981;
-      --accent-amber: #eab308;
-      --accent-red: #ef4444;
-      --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    /* Page layout only: the palette, the app bar, the engine chip, the language switch,
+       the panels, the buttons and the probability bars live in /theme.css. The board keeps
+       its own canvas art, so nothing here recolours what the canvas draws. */
+    .wrap { width: 100%; max-width: 980px; margin: 0 auto; padding: 22px 20px 40px; }
+
+    /* The game's own bar -- title, live status, mode, controls. It is not the app bar:
+       that one belongs to the playground and carries the engine chip. */
+    .game-bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
     }
 
-    * {
-      box-sizing: border-box;
+    .game-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+    .game-title {
       margin: 0;
-      padding: 0;
-    }
-
-    html, body {
-      background: var(--bg-canvas);
-      color: var(--text-primary);
-      font-family: var(--font-sans);
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    body {
-      padding: 20px 24px;
-    }
-
-    .wrap {
-      width: 960px;
-      max-width: 100%;
-      margin: 0 auto;
-    }
-
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: nowrap;
-      white-space: nowrap;
-      height: 44px;
-      padding-bottom: 12px;
-      margin-bottom: 16px;
-      border-bottom: 1px solid var(--border);
-      gap: 16px;
-    }
-
-    .top-left {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-width: 0;
-    }
-
-    .title {
-      font-family: var(--font-mono);
-      font-size: 15px;
-      font-weight: 600;
-      color: var(--text-primary);
+      font-size: 16px;
+      font-weight: 700;
       letter-spacing: -0.01em;
+      white-space: nowrap;
     }
 
-    .title .model-tag {
-      color: var(--text-secondary);
-      font-weight: 400;
-      font-size: 13px;
-    }
+    .game-title .game-sub { color: var(--muted); font-weight: 500; }
 
-    .nav-links {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .nav-links a {
-      color: var(--text-secondary);
-      text-decoration: none;
-    }
-
-    .nav-links a:hover {
-      color: var(--accent-blue);
-    }
-
-    .status {
+    .game-status {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      width: 108px;
-      font-family: var(--font-mono);
+      font-family: var(--mono);
       font-size: 12px;
-      color: var(--text-secondary);
-      font-variant-numeric: tabular-nums;
+      color: var(--ink-dim);
       white-space: nowrap;
     }
 
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--text-muted);
-      flex-shrink: 0;
-    }
-    .dot.live { background: var(--accent-green); }
-    .dot.warn { background: var(--accent-amber); }
-    .dot.err { background: var(--accent-red); }
-
-    .top-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-shrink: 0;
-    }
+    .game-bar .top-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
     select#mode-select {
       height: 32px;
       padding: 0 10px;
-      background: var(--bg-surface);
-      color: var(--text-primary);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      font-family: var(--font-sans);
+      background: var(--surface-2);
+      color: var(--ink);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      font-family: var(--sans);
       font-size: 13px;
-      font-weight: 400;
       cursor: pointer;
-      outline: none;
     }
 
-    select#mode-select:focus {
-      border-color: var(--accent-blue);
-    }
-
-    button {
-      height: 32px;
-      padding: 0 14px;
-      font-family: var(--font-sans);
-      font-size: 13px;
-      font-weight: 600;
-      border-radius: 5px;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-      transition: background-color 150ms ease, border-color 150ms ease;
-    }
-
-    button:focus-visible {
-      outline: 2px solid var(--accent-blue);
-      outline-offset: 2px;
-    }
-
-    #btn-start {
-      width: 128px;
-      background: var(--accent-blue);
-      color: #090a0f;
-      border: 1px solid var(--accent-blue);
-    }
-    #btn-start:hover {
-      background: #7dd3fc;
-      border-color: #7dd3fc;
-    }
-
-    #btn-reset {
-      width: 72px;
-      background: var(--bg-surface);
-      color: var(--text-primary);
-      border: 1px solid var(--border);
-    }
-    #btn-reset:hover {
-      border-color: var(--text-muted);
-    }
-
+    /* 282px board card + 12px gap + 96px rail; the readout column takes what is left. */
     .main-grid {
       display: grid;
-      grid-template-columns: 388px 1fr;
+      grid-template-columns: 390px minmax(0, 1fr);
       gap: 16px;
       align-items: start;
     }
 
     .left-stage {
-      height: 560px;
+      height: 562px;
       display: grid;
-      grid-template-columns: 280px 96px;
+      grid-template-columns: 282px 96px;
       gap: 12px;
       align-items: start;
     }
 
+    /* `.board` gives the canvas its card; this sizes it and anchors the overlay. */
     .board-box {
       position: relative;
-      width: 280px;
-      height: 560px;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+      width: 282px;
+      height: 562px;
+      padding: 0;
       overflow: hidden;
     }
 
-    canvas#board {
-      display: block;
-      width: 280px;
-      height: 560px;
-    }
+    canvas#board { display: block; width: 280px; height: 560px; }
 
     .overlay {
       position: absolute;
@@ -232,245 +107,124 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: rgba(9, 10, 15, 0.86);
-      color: var(--text-primary);
-      font-family: var(--font-mono);
+      gap: 6px;
+      padding: 16px;
+      background: rgba(7, 11, 22, 0.86);
+      color: var(--ink);
+      font-family: var(--mono);
       font-size: 14px;
       font-weight: 600;
       text-align: center;
-      padding: 16px;
-      gap: 6px;
     }
 
-    .overlay.hidden {
-      display: none;
-    }
+    .overlay.hidden { display: none; }
 
     .side-rail {
-      height: 560px;
+      height: 562px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      background: var(--bg-surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
       padding: 12px 10px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
     }
 
-    .next-block {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
+    .next-block { display: flex; flex-direction: column; gap: 6px; }
 
     .rail-label {
-      font-family: var(--font-mono);
+      font-family: var(--mono);
       font-size: 11px;
-      color: var(--text-muted);
       font-weight: 600;
+      color: var(--muted);
     }
 
     .next-canvas-wrap {
       width: 74px;
       height: 56px;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-muted);
-      border-radius: 4px;
       display: flex;
       align-items: center;
       justify-content: center;
+      background: var(--surface-solid);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
     }
 
-    canvas#next {
-      display: block;
-      width: 74px;
-      height: 56px;
-    }
+    canvas#next { display: block; width: 74px; height: 56px; }
 
     .stat-stack {
       display: flex;
       flex-direction: column;
       gap: 14px;
-      border-top: 1px solid var(--border);
       padding-top: 14px;
+      border-top: 1px solid var(--line);
     }
 
-    .stat-item {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
+    .stat-item { display: flex; flex-direction: column; gap: 2px; }
 
     .stat-val {
-      font-family: var(--font-mono);
+      font-family: var(--mono);
       font-size: 16px;
       font-weight: 600;
-      color: var(--text-primary);
+      color: var(--ink);
       font-variant-numeric: tabular-nums;
     }
 
     .stat-sub {
-      font-family: var(--font-mono);
+      font-family: var(--mono);
       font-size: 11px;
-      color: var(--text-muted);
+      color: var(--muted);
       font-variant-numeric: tabular-nums;
     }
 
-    .right-col {
-      height: 560px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 12px;
-      min-width: 0;
-    }
+    .right-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
-    .panel {
-      background: var(--bg-surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 12px 14px;
-      min-width: 0;
-    }
+    /* Fixed heights: the three panels fill the 562px column beside the board, so a longer
+       translation or a new placement cannot make the page jump. The board read is the
+       panel whose content is fixed, so the payload panel takes the slack. */
+    .probs-panel { height: 216px; display: flex; flex-direction: column; justify-content: space-between; }
+    .reads-panel { height: 178px; display: flex; flex-direction: column; justify-content: space-between; }
+    .json-panel { height: 144px; display: flex; flex-direction: column; }
 
-    .probs-panel {
-      height: 234px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
+    .prob-rows { display: flex; flex-direction: column; gap: 6px; }
 
-    .reads-panel {
-      height: 176px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-
-    .json-panel {
-      height: 126px;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .panel-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding-bottom: 8px;
-      margin-bottom: 6px;
-      border-bottom: 1px solid var(--border-muted);
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .panel-sub {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 400;
-      color: var(--text-secondary);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .prob-rows {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
+    /* This page's four columns: placement id, one-line description, bar, percentage. */
     .prob-row {
-      display: grid;
-      grid-template-columns: 58px 184px 1fr 48px;
-      align-items: center;
+      grid-template-columns: 58px minmax(0, 1fr) minmax(0, 1.1fr) 48px;
       gap: 10px;
-      height: 24px;
-      font-family: var(--font-mono);
-      font-size: 12px;
+      font-family: var(--mono);
       font-variant-numeric: tabular-nums;
     }
 
-    .slot-id {
-      color: var(--text-secondary);
-      font-weight: 600;
-      white-space: nowrap;
-    }
-    .slot-id.chosen {
-      color: var(--accent-blue);
-    }
+    .slot-id { color: var(--ink-dim); font-weight: 600; white-space: nowrap; }
+    .slot-id.chosen { color: var(--accent); }
 
-    .slot-desc {
-      color: var(--text-muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .slot-desc.chosen {
-      color: var(--text-primary);
-    }
+    .slot-desc { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .slot-desc.chosen { color: var(--ink); }
 
-    .bar-track {
-      height: 8px;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-muted);
-      border-radius: 4px;
-      overflow: hidden;
-    }
+    /* The read rows reuse the shared bar; the colour is this panel's own reading. */
+    .bar-fill.good { background: linear-gradient(90deg, var(--ok), var(--accent-2)); }
+    .bar-fill.warn { background: linear-gradient(90deg, var(--warn), var(--err)); }
+    .bar-fill.bad { background: linear-gradient(90deg, var(--err), var(--accent-3)); }
 
-    .bar-fill {
-      height: 100%;
-      width: 0%;
-      background: #334155;
-      border-radius: 3px;
-      transition: width 90ms linear;
-    }
-    .bar-fill.chosen {
-      background: var(--accent-blue);
-    }
-    .bar-fill.good {
-      background: var(--accent-green);
-    }
-    .bar-fill.warn {
-      background: var(--accent-amber);
-    }
-    .bar-fill.bad {
-      background: var(--accent-red);
-    }
-
-    .prob-pct {
-      text-align: right;
-      color: var(--text-primary);
-      font-weight: 600;
-    }
-    .prob-pct.dim {
-      color: var(--text-muted);
-      font-weight: 400;
-    }
-
-    .read-rows {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+    .read-rows { display: flex; flex-direction: column; gap: 8px; }
 
     .read-row {
       display: grid;
-      grid-template-columns: 112px 150px 1fr 56px;
+      grid-template-columns: 112px minmax(0, 150px) minmax(0, 1fr) 56px;
       align-items: center;
       gap: 10px;
-      height: 26px;
-      font-family: var(--font-mono);
+      height: 24px;
+      font-family: var(--mono);
       font-size: 12px;
       font-variant-numeric: tabular-nums;
     }
 
-    .read-key {
-      color: var(--text-muted);
-      font-weight: 400;
-    }
+    .read-key { color: var(--muted); }
 
     .read-val {
-      color: var(--text-primary);
+      color: var(--ink);
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
@@ -479,11 +233,11 @@
 
     .strategy-strip {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 6px;
       padding-top: 6px;
-      border-top: 1px solid var(--border-muted);
-      font-family: var(--font-mono);
+      border-top: 1px solid var(--line);
+      font-family: var(--mono);
       font-size: 11px;
       font-variant-numeric: tabular-nums;
     }
@@ -492,29 +246,24 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      color: var(--text-muted);
+      gap: 4px;
       padding: 2px 6px;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-muted);
-      border-radius: 4px;
+      color: var(--muted);
+      background: var(--surface-solid);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
     }
 
-    .strat-cell.active {
-      color: var(--accent-blue);
-      border-color: var(--accent-blue);
-    }
+    .strat-cell.active { color: var(--accent); border-color: var(--accent); }
 
     pre#live-json {
       flex: 1;
-      margin: 0;
-      padding: 6px 10px;
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-muted);
-      border-radius: 4px;
-      font-family: var(--font-mono);
+      padding: 9px 11px;
+      background: var(--surface-solid);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
       font-size: 11px;
-      line-height: 1.4;
-      color: var(--text-secondary);
       overflow: hidden;
       white-space: pre;
       font-variant-numeric: tabular-nums;
@@ -524,106 +273,128 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding-top: 8px;
-      font-family: var(--font-mono);
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      margin-top: 18px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      font-family: var(--mono);
       font-size: 11px;
-      color: var(--text-muted);
+      color: var(--muted);
     }
 
-    .foot-bar a {
-      color: var(--text-secondary);
-      text-decoration: none;
-    }
-    .foot-bar a:hover {
-      color: var(--accent-blue);
+    .foot-bar a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid var(--line); }
+    .foot-bar a:hover { color: var(--ink); }
+
+    @media (max-width: 880px) {
+      .main-grid { grid-template-columns: minmax(0, 1fr); }
+      .left-stage, .side-rail, .board-box { height: auto; }
+      .probs-panel, .reads-panel, .json-panel { height: auto; }
+      pre#live-json { min-height: 84px; }
     }
 
-    @media (max-width: 860px) {
-      .main-grid {
-        grid-template-columns: 1fr;
-      }
-      .right-col {
-        height: auto;
-      }
+    /* The stage is a 282px board plus a 96px rail, so below 440px of viewport it cannot
+       fit side by side and the page scrolls sideways. Stack it instead of shrinking the
+       canvas: the board is drawn at a fixed 280x560 and scaling it would blur the grid. */
+    @media (max-width: 440px) {
+      .left-stage { grid-template-columns: minmax(0, 1fr); }
+      .board-box { width: 100%; max-width: 282px; }
+      /* The mode select and two buttons stop fitting on one line here. */
+      .game-bar { flex-wrap: wrap; }
+      .game-bar .top-actions { flex-wrap: wrap; margin-left: 0; }
     }
   </style>
 </head>
 <body>
+  <header class="app-bar">
+    <a class="brand" href="/">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Decis <span class="brand-sub" data-i18n="brand.sub">playground</span></span>
+    </a>
+    <nav class="app-nav">
+      <a href="/snake" data-i18n="nav.snake">Snake</a>
+      <a href="/dino" data-i18n="nav.dino">Dino</a>
+      <a href="/tetris" aria-current="page" data-i18n="nav.tetris">Tetris</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="status-chip">
+      <span id="dot" class="dot busy"></span>
+      <span id="status-text" data-i18n="status.searching" data-i18n-dynamic>Looking for the engine&hellip;</span>
+    </span>
+    <div data-lang-switch></div>
+  </header>
+
   <div class="wrap">
-    <header class="topbar">
-      <div class="top-left">
-        <span class="title">Decis <span class="model-tag">(System One)</span> / tetris</span>
-        <nav class="nav-links" aria-label="Demos">
-          <span>·</span>
-          <a href="/snake">/snake</a>
-          <span>·</span>
-          <a href="/dino">/dino</a>
-        </nav>
-        <span class="status">
-          <span id="dot" class="dot live"></span>
-          <span id="status-text">Ready</span>
+    <div class="game-bar">
+      <div class="game-id">
+        <h1 class="game-title">Decis <span class="game-sub">(System One)</span> · <span data-i18n="page.title">Tetris</span></h1>
+        <span class="game-status">
+          <span id="game-dot" class="dot"></span>
+          <span id="game-status-text" data-i18n="game.ready" data-i18n-dynamic>Ready</span>
         </span>
       </div>
 
       <div class="top-actions">
-        <select id="mode-select" aria-label="Control Mode">
-          <option value="jev" selected>Decis engine</option>
-          <option value="heuristic">Heuristic (0 ms)</option>
-          <option value="manual">Manual (Arrows + Space)</option>
+        <select id="mode-select" aria-label="Control Mode" data-i18n-aria-label="mode.label">
+          <option value="jev" selected data-i18n="mode.engine">Decis engine</option>
+          <option value="heuristic" data-i18n="mode.heuristic">Heuristic (0 ms)</option>
+          <option value="manual" data-i18n="mode.manual">Manual (Arrows + Space)</option>
         </select>
-        <button id="btn-start" type="button">Start Autopilot</button>
-        <button id="btn-reset" type="button">Reset</button>
+        <button id="btn-start" class="btn btn-primary" type="button"
+                data-i18n="btn.start" data-i18n-dynamic data-i18n-title="btn.start.title">Start Autopilot</button>
+        <button id="btn-reset" class="btn" type="button"
+                data-i18n="btn.reset" data-i18n-title="btn.reset.title">Reset</button>
       </div>
-    </header>
+    </div>
 
     <main class="main-grid">
-      <section class="left-stage" aria-label="Tetris board and metrics">
-        <div class="board-box">
-          <canvas id="board"></canvas>
+      <section class="left-stage" aria-label="Tetris board and metrics" data-i18n-aria-label="stage.label">
+        <div class="board board-box">
+          <canvas id="board" aria-label="Tetris board" data-i18n-aria-label="board.label"></canvas>
           <div id="overlay" class="overlay hidden">
-            <div id="overlay-title">Game Over</div>
-            <div id="overlay-sub" class="stat-sub">Press Reset to play again</div>
+            <div id="overlay-title" data-i18n="overlay.title" data-i18n-dynamic>Game Over</div>
+            <div id="overlay-sub" class="stat-sub" data-i18n="overlay.sub" data-i18n-dynamic>Press Reset to play again</div>
           </div>
         </div>
 
         <aside class="side-rail">
           <div class="next-block">
-            <span class="rail-label">Next Piece</span>
+            <span class="rail-label" data-i18n="rail.next">Next Piece</span>
             <div class="next-canvas-wrap">
-              <canvas id="next"></canvas>
+              <canvas id="next" aria-label="Next piece" data-i18n-aria-label="rail.next"></canvas>
             </div>
           </div>
 
           <div class="stat-stack">
             <div class="stat-item">
-              <span class="rail-label">Score</span>
+              <span class="rail-label" data-i18n="rail.score">Score</span>
               <span id="m-score" class="stat-val">0</span>
             </div>
             <div class="stat-item">
-              <span class="rail-label">Lines</span>
+              <span class="rail-label" data-i18n="rail.lines">Lines</span>
               <span id="m-lines" class="stat-val">0</span>
             </div>
             <div class="stat-item">
-              <span class="rail-label">Pieces</span>
+              <span class="rail-label" data-i18n="rail.pieces">Pieces</span>
               <span id="m-pieces" class="stat-val">0</span>
             </div>
             <div class="stat-item">
-              <span class="rail-label">Latency</span>
+              <span class="rail-label" data-i18n="rail.latency">Latency</span>
               <span id="m-ms" class="stat-val">0 ms</span>
-              <span id="m-pipeline" class="stat-sub">pipelined</span>
+              <span id="m-pipeline" class="stat-sub" data-i18n="pipeline.pending" data-i18n-dynamic>pipelined</span>
             </div>
             <div class="stat-item">
-              <span class="rail-label">Agreement</span>
+              <span class="rail-label" data-i18n="rail.agreement">Agreement</span>
               <span id="m-agree" class="stat-val">100%</span>
             </div>
           </div>
         </aside>
       </section>
 
-      <section class="right-col" aria-label="Decis single-pass telemetry">
+      <section class="right-col" aria-label="Decis single-pass telemetry" data-i18n-aria-label="right.label">
         <div class="panel probs-panel">
           <div class="panel-head">
-            <span>Placement Probability Distribution (choice)</span>
+            <span data-i18n="panel.probs">Placement Probability Distribution (choice)</span>
             <span id="choice-summary" class="panel-sub">rot 0, col 4 (0.0%)</span>
           </div>
           <div id="prob-rows" class="prob-rows"></div>
@@ -631,41 +402,41 @@
 
         <div class="panel reads-panel">
           <div class="panel-head">
-            <span>Board Read (strategy · board_health · next_piece_fits)</span>
-            <span id="read-summary" class="panel-sub">1 pass · 4 questions</span>
+            <span data-i18n="panel.reads">Board Read</span>
+            <span id="read-summary" class="panel-sub" data-i18n="read.summary">4 questions · strategy · board_health · next_piece_fits</span>
           </div>
           <div class="read-rows">
             <div class="read-row">
-              <span class="read-key">Strategy</span>
+              <span class="read-key" data-i18n="read.strategy">Strategy</span>
               <span id="read-strat-val" class="read-val">build_clean</span>
               <div class="bar-track"><div id="read-strat-bar" class="bar-fill chosen" style="width: 50%"></div></div>
               <span id="read-strat-pct" class="prob-pct">50.0%</span>
             </div>
             <div class="read-row">
-              <span class="read-key">Board Health</span>
+              <span class="read-key" data-i18n="read.health">Board Health</span>
               <span id="read-health-val" class="read-val">Clean (1.00)</span>
               <div class="bar-track"><div id="read-health-bar" class="bar-fill good" style="width: 95%"></div></div>
               <span id="read-health-score" class="prob-pct">1.0 / 4</span>
             </div>
             <div class="read-row">
-              <span class="read-key">Next Piece Fits</span>
+              <span class="read-key" data-i18n="read.fit">Next Piece Fits</span>
               <span id="read-fit-val" class="read-val">YES (clean spot)</span>
               <div class="bar-track"><div id="read-fit-bar" class="bar-fill good" style="width: 88%"></div></div>
               <span id="read-fit-pct" class="prob-pct">88.0%</span>
             </div>
           </div>
           <div class="strategy-strip">
-            <div id="st-build_clean" class="strat-cell active"><span>build</span><span id="stp-build_clean">50%</span></div>
-            <div id="st-clear_lines" class="strat-cell"><span>clear</span><span id="stp-clear_lines">25%</span></div>
-            <div id="st-repair_surface" class="strat-cell"><span>repair</span><span id="stp-repair_surface">15%</span></div>
-            <div id="st-survive" class="strat-cell"><span>survive</span><span id="stp-survive">10%</span></div>
+            <div id="st-build_clean" class="strat-cell active"><span data-i18n="strat.short.build_clean">build</span><span id="stp-build_clean">50%</span></div>
+            <div id="st-clear_lines" class="strat-cell"><span data-i18n="strat.short.clear_lines">clear</span><span id="stp-clear_lines">25%</span></div>
+            <div id="st-repair_surface" class="strat-cell"><span data-i18n="strat.short.repair_surface">repair</span><span id="stp-repair_surface">15%</span></div>
+            <div id="st-survive" class="strat-cell"><span data-i18n="strat.short.survive">survive</span><span id="stp-survive">10%</span></div>
           </div>
         </div>
 
         <div class="panel json-panel">
           <div class="panel-head">
-            <span>Last /v1/systemone Call</span>
-            <span id="json-meta" class="panel-sub">Decis engine · 6 options</span>
+            <span data-i18n="panel.call">Last /v1/systemone Call</span>
+            <span id="json-meta" class="panel-sub">Decis engine · 0 ms</span>
           </div>
           <pre id="live-json"></pre>
         </div>
@@ -673,12 +444,159 @@
     </main>
 
     <footer class="foot-bar">
-      <span>Adapted from <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a> · served by the <a href="/">Decis playground</a></span>
+      <span><span data-i18n="foot.adapted">Games adapted from</span> <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a> · <a href="/" data-i18n="foot.home">Back to the Decis playground.</a></span>
       <span id="calls-counter">0 /v1/systemone calls · 0 tokens</span>
     </footer>
   </div>
 
 <script>
+I18N.add({
+  en: {
+    "page.title": "Tetris",
+    "page.docTitle": "Decis / tetris",
+    "board.label": "Tetris board",
+    "stage.label": "Tetris board and metrics",
+    "right.label": "Decis single-pass telemetry",
+    "mode.label": "Control Mode",
+    "mode.engine": "Decis engine",
+    "mode.heuristic": "Heuristic (0 ms)",
+    "mode.manual": "Manual (Arrows + Space)",
+    "btn.start": "Start Autopilot",
+    "btn.pause": "Pause",
+    "btn.reset": "Reset",
+    "btn.start.title": "Start or pause the autopilot",
+    "btn.reset.title": "New game",
+    "rail.next": "Next Piece",
+    "rail.score": "Score",
+    "rail.lines": "Lines",
+    "rail.pieces": "Pieces",
+    "rail.latency": "Latency",
+    "rail.agreement": "Agreement",
+    "metric.ms": "{value} ms",
+    "pipeline.pending": "pipelined",
+    "pipeline.prefetched": "prefetched (0 ms wait)",
+    "pipeline.live": "live /v1/systemone",
+    "panel.probs": "Placement Probability Distribution (choice)",
+    "panel.reads": "Board Read",
+    "panel.call": "Last /v1/systemone Call",
+    "read.summary": "4 questions · strategy · board_health · next_piece_fits",
+    "read.strategy": "Strategy",
+    "read.health": "Board Health",
+    "read.fit": "Next Piece Fits",
+    "summary.placement": "rot {rot}, col {col} ({pct})",
+    "slot.id": "r{rot} · c{col}",
+    "desc.clear": "clear {n}",
+    "desc.clear.none": "0 clear",
+    "desc.holes": "+{n} hole",
+    "desc.holes.none": "0 holes",
+    "surface.flat": "flat",
+    "surface.slightlyUneven": "slightly uneven",
+    "surface.bumpy": "bumpy",
+    "surface.jagged": "very jagged",
+    "strat.build_clean": "build_clean",
+    "strat.clear_lines": "clear_lines",
+    "strat.repair_surface": "repair_surface",
+    "strat.survive": "survive",
+    "strat.short.build_clean": "build",
+    "strat.short.clear_lines": "clear",
+    "strat.short.repair_surface": "repair",
+    "strat.short.survive": "survive",
+    "health.0": "Clean",
+    "health.1": "Fine",
+    "health.2": "Rough",
+    "health.3": "Critical",
+    "health.val": "{label} ({score})",
+    "fit.yes": "YES (clean spot)",
+    "fit.no": "NO (tight surface)",
+    "json.meta": "Decis engine · {n} options · {ms} ms",
+    "game.ready": "Ready",
+    "game.paused": "Paused",
+    "game.over": "Game over",
+    "game.retry": "Retry",
+    "game.ms.live": "{value} ms · live",
+    "game.ms.sim": "{value} ms · sim",
+    "game.ms.heuristic": "{value} ms · heuristic",
+    "overlay.title": "Game Over",
+    "overlay.title.score": "Game Over · {score} pts",
+    "overlay.sub": "Press Reset to play again",
+    "overlay.sub.stats": "{lines} lines · {pieces} pieces",
+    "calls.counter": "{calls} /v1/systemone calls · {tokens} tokens",
+    "foot.home": "Back to the Decis playground."
+  },
+  zh: {
+    "page.title": "俄罗斯方块",
+    "page.docTitle": "Decis / 俄罗斯方块",
+    "board.label": "俄罗斯方块棋盘",
+    "stage.label": "俄罗斯方块棋盘与指标",
+    "right.label": "Decis 单次调用遥测",
+    "mode.label": "控制模式",
+    "mode.engine": "Decis 引擎",
+    "mode.heuristic": "启发式（0 毫秒）",
+    "mode.manual": "手动（方向键 + 空格）",
+    "btn.start": "开始自动游玩",
+    "btn.pause": "暂停",
+    "btn.reset": "重置",
+    "btn.start.title": "开始或暂停自动游玩",
+    "btn.reset.title": "重开一局",
+    "rail.next": "下一块",
+    "rail.score": "得分",
+    "rail.lines": "消行",
+    "rail.pieces": "方块数",
+    "rail.latency": "延迟",
+    "rail.agreement": "一致率",
+    "metric.ms": "{value} 毫秒",
+    "pipeline.pending": "流水线中",
+    "pipeline.prefetched": "已预取（无需等待）",
+    "pipeline.live": "实时 /v1/systemone",
+    "panel.probs": "落点概率分布（choice）",
+    "panel.reads": "棋盘读数",
+    "panel.call": "最近一次 /v1/systemone 调用",
+    "read.summary": "4 个问题 · strategy · board_health · next_piece_fits",
+    "read.strategy": "策略",
+    "read.health": "棋盘健康度",
+    "read.fit": "下一块有位置",
+    "summary.placement": "旋转 {rot}，列 {col}（{pct}）",
+    "slot.id": "旋{rot}·列{col}",
+    "desc.clear": "消 {n} 行",
+    "desc.clear.none": "无消行",
+    "desc.holes": "+{n} 洞",
+    "desc.holes.none": "无洞",
+    "surface.flat": "平整",
+    "surface.slightlyUneven": "略不平",
+    "surface.bumpy": "起伏",
+    "surface.jagged": "非常崎岖",
+    "strat.build_clean": "堆叠",
+    "strat.clear_lines": "消行",
+    "strat.repair_surface": "修整",
+    "strat.survive": "求生",
+    "strat.short.build_clean": "堆叠",
+    "strat.short.clear_lines": "消行",
+    "strat.short.repair_surface": "修整",
+    "strat.short.survive": "求生",
+    "health.0": "健康",
+    "health.1": "尚可",
+    "health.2": "粗糙",
+    "health.3": "危急",
+    "health.val": "{label}（{score}）",
+    "fit.yes": "有（位置干净）",
+    "fit.no": "无（表面紧张）",
+    "json.meta": "Decis 引擎 · {n} 个落点 · {ms} 毫秒",
+    "game.ready": "就绪",
+    "game.paused": "已暂停",
+    "game.over": "游戏结束",
+    "game.retry": "重试",
+    "game.ms.live": "{value} 毫秒 · 实时",
+    "game.ms.sim": "{value} 毫秒 · 本地模拟",
+    "game.ms.heuristic": "{value} 毫秒 · 启发式",
+    "overlay.title": "游戏结束",
+    "overlay.title.score": "游戏结束 · {score} 分",
+    "overlay.sub": "按“重置”再来一局",
+    "overlay.sub.stats": "消除 {lines} 行 · {pieces} 块",
+    "calls.counter": "{calls} 次 /v1/systemone 调用 · {tokens} 个 token",
+    "foot.home": "返回 Decis 演示场。"
+  }
+});
+
 const WIDTH = 10;
 const HEIGHT = 20;
 const CSS_W = 280;
@@ -929,10 +847,20 @@ function describePlacement(p) {
   return `${where}: ${clearTxt}, ${holeTxt}, height ${p.maxHeightAfter}, ${describeSurface(p.bumpinessAfter)}`;
 }
 
+// The panel's short line. It is the display twin of `describePlacement` above: the
+// criteria that go to the model stay English, so the surface reading is mapped here
+// instead of reused from `describeSurface`.
+function surfaceLabel(bumpiness) {
+  if (bumpiness <= 3) return I18N.t("surface.flat");
+  if (bumpiness <= 7) return I18N.t("surface.slightlyUneven");
+  if (bumpiness <= 12) return I18N.t("surface.bumpy");
+  return I18N.t("surface.jagged");
+}
+
 function shortDesc(p) {
-  const clearTxt = p.linesCleared > 0 ? `clear ${p.linesCleared}` : "0 clear";
-  const holeTxt = p.holesCreated === 0 ? "0 holes" : `+${p.holesCreated} hole`;
-  return `${clearTxt} · ${holeTxt} · ${describeSurface(p.bumpinessAfter)}`;
+  const clearTxt = p.linesCleared > 0 ? I18N.t("desc.clear", { n: p.linesCleared }) : I18N.t("desc.clear.none");
+  const holeTxt = p.holesCreated === 0 ? I18N.t("desc.holes.none") : I18N.t("desc.holes", { n: p.holesCreated });
+  return `${clearTxt} · ${holeTxt} · ${surfaceLabel(p.bumpinessAfter)}`;
 }
 
 function boardToText(board) {
@@ -1216,6 +1144,15 @@ window.__gameState = game;
 let abortCtrl = null;
 let prefetchEntry = null; // { key, promise }
 
+// The live text the script writes itself, kept so a language switch can repaint it:
+// `data-i18n` only covers the markup, and every one of these is rewritten per decision.
+let statusKey = "game.ready";
+let statusVars = null;
+let pipelineKey = "pipeline.pending";
+let overlayState = null;
+let lastPanelDecision = null;
+let lastPanelSource = null;
+
 function stateKey(board, piece, nextPiece) {
   return `${piece}:${nextPiece}:${boardToText(board).join("")}`;
 }
@@ -1239,9 +1176,16 @@ function requestDecisionFor(board, piece, nextPiece, linesCleared, signal) {
 
 function renderProbabilityPanel(decision, source) {
   if (!decision) return;
+  // Kept so a language switch can repaint the whole panel from the same decision.
+  lastPanelDecision = decision;
+  lastPanelSource = source;
   const { chosen, ranked, confidence, answers, request, response, latencyMs } = decision;
   const topRanked = ranked.slice(0, PLACEMENT_SHORTLIST);
-  $("choice-summary").textContent = `rot ${chosen.rotation}, col ${chosen.x + 1} (${(confidence * 100).toFixed(1)}%)`;
+  $("choice-summary").textContent = I18N.t("summary.placement", {
+    rot: chosen.rotation,
+    col: chosen.x + 1,
+    pct: `${(confidence * 100).toFixed(1)}%`,
+  });
 
   for (let i = 0; i < 6; i++) {
     const item = topRanked[i];
@@ -1263,7 +1207,7 @@ function renderProbabilityPanel(decision, source) {
     const p = item.placement;
     const isChosen = p.id === chosen.id;
     const pct = Math.max(0, Math.min(100, item.probability * 100));
-    slotEl.textContent = `r${p.rotation} · c${p.x + 1}`;
+    slotEl.textContent = I18N.t("slot.id", { rot: p.rotation, col: p.x + 1 });
     slotEl.className = isChosen ? "slot-id chosen" : "slot-id";
     descEl.textContent = shortDesc(p);
     descEl.className = isChosen ? "slot-desc chosen" : "slot-desc";
@@ -1278,7 +1222,8 @@ function renderProbabilityPanel(decision, source) {
     if (strat?.probabilities) {
       const topChoice = strat.choice || "build_clean";
       const topProb = (strat.probabilities[topChoice] ?? 0) * 100;
-      $("read-strat-val").textContent = topChoice;
+      // The strategy id is the wire value; only its label is translated.
+      $("read-strat-val").textContent = I18N.t(`strat.${topChoice}`);
       $("read-strat-bar").style.width = `${Math.max(2, topProb).toFixed(1)}%`;
       $("read-strat-pct").textContent = `${topProb.toFixed(1)}%`;
       for (const k of ["build_clean", "clear_lines", "repair_surface", "survive"]) {
@@ -1296,10 +1241,15 @@ function renderProbabilityPanel(decision, source) {
       // health.score is 0..3 (0 = Clean, 3 = Critical); display as 1.0..4.0 health scale
       const raw = Math.max(0, Math.min(3, health.score));
       const displayScale = 4.0 - raw; // 4.0 is healthiest, 1.0 is critical
-      const label = (HEALTH_LEVELS[Math.round(raw)] || "Clean").split(":")[0];
+      const level = Math.max(0, Math.min(3, Math.round(raw)));
       const fillPct = ((4.0 - raw) / 3.0) * 85 + 15;
       const bar = $("read-health-bar");
-      $("read-health-val").textContent = `${label} (${displayScale.toFixed(2)})`;
+      // `HEALTH_LEVELS` is the model's criteria and stays English; the panel shows the
+      // label for the same level in the interface language.
+      $("read-health-val").textContent = I18N.t("health.val", {
+        label: I18N.t(`health.${level}`),
+        score: displayScale.toFixed(2),
+      });
       bar.style.width = `${fillPct.toFixed(1)}%`;
       bar.className = raw < 1.2 ? "bar-fill good" : raw < 2.1 ? "bar-fill warn" : "bar-fill bad";
       $("read-health-score").textContent = `${displayScale.toFixed(1)} / 4`;
@@ -1309,12 +1259,18 @@ function renderProbabilityPanel(decision, source) {
     if (typeof fit?.noul === "number") {
       const pct = Math.max(0, Math.min(100, fit.noul * 100));
       const isYes = pct >= 50;
-      $("read-fit-val").textContent = isYes ? "YES (clean spot)" : "NO (tight surface)";
+      $("read-fit-val").textContent = I18N.t(isYes ? "fit.yes" : "fit.no");
       const bar = $("read-fit-bar");
       bar.style.width = `${pct.toFixed(1)}%`;
       bar.className = isYes ? "bar-fill good" : "bar-fill warn";
       $("read-fit-pct").textContent = `${pct.toFixed(1)}%`;
     }
+  } else {
+    // No answers (the local heuristic, or a fresh reset): the three readings fall back to
+    // their default labels, so a language switch still has something coherent to repaint.
+    $("read-strat-val").textContent = I18N.t("strat.build_clean");
+    $("read-health-val").textContent = I18N.t("health.val", { label: I18N.t("health.0"), score: "1.00" });
+    $("read-fit-val").textContent = I18N.t("fit.yes");
   }
 
   const healthRounded = typeof answers?.board_health?.score === "number" ? Number((4 - answers.board_health.score).toFixed(2)) : 4.0;
@@ -1324,22 +1280,74 @@ function renderProbabilityPanel(decision, source) {
     `  "model": "${MODEL}", "piece": "${chosen.piece}", "choice": "${chosen.id}",\n` +
     `  "strategy": "${answers?.strategy?.choice ?? "heuristic"}", "health": ${healthRounded}, "fits": ${fitRounded}\n` +
     `}`;
-  $("json-meta").textContent = `Decis engine · ${decision.placements?.length ? Math.min(6, decision.placements.length) : 6} options · ${latencyMs ?? 0} ms`;
+  $("json-meta").textContent = I18N.t("json.meta", {
+    // The count the panel reports is the count the request carried, so it is the same
+    // constant the question is built from. It used to be a literal 6, left behind when
+    // the shortlist was cut to PLACEMENT_SHORTLIST: the page claimed one option more
+    // than it sent.
+    n: decision.placements?.length ? Math.min(PLACEMENT_SHORTLIST, decision.placements.length) : PLACEMENT_SHORTLIST,
+    ms: latencyMs ?? 0,
+  });
 }
 
 function renderMetrics() {
   $("m-score").textContent = game.score;
   $("m-lines").textContent = game.lines;
   $("m-pieces").textContent = game.pieces;
-  $("m-ms").textContent = `${stats.lastLatency} ms`;
+  $("m-ms").textContent = I18N.t("metric.ms", { value: stats.lastLatency });
   const agreePct = stats.decisions ? Math.round((stats.agreements / stats.decisions) * 100) : 100;
   $("m-agree").textContent = `${agreePct}%`;
-  $("calls-counter").textContent = `${stats.calls} /v1/systemone calls · ${stats.tokens.toLocaleString()} tokens`;
+  $("calls-counter").textContent = I18N.t("calls.counter", {
+    calls: stats.calls,
+    tokens: stats.tokens.toLocaleString(),
+  });
 }
 
-function setStatus(text, state = "live") {
-  $("status-text").textContent = text;
-  $("dot").className = `dot ${state}`;
+// The game's own bar and the app bar's engine chip answer two different questions, so
+// they are two different dots: `#game-dot` is this page's, `#dot` belongs to the chip.
+function setStatus(key, vars, state = "live") {
+  statusKey = key;
+  statusVars = vars || null;
+  paintStatus();
+  $("game-dot").className = `dot ${state}`;
+}
+
+function paintStatus() {
+  $("game-status-text").textContent = I18N.t(statusKey, statusVars);
+}
+
+function paintStartLabel() {
+  $("btn-start").textContent = I18N.t(game.running ? "btn.pause" : "btn.start");
+}
+
+function setPipeline(key) {
+  pipelineKey = key;
+  paintPipeline();
+}
+
+function paintPipeline() {
+  $("m-pipeline").textContent = I18N.t(pipelineKey);
+}
+
+function paintOverlay() {
+  if (!overlayState) return;
+  $("overlay-title").textContent = I18N.t("overlay.title.score", { score: overlayState.score });
+  $("overlay-sub").textContent = I18N.t("overlay.sub.stats", {
+    lines: overlayState.lines,
+    pieces: overlayState.pieces,
+  });
+}
+
+/* Everything the script writes as text is repainted from here, so switching language
+   mid-game updates the live readout too -- `data-i18n` only covers the markup. */
+function renderTexts() {
+  document.title = I18N.t("page.docTitle");
+  paintStatus();
+  paintStartLabel();
+  paintPipeline();
+  paintOverlay();
+  renderMetrics();
+  if (lastPanelDecision) renderProbabilityPanel(lastPanelDecision, lastPanelSource);
 }
 
 function drawCell(x, y, color, alpha = 1, outline = false) {
@@ -1468,9 +1476,9 @@ async function resolveMoveDecision(placements, signal) {
   if (prefetchEntry && prefetchEntry.key === key) {
     promise = prefetchEntry.promise;
     prefetchEntry = null;
-    $("m-pipeline").textContent = "prefetched (0 ms wait)";
+    setPipeline("pipeline.prefetched");
   } else {
-    $("m-pipeline").textContent = "live /v1/systemone";
+    setPipeline("pipeline.live");
     promise = requestDecisionFor(game.board, game.current, game.next, game.lines, signal);
   }
   return await promise;
@@ -1496,7 +1504,7 @@ async function runAutopilotLoop(signal) {
       decision = await resolveMoveDecision(placements, signal);
     } catch (e) {
       if (signal.aborted) return;
-      setStatus("Retry", "warn");
+      setStatus("game.retry", null, "warn");
       await new Promise((r) => setTimeout(r, 120));
       continue;
     }
@@ -1507,12 +1515,13 @@ async function runAutopilotLoop(signal) {
       stats.lastLatency = decision.latencyMs;
       stats.tokens += decision.response?.usage?.input_tokens || 412;
       setStatus(
-        decision.live ? `${decision.latencyMs} ms · live` : `${decision.latencyMs} ms · sim`,
+        decision.live ? "game.ms.live" : "game.ms.sim",
+        { value: decision.latencyMs },
         decision.live ? "live" : "warn"
       );
     } else {
       stats.lastLatency = 0;
-      setStatus("0 ms · heuristic", "live");
+      setStatus("game.ms.heuristic", { value: 0 }, "live");
     }
 
     stats.decisions += 1;
@@ -1573,11 +1582,11 @@ function lockAndAdvance(chosen) {
 function finishGame() {
   game.over = true;
   game.running = false;
-  $("overlay-title").textContent = `Game Over · ${game.score} pts`;
-  $("overlay-sub").textContent = `${game.lines} lines · ${game.pieces} pieces`;
+  overlayState = { score: game.score, lines: game.lines, pieces: game.pieces };
+  paintOverlay();
   $("overlay").classList.remove("hidden");
-  $("btn-start").textContent = "Start Autopilot";
-  setStatus("Game over", "warn");
+  paintStartLabel();
+  setStatus("game.over", null, "warn");
 }
 
 function spawnManualActive() {
@@ -1615,9 +1624,10 @@ function resetGame() {
   game.ghosts = [];
   game.flashRows = [];
   Object.assign(stats, { calls: 0, lastLatency: 0, tokens: 0, agreements: 0, decisions: 0 });
+  overlayState = null;
   $("overlay").classList.add("hidden");
-  $("btn-start").textContent = "Start Autopilot";
-  setStatus("Ready", "live");
+  paintStartLabel();
+  setStatus("game.ready", null, "live");
 
   const initialPlacements = enumeratePlacements(game.board, game.current);
   const initHeur = heuristicDecision(initialPlacements);
@@ -1633,12 +1643,12 @@ function startGame() {
   if (game.running) {
     game.running = false;
     if (abortCtrl) abortCtrl.abort();
-    $("btn-start").textContent = "Start Autopilot";
-    setStatus("Paused", "warn");
+    paintStartLabel();
+    setStatus("game.paused", null, "warn");
     return;
   }
   game.running = true;
-  $("btn-start").textContent = "Pause";
+  paintStartLabel();
   abortCtrl = new AbortController();
   if (getMode() === "manual") {
     spawnManualActive();
@@ -1693,7 +1703,32 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// The engine chip: which engine this page is actually talking to. The wiring is the same
+// on every page so the four pages cannot disagree about what is up.
+async function refreshEngine() {
+  try {
+    const config = await (await fetch("/api/config", { cache: "no-store" })).json();
+    const dot = document.getElementById("dot"), text = document.getElementById("status-text");
+    if (config.ready) {
+      dot.className = "dot live";
+      text.textContent = I18N.t("status.ready", { engine: config.engine });
+    } else {
+      dot.className = "dot warn";
+      text.textContent = I18N.t("status.searching");
+    }
+  } catch (err) {
+    document.getElementById("dot").className = "dot err";
+    document.getElementById("status-text").textContent = I18N.t("status.unreachable", { message: err.message });
+  }
+}
+
+I18N.onChange(renderTexts);
+I18N.onChange(refreshEngine);
+refreshEngine();
+setInterval(refreshEngine, 5000);
+
 resetGame();
+renderTexts();
 </script>
 </body>
 </html>
