@@ -957,7 +957,7 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   `laya-multilingual-runtime-v1.2.0`；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
   方案在 `plan` 步骤里算，有测试真跑（含"默认 tag 必须烤权重"和"不许给没装 extra 的腿烤权重"两条断言）。
 - ✅ **体积已量**（registry API 逐层求和，压缩后下载量，2026-09-23 的 `v0.0.1`）：
-  烤权重的 `laya-multilingual`（= `latest`）4401 MB amd64 / 4543 MB arm64，`kev-0.8b` 6045 / 6188 MB；
+  烤权重的 `laya-multilingual`（= `latest`）4401 MB amd64 / 4543-4544 MB arm64，`kev-0.8b` 6045 / 6188 MB；
   不带权重的 `-runtime-v0.0.1` 是 3203 / 3346 MB 与 3206 / 3349 MB。
   当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
   装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，

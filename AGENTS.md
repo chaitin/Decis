@@ -49,7 +49,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 容器里没配 `DECIS_API_KEY` 而监听 `0.0.0.0` 时**拒绝启动**（§3-19 在容器里同样生效）。
 > 体积用 registry API **逐层求和**量出（压缩后的下载量，不是 Docker Hub 页面那个数，
 > 也不是本地解压后的大小；`v0.0.1` 实测）：
-> 烤权重的 `laya-multilingual`（= `latest` = `laya-multilingual-v0.0.1`）**4401 MB** amd64 / **4543 MB** arm64；
+> 烤权重的 `laya-multilingual`（= `latest` = `laya-multilingual-v0.0.1`）**4401 MB** amd64 / **4543 MB** arm64
+> （同一份内容两次构建差 1 MB，所以别把它当指纹读）；
 > `kev-0.8b`（= `kev-0.8b-v0.0.1`）**6045 / 6188 MB**；
 > 不带权重的 `-runtime-v0.0.1` 分别是 **3203 / 3346 MB** 与 **3206 / 3349 MB**。
 > **engine-free 基础镜像尚未量过体积与冷启动。**
