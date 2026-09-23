@@ -54,6 +54,31 @@
     }
 
     .how b { display: block; color: var(--ink); font-weight: 600; font-size: 12.5px; margin-bottom: 2px; }
+
+    /* Credits: the two upstream projects this page leans on, and what Decis provides. */
+    .credits {
+      margin-top: 38px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--ink-dim);
+      font-size: 12.5px;
+      line-height: 1.7;
+      max-width: 74ch;
+    }
+
+    .credits h2 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .credits p { margin: 0 0 6px; }
+    .credits a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+    .credits a:hover { border-bottom-color: var(--accent); }
+    .credits-foot { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -66,6 +91,7 @@
       <a href="/snake" data-i18n="nav.snake">Snake</a>
       <a href="/dino" data-i18n="nav.dino">Dino</a>
       <a href="/tetris" data-i18n="nav.tetris">Tetris</a>
+      <a data-repo-link></a>
     </nav>
     <span class="spacer"></span>
     <span class="status-chip" id="status-chip">
@@ -128,15 +154,25 @@
       </div>
     </section>
 
-    <footer class="page-foot">
-      <span data-i18n="foot.adapted">Games adapted from</span>
-      <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a>.
-      <span data-i18n="foot.docs">The API is documented in the</span>
-      <a href="https://github.com/kingfs/Decis" target="_blank" rel="noopener">Decis</a>
-      <span data-i18n="foot.repo">repository</span>;
-      <code>/v1/systemone</code> <span data-i18n="foot.proxied">is proxied, and</span>
-      <code>/readyz</code> <span data-i18n="foot.readyz">reports the engine.</span>
-    </footer>
+    <section class="credits">
+      <h2 data-i18n="credits.title">Credits</h2>
+      <p>
+        <span data-i18n="credits.games">The three games are adapted from</span>
+        <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a><span
+          data-i18n="credits.games.note">, including the flood-fill and physics planners that project credits.</span>
+        <span data-i18n="credits.games.tetris">Tetris also credits</span>
+        <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a>.
+      </p>
+      <p>
+        <span data-i18n="credits.core">The API, the inference and the wire format come from</span>
+        <a data-repo-link></a><span data-i18n="credits.core.note">, which also holds the documentation, the
+          contract this page calls, and the full third-party attribution in NOTICE.</span>
+      </p>
+      <p class="credits-foot">
+        <code>/v1/systemone</code> <span data-i18n="credits.proxied">is proxied by this service, and</span>
+        <code>/readyz</code> <span data-i18n="credits.readyz">reports which engine answered.</span>
+      </p>
+    </section>
   </main>
 
   <script>
@@ -159,7 +195,15 @@
         "status.readyPrefix": "Connected to ",
         "status.candidates": "waiting on {candidates}",
         "status.upstream": "upstream {upstream}",
-        "status.readyDetail": "every move is one POST to it"
+        "status.readyDetail": "every move is one POST to it",
+        "credits.title": "Credits",
+        "credits.games": "The three games are adapted from",
+        "credits.games.note": ", including the flood-fill and physics planners that project credits.",
+        "credits.games.tetris": "Tetris also credits",
+        "credits.core": "The API, the inference and the wire format come from",
+        "credits.core.note": ", which also holds the documentation, the contract this page calls, and the full third-party attribution in NOTICE.",
+        "credits.proxied": "is proxied by this service, and",
+        "credits.readyz": "reports which engine answered."
       },
       zh: {
         "hero.title": "Decis \u6f14\u793a\u573a",
@@ -179,7 +223,15 @@
         "status.readyPrefix": "\u5df2\u8fde\u63a5 ",
         "status.candidates": "\u6b63\u5728\u7b49\u5f85 {candidates}",
         "status.upstream": "\u4e0a\u6e38 {upstream}",
-        "status.readyDetail": "\u6bcf\u4e00\u6b65\u90fd\u662f\u5411\u5b83\u53d1\u4e00\u6b21 POST"
+        "status.readyDetail": "\u6bcf\u4e00\u6b65\u90fd\u662f\u5411\u5b83\u53d1\u4e00\u6b21 POST",
+        "credits.title": "\u81f4\u8c22",
+        "credits.games": "\u4e09\u4e2a\u5c0f\u6e38\u620f\u6539\u7f16\u81ea",
+        "credits.games.note": "\uff0c\u5305\u62ec\u8be5\u9879\u76ee\u81f4\u8c22\u7684 flood-fill \u4e0e\u7269\u7406\u89c4\u5212\u4ee3\u7801\u3002",
+        "credits.games.tetris": "\u4fc4\u7f57\u65af\u65b9\u5757\u53e6\u5916\u81f4\u8c22",
+        "credits.core": "API\u3001\u63a8\u7406\u4e0e\u7ebf\u683c\u5f0f\u90fd\u6765\u81ea",
+        "credits.core.note": "\uff0c\u4ed3\u5e93\u91cc\u540c\u65f6\u6709\u6587\u6863\u3001\u672c\u9875\u8c03\u7528\u7684\u5951\u7ea6\uff0c\u4ee5\u53ca\u5b8c\u6574\u7684\u7b2c\u4e09\u65b9\u7f72\u540d\uff08NOTICE\uff09\u3002",
+        "credits.proxied": "\u7531\u672c\u670d\u52a1\u4ee3\u7406\uff0c",
+        "credits.readyz": "\u4f1a\u62a5\u544a\u662f\u54ea\u4e2a\u5f15\u64ce\u5728\u4f5c\u7b54\u3002"
       }
     });
 

@@ -163,6 +163,11 @@ pre {
   border-color: var(--line-strong);
 }
 
+/* The shared navigation links (mounted by i18n.js). They use the game links' styling;
+   these two rules only say which direction each one goes. */
+.app-nav .link-back::before { content: "\2190\00a0"; color: var(--muted); }
+.app-nav .link-repo::after { content: "\00a0\2197"; color: var(--muted); font-size: 11px; }
+
 .spacer { flex: 1 1 auto; min-width: 0; }
 
 /* ------------------------------------------------------- status & switch -- */

@@ -20,6 +20,8 @@
  *   <span data-i18n="score">Score</span>            <!-- static text -->
  *   <button data-i18n-title="btn.reset.title">…</button>
  *   <div data-lang-switch></div>                    <!-- the switch mounts itself -->
+ *   <a data-back-link></a>                          <!-- "back to the playground" -->
+ *   <a data-repo-link></a>                          <!-- this project on GitHub -->
  *   <script>
  *     I18N.add({ en: { "score": "Score" }, zh: { "score": "得分" } });
  *     I18N.onChange(() => renderLabels());          // re-render dynamic text
@@ -34,6 +36,19 @@
   "use strict";
 
   var STORAGE_KEY = "decis-playground-lang";
+
+  //: The project this playground ships with. The navigation link is built here rather
+  //: than written into four pages, so the repository URL has one home (AGENTS.md §2) --
+  //: the same reason the palette lives in theme.css.
+  var REPO_URL = "https://github.com/kingfs/Decis";
+
+  //: The links every page shows, and the string that labels each one. `back` is the one
+  //: page-specific exception: the index has nothing to go back to, so it omits the
+  //: element and this mount finds nothing.
+  var LINKS = [
+    { attribute: "data-back-link", href: "/", key: "nav.back", className: "link-back" },
+    { attribute: "data-repo-link", href: REPO_URL, key: "nav.repo", className: "link-repo", external: true }
+  ];
   var LANGS = [
     { code: "en", label: "EN", title: "English" },
     { code: "zh", label: "\u4e2d\u6587", title: "\u7b80\u4f53\u4e2d\u6587" }
@@ -52,11 +67,11 @@
       "status.unreachable": "Playground unreachable: {message}",
       "status.loading": "The engine is still loading\u2026",
       "switch.label": "Language",
-      "foot.adapted": "Games adapted from",
-      "foot.docs": "The API is documented in the",
-      "foot.repo": "Decis",
-      "foot.proxied": "is proxied, and",
-      "foot.readyz": "reports the engine."
+      "nav.back": "Back to playground",
+      "nav.repo": "Decis",
+      "nav.repo.title": "Decis on GitHub",
+      "nav.repo.aria": "Decis on GitHub (opens in a new tab)",
+      "foot.adapted": "Games adapted from"
     },
     zh: {
       "brand.sub": "\u6f14\u793a\u573a",
@@ -68,11 +83,11 @@
       "status.unreachable": "\u65e0\u6cd5\u8bbf\u95ee playground\uff1a{message}",
       "status.loading": "\u5f15\u64ce\u8fd8\u5728\u52a0\u8f7d\u4e2d\u2026",
       "switch.label": "\u8bed\u8a00",
-      "foot.adapted": "\u6e38\u620f\u6539\u7f16\u81ea",
-      "foot.docs": "API \u6587\u6863\u5728",
-      "foot.repo": "Decis",
-      "foot.proxied": "\u4f1a\u88ab\u4ee3\u7406\uff0c",
-      "foot.readyz": "\u4f1a\u62a5\u544a\u5f15\u64ce\u72b6\u6001\u3002"
+      "nav.back": "\u8fd4\u56de\u6f14\u793a\u573a",
+      "nav.repo": "Decis",
+      "nav.repo.title": "Decis \u7684 GitHub \u4ed3\u5e93",
+      "nav.repo.aria": "Decis \u7684 GitHub \u4ed3\u5e93\uff08\u65b0\u6807\u7b7e\u9875\u6253\u5f00\uff09",
+      "foot.adapted": "\u6e38\u620f\u6539\u7f16\u81ea"
     }
   };
 
@@ -208,6 +223,27 @@
     }
   }
 
+  /** Fill in the shared navigation links: the way back, and the repository. */
+  function mountLinks(root) {
+    var scope = root || document;
+    for (var s = 0; s < LINKS.length; s++) {
+      var spec = LINKS[s];
+      var nodes = scope.querySelectorAll("a[" + spec.attribute + "]");
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        node.setAttribute("href", spec.href);
+        node.classList.add(spec.className);
+        if (spec.external) {
+          node.setAttribute("target", "_blank");
+          node.setAttribute("rel", "noopener");
+          node.setAttribute("title", t(spec.key + ".title"));
+          node.setAttribute("aria-label", t(spec.key + ".aria"));
+        }
+        node.textContent = t(spec.key);
+      }
+    }
+  }
+
   /** Repaint every mount point: called after the language changes. */
   function repaint() {
     var hosts = document.querySelectorAll("[data-lang-switch]");
@@ -219,6 +255,7 @@
       }
       hosts[i].setAttribute("aria-label", t("switch.label"));
     }
+    mountLinks(document);
   }
 
   function notify() {
@@ -270,6 +307,7 @@
   function ready() {
     apply(document);
     mount(document);
+    mountLinks(document);
   }
 
   if (document.readyState === "loading") {

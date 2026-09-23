@@ -312,9 +312,11 @@
       <span class="brand-name">Decis <span class="brand-sub" data-i18n="brand.sub">playground</span></span>
     </a>
     <nav class="app-nav">
+      <a data-back-link></a>
       <a href="/snake" data-i18n="nav.snake">Snake</a>
       <a href="/dino" data-i18n="nav.dino">Dino</a>
       <a href="/tetris" aria-current="page" data-i18n="nav.tetris">Tetris</a>
+      <a data-repo-link></a>
     </nav>
     <span class="spacer"></span>
     <span class="status-chip">
@@ -444,7 +446,7 @@
     </main>
 
     <footer class="foot-bar">
-      <span><span data-i18n="foot.adapted">Games adapted from</span> <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a> · <a href="/" data-i18n="foot.home">Back to the Decis playground.</a></span>
+      <span><span data-i18n="foot.adapted">Games adapted from</span> <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a></span>
       <span id="calls-counter">0 /v1/systemone calls · 0 tokens</span>
     </footer>
   </div>
@@ -521,7 +523,6 @@ I18N.add({
     "overlay.sub": "Press Reset to play again",
     "overlay.sub.stats": "{lines} lines · {pieces} pieces",
     "calls.counter": "{calls} /v1/systemone calls · {tokens} tokens",
-    "foot.home": "Back to the Decis playground."
   },
   zh: {
     "page.title": "俄罗斯方块",
@@ -593,7 +594,6 @@ I18N.add({
     "overlay.sub": "按“重置”再来一局",
     "overlay.sub.stats": "消除 {lines} 行 · {pieces} 块",
     "calls.counter": "{calls} 次 /v1/systemone 调用 · {tokens} 个 token",
-    "foot.home": "返回 Decis 演示场。"
   }
 });
 

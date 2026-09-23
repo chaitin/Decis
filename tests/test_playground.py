@@ -361,6 +361,55 @@ def test_every_game_asks_the_playground_for_its_decisions(name: str) -> None:
     assert "artifax" not in text, name
 
 
+# --- the way back, and the way out ------------------------------------------------
+#
+# Every page carries the same two shell links, mounted by i18n.js: back to the playground
+# from a game, and out to the repository from anywhere. They are mounted rather than
+# written into each page because the repository URL has one home (AGENTS.md §2) -- a
+# fourth copy of it in a fourth page is a copy that drifts.
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_every_page_links_to_the_repository(name: str) -> None:
+    text = (WEB / name).read_text(encoding="utf-8")
+    assert "data-repo-link" in text, f"{name} has no link to the repository"
+    # The URL itself lives in the shell, so a page that repeats it is the second home.
+    assert "github.com/kingfs/Decis" not in text, f"{name} hardcodes the repository URL"
+
+
+def test_the_repository_url_has_one_home() -> None:
+    """`i18n.js` is where the project's URL is written down, and it is written once."""
+    text = (WEB / "i18n.js").read_text(encoding="utf-8")
+    assert text.count('REPO_URL = "https://github.com/kingfs/Decis"') == 1
+    assert "data-repo-link" in text, "the mount point is no longer recognised"
+    assert "data-back-link" in text, "the way back is no longer recognised"
+
+
+@pytest.mark.parametrize("name", ("snake.html", "dino.html", "tetris.html"))
+def test_every_game_has_a_way_back_to_the_playground(name: str) -> None:
+    text = (WEB / name).read_text(encoding="utf-8")
+    assert "data-back-link" in text, f"{name} has no way back to the playground"
+
+
+def test_the_index_does_not_link_back_to_itself() -> None:
+    """The index is where the back links point, so it has none of its own."""
+    assert "data-back-link" not in (WEB / "index.html").read_text(encoding="utf-8")
+
+
+def test_the_index_credits_the_projects_it_borrowed_from() -> None:
+    """The page says who made the games and who answers their questions.
+
+    Both halves matter: the games are adapted from `djev-run` (and tetris also credits
+    `jev-tetris`), and the API and inference are Decis's, not the playground's. Saying so
+    on the page is cheaper than a reader guessing.
+    """
+    text = (WEB / "index.html").read_text(encoding="utf-8")
+    assert "github.com/taeold/djev-run" in text
+    assert "credits.core" in text and "credits.title" in text
+    # And the credit line points at the repository through the shared mount, not a copy.
+    assert "github.com/kingfs/Decis" not in text
+
+
 def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     """The option count is a capacity decision, so it lives in exactly one place.
 
@@ -573,7 +622,7 @@ def _shell_strings() -> dict[str, dict[str, str]]:
 #: Strings deliberately identical in both languages because they are identifiers rather
 #: than prose: a product name, or a value the model itself sees. Being on this list is a
 #: decision, which is the point -- the test makes someone write it down.
-KEPT_IN_ENGLISH = {"foot.repo"}
+KEPT_IN_ENGLISH = {"nav.repo"}
 
 
 def _reads_as_prose(value: str) -> bool:
