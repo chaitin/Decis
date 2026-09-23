@@ -7,12 +7,17 @@
 #
 # The image installs no engine extra unless you ask for one, so the bare build is an
 # API-only image: it starts and answers `/healthz` and `/v1/models`, but it cannot serve
-# a request until an engine's dependencies are present. An engine image that also works
-# with no network at run time bakes the weights in:
+# a request until an engine's dependencies are present. An engine image adds its extra and
+# its weights, which is what the published images do -- `docker run` must not need the
+# network:
 #
 #   --build-arg DECIS_EXTRAS=laya \
 #   --build-arg DECIS_ENGINE=laya-multilingual \
 #   --build-arg DECIS_PREDOWNLOAD=laya-multilingual
+#
+# Leaving `DECIS_PREDOWNLOAD` empty produces the weightless variant that the release tags
+# publish as `<engine>-runtime-<version>`, for a deployment that mounts one copy of the
+# weights into every replica.
 #
 # The multi-architecture matrix that publishes these to a registry is Stage 4
 # (docs/design.md §12); this file only has to be able to produce one.
@@ -35,7 +40,8 @@ ARG DECIS_EXTRAS=""
 # The engine this image serves by default. It must be an id the registry knows, even
 # when no extra is installed: `/v1/models` lists it without importing its framework.
 ARG DECIS_ENGINE="laya-multilingual"
-# An engine id whose weights to bake in. Empty means "mount them instead".
+# An engine id whose weights to bake in. Empty means "mount or download them instead",
+# which is the weightless `<engine>-runtime` build.
 ARG DECIS_PREDOWNLOAD=""
 
 ENV PYTHONUNBUFFERED=1 \
@@ -73,19 +79,23 @@ RUN if [ -n "$DECIS_EXTRAS" ]; then \
 RUN decis doctor || true
 RUN python -c "from decis.app import create_app; create_app(load_engine=False); print('app builds')"
 
-# Bake weights when asked. Done as its own layer so that changing source does not
-# refetch hundreds of megabytes, and *before* the non-root user exists so the files are
-# owned correctly afterwards. No weights are ever committed to git (AGENTS.md §9).
+# Bake weights when asked. This layer *is* invalidated by everything above it, including
+# `COPY src`: the downloader needs the engine's weight spec, and that spec is code. A
+# source change therefore re-runs the download, which is the price of the engine image
+# carrying its weights by default (`docs/design.md` §12.2). Done before the non-root user
+# exists so the files are owned correctly afterwards.
+# No weights are ever committed to git (AGENTS.md §9).
 RUN if [ -n "$DECIS_PREDOWNLOAD" ]; then \
         mkdir -p /models && decis download --engine "$DECIS_PREDOWNLOAD"; \
     else \
         mkdir -p /models; \
     fi
 
-# No VOLUME declaration on purpose. `/models` is declared as a volume only for images
-# that lack weights, and a volume hides whatever was baked into the image behind it --
-# which would silently turn an offline image into one that reaches for the Hub. Use
-# `-v /srv/models:/models` to mount weights; that works without the declaration.
+# No VOLUME declaration on purpose. A volume mounted at `/models` hides the weights baked
+# in above -- a named volume is seeded from the image and then keeps its own copy -- which
+# silently turns an image that answers offline into one that reaches for the Hub, and that
+# is exactly the bug `docs/design-review.md` §2-D21 records. `docker-compose.yml` mounts
+# nothing there for the same reason.
 
 # Non-root, with a fixed uid so a mounted volume can be chowned predictably.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin decis \

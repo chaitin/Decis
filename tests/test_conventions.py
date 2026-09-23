@@ -343,6 +343,24 @@ def test_engine_readiness_is_classified_once() -> None:
     assert "unavailable  " not in cli, "cli.py is formatting readiness itself"
 
 
+def test_the_reported_version_is_the_packaged_version() -> None:
+    """`/healthz` and the release tag must not be able to disagree.
+
+    `pyproject.toml` is what the wheel and the metadata carry; `decis.__version__` is what
+    every response reports. Two copies of one number is a canonical-home problem (§2), and
+    the failure it causes is a user comparing an image tag against `/healthz`.
+    """
+    import tomllib
+
+    pyproject = tomllib.loads((PACKAGE.parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
+    sys.path.insert(0, str(PACKAGE.parent))
+    import decis
+
+    assert decis.__version__ == pyproject["project"]["version"], (
+        f"decis/__init__.py says {decis.__version__}, pyproject.toml says {pyproject['project']['version']}"
+    )
+
+
 def test_only_the_vendor_tree_is_exempt_from_these_rules() -> None:
     """Exactly one hole is cut in the rules above, it is the vendored copy, and it says so.
 

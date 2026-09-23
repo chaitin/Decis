@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import VERSIONED_STUB
 from decis.domain import Option, PreparedQuestion
 from decis.engines import registry
 from decis.engines.base import (
@@ -116,7 +117,7 @@ def test_core_modules_do_not_pull_in_torch(module: str) -> None:
         ("stub", "stub"),
         ("decis-stub", "stub"),
         ("stub-engine", "stub"),
-        ("decis/stub@0.1.0", "stub"),
+        (VERSIONED_STUB, "stub"),
         ("decis/stub", "stub"),
         ("  stub  ", "stub"),
         ("STUB", None),  # case-sensitive on purpose: model names are identifiers

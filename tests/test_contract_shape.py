@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import VERSIONED_STUB
+
 # --- AGENTS.md §3-7: the top level is always the same three keys --------------
 
 
@@ -29,7 +31,7 @@ def test_usage_is_two_plain_integers(client, auth, mixed_request) -> None:
 def test_model_is_the_versioned_id_not_the_request_alias(client, auth, mixed_request) -> None:
     """AGENTS.md §3-8: feeding the response's `model` back in must work."""
     body = client.post("/v1/systemone", json=mixed_request, headers=auth).json()
-    assert body["model"] == "decis/stub@0.1.0"
+    assert body["model"] == VERSIONED_STUB
 
     echoed = dict(mixed_request, model=body["model"])
     again = client.post("/v1/systemone", json=echoed, headers=auth)
@@ -37,7 +39,7 @@ def test_model_is_the_versioned_id_not_the_request_alias(client, auth, mixed_req
     assert again.json()["model"] == body["model"]
 
 
-@pytest.mark.parametrize("alias", ["stub", "decis-stub", "stub-engine", "decis/stub@0.1.0"])
+@pytest.mark.parametrize("alias", ["stub", "decis-stub", "stub-engine", VERSIONED_STUB])
 def test_every_alias_is_accepted(client, auth, noul_request, alias) -> None:
     response = client.post("/v1/systemone", json=dict(noul_request, model=alias), headers=auth)
     assert response.status_code == 200
@@ -46,7 +48,7 @@ def test_every_alias_is_accepted(client, auth, noul_request, alias) -> None:
 def test_foreign_default_model_is_substituted_and_reported(client, auth, noul_request) -> None:
     """The SDK defaults to `jev-latest`; swapping only TYPESAFE_BASE_URL must work."""
     body = client.post("/v1/systemone", json=dict(noul_request, model="jev-latest"), headers=auth).json()
-    assert body["model"] == "decis/stub@0.1.0"
+    assert body["model"] == VERSIONED_STUB
     assert body["decis"]["requested_model"] == "jev-latest"
 
 

@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import VERSIONED_STUB
+
 ROOT = Path(__file__).resolve().parent.parent
 CURL_MD = ROOT / "examples" / "curl.md"
 SDK_SCRIPT = ROOT / "examples" / "python_sdk.py"
@@ -250,7 +252,7 @@ def test_the_sdk_example_runs_against_a_real_server(server_url: str) -> None:
 
     # It parsed typed objects, not raw dicts: these lines only exist if `response.choices`,
     # `response.nouls` and `response.scores` did their job.
-    assert "model: decis/stub@0.1.0" in out
+    assert f"model: {VERSIONED_STUB}" in out
     assert "request id: req_" in out
     assert "choice  department = 'technical'" in out
     assert "noul    churn_risk = " in out

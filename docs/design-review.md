@@ -480,7 +480,7 @@ Error response from daemon: manifest for kingfs/decis:mock not found
 
 **修法**：tag 方案整个搬进 `plan` 步骤，矩阵里带 `image_tag`，构建与合并步骤只做插值，
 测试从**执行 plan 后产出的矩阵**里读 tag（master 推送 → 引擎名；release tag → 引擎名 + 版本；
-offline → 引擎名 + `-offline`）。顺带把"两个步骤各自拼一遍 tag"这个第二处实现也消掉了。
+offline → 引擎名 + `-offline`，那个名字后来被 `-runtime` 取代，见 §2-D20）。顺带把"两个步骤各自拼一遍 tag"这个第二处实现也消掉了。
 已按新方案删掉 Docker Hub 上 21 个旧 tag，避免留下再也不会更新、但看起来仍然有效的 `-latest` 别名。
 
 ### D16（严重，已修正）三个引擎把 per-arch 中间 tag 互相覆盖，于是三个 tag 发出的是同一个 manifest
@@ -621,6 +621,107 @@ readiness 的分工，却没料到 liveness **自身**会被环境变量劫持�
 **教训**：探针是"从容器内部发出的一个请求"，因此它继承该容器的一切环境（代理、`SSL_CERT_FILE`、
 DNS、`NO_PROXY`）。把它写成"用通用 HTTP 客户端访问 loopback"就等于假设这些环境是干净的——
 而在"需要代理才能下载权重"这个**恰恰是本项目镜像最常见部署前提**的场景里，假设不成立。
+
+---
+
+### D20（高，已修正）默认发布的镜像不带权重，于是"拿到就能用"是句空话
+
+**发现方式**：用户读完 CI 绿灯的报告后问："我们不是把模型打进镜像了吗？"——**没有**。
+默认 tag（`laya-multilingual`、`kev-0.8b`、裸 `latest`）只装依赖，权重烤在另一个变体里，
+而那个变体（当时叫 `-offline`）**只在 release tag 时构建，且从未成功过**（§2-D17）。
+
+**为什么这是缺陷而不是取舍**：一个按引擎命名的镜像只有一件事要做，就是让
+`docker pull` + `docker run` 不需要别的条件。当时的文档甚至同时说了两件矛盾的事——
+README 有一句 `Images ship with the model so docker run works offline`，
+而镜像表格下面写着"默认镜像不含权重：容器首次启动时下载"，并且第一条 `docker run` 示例
+真的会去联网。用户预期与实际行为不一致，而**唯一发现它的方式是把镜像拉下来跑一遍**：
+六条构建腿全绿、SBOM 和 provenance 都在，没有一条测试说过"这个 tag 里有权重"。
+
+**修法**：
+1. 翻转变体：`baked`（烤权重）成为**默认**，引擎名那个 tag 就是它；不带权重的变体带后缀
+   `-runtime`，只在 release tag 或手动 dispatch 时构建；
+2. `-offline` 这个名字**删掉**：默认已经烤权重时它就是同一个东西的第二个名字（§2、§9）；
+3. 两条守卫：`tests/test_docker_workflow.py` 断言默认 tag 的 `bake` 等于引擎名、
+   且**不存在"要烤权重却没装对应 extra"的腿**；`tests/test_compose.py` 断言 compose 用的
+   image tag 正是那个烤权重的变体。
+
+**代价（写下来，不藏）**：权重的 `RUN` 层在 `COPY src` 之后（下载器要读引擎的权重声明，那是代码），
+所以**每次源码改动这条腿都要重新下载**。laya 是 647 MiB，kev 是 1.7 GiB adapter + 1.65 GiB 基座，
+乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里让 `COPY --from` 命中缓存
+（`docs/design.md §12.2` 记了这条路，没有实现）。
+
+---
+
+### D21（高，已修正）挂在 `DECIS_MODEL_DIR` 上的卷会把烤进镜像的权重盖掉
+
+**发现方式**：设计 compose 时按"上一版是预取进命名卷"的习惯继续写着 `volumes: [models:/models]`，
+而这一次镜像里**已经有** `/models/laya-multilingual/`。
+
+**根因**：Docker 对命名卷的处理是"首次创建时用镜像里同路径的内容初始化"，之后卷就是权威；
+bind mount 更直接——**整个目录被替换**。两种情况下容器里的 `/models` 都不再是镜像里那份，
+而 `paths.resolve` 找不到权重时不会报错，它会**去联网下载**（这正是 §2-D8 之前特意保护的路径：
+"本地有权重"应当赢过网络，但它必须先看得见）。
+
+**为什么危险**：得到一个"离线镜像"，它在有网时工作得完全正常，在**断网时失败**——
+而这个失效模式只在真正无出口的环境里出现。加上它不报错、不影响任何现有测试，
+这是一种典型的"部署到客户现场才发现"的缺陷。
+
+**修法**：`docker-compose.yml` 不挂任何卷，并把 `DECIS_MODEL_DIR` 钉在 `/models`；
+`tests/test_compose.py` 的守卫**从 Dockerfile 的 `ENV` 读出那个路径**再断言没有服务挂它，
+同时没有任何服务把 `DECIS_MODEL_DIR` 指到别处。需要"权重放卷"的部署改用 `-runtime` 镜像，
+先 `decis download` 填一次卷（README 有这个例子）。
+
+---
+
+### D22（中，已修正）compose 的 `--wait` 等的是 liveness，于是"ready"来得太早
+
+**发现方式**：第一次真实 `docker compose up -d --wait` 在 **74 秒**就返回了，而引擎还要再等
+**27 秒**才 `ready`（D19 那次实测 101.0 s）。命令的语义是"等到服务可用"，实际是"等到进程活着"。
+
+**根因**：`--wait` 等的是健康检查，而镜像的 `HEALTHCHECK` 按 §2-D7 刻意打 `/healthz`——
+这是**给编排器用的 liveness 探针**，不能因为引擎还在加载就判失败。compose 继承了它，
+于是继承了"活着 ≠ 能作答"。
+
+**修法**：compose 层覆盖探针，指向 `/readyz`，并保留 D19 要求的 `env -u` 代理变量清理。
+这个覆盖是**安全的**，因为 Docker Compose 不是编排器：探针失败**不会**重启容器，
+它只影响 `--wait`、`docker ps` 的状态和 `depends_on: condition: service_healthy`。
+镜像自带的 `HEALTHCHECK` 因此保持 `/healthz` 不动，两者分工在 `docker-compose.yml` 的注释里说明。
+`tests/test_compose.py` 现在同时断言两件事：镜像探针打 `/healthz` 且**不**打 `/readyz`，
+compose 探针打 `/readyz` 且启动宽限期长于实测的冷启动。
+
+**教训**：同一个"健康检查"概念在编排器与本地编排工具里语义不同，**因为失败后的动作不同**。
+把镜像的探针直接继承过来（或者反过来，把 compose 的探针抄进镜像）都会让其中一个场景错，
+而两者都"看起来在检查健康"。
+
+---
+
+### D23（中，已修正）`.env` 里的代理只到达容器，到达不了构建步骤
+
+**发现方式**：在本机（无直连出口）做第一次真实的本地构建。依赖装完了，烤权重那一步失败：
+
+```
+laya-multilingual: downloading to /models/laya-multilingual (646.8 MiB) ...
+httpcore.ConnectError: [Errno 101] Network is unreachable
+```
+
+**根因**：`.env` 是通过 `env_file:` 交给**容器**的，而构建步骤不属于任何一个容器。
+Docker 也不会把 shell 里的 `HTTP_PROXY` 带进 `RUN`（实测：`RUN echo "[$HTTP_PROXY]"` 打印空，
+容器直连 PyPI 可用、直连 `huggingface.co` 不可用）。于是"依赖安装成功、权重下载失败"这个
+看起来自相矛盾的现象同时成立——**失败的那一步恰好是唯一真的需要出口的那一步**，
+而 `.env.example` 的代理段落当时写着"跑构建时也设这些"，等于承诺了一件 `env_file` 做不到的事。
+
+**修法**：文档（`.env.example`、两个 README）写明构建要用 `--build-arg` 显式传代理与 `NO_PROXY`：
+
+```bash
+docker compose build --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
+  --build-arg NO_PROXY="$NO_PROXY"
+```
+
+CI 不需要这一步（GitHub runner 直连 Hub）。顺带实测到一个有用的性质：代理 build arg **不进**
+BuildKit 的缓存键——这次重建复用了上一次的依赖层，只重跑了烤权重那一步。
+
+**教训**：`env_file` 的作用域是"容器"，不是"这一次构建"。把变量放在同一个文件里，不等于它到达了
+每一处需要它的地方；而在这类缺陷里，**没坏的那一步会掩盖坏了的那一步**。
 
 ---
 

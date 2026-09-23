@@ -7,7 +7,7 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**441 个无权重测试通过**——
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**445 个无权重测试通过**——
 > 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
 > 现在都能回答真实请求**；另有 27 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
@@ -110,7 +110,7 @@ CPU 上冷启动约 **80 秒**，整个过程里探针都可用：引擎在后�
 
 ```
 $ curl -s localhost:8000/healthz   # 启动后 0.5 秒
-{"status":"ok","version":"0.1.0"}
+{"status":"ok","version":"0.0.1"}
 $ curl -s localhost:8000/readyz    # 还在加载
 {"status":"loading","engine":"laya-multilingual"}     # 503，带 retry-after
 $ curl -s localhost:8000/readyz    # 约 80 秒后
@@ -120,7 +120,7 @@ $ curl -s localhost:8000/readyz    # 约 80 秒后
 加载期间到达的请求会收到 `503` 和 `"The model is still loading. Please retry shortly."`；
 如果权重加载**失败**了，收到的 `503` 会明确说明失败，并且**不带** `retry-after`——对一个不会恢复的
 服务反复重试只是浪费时间。注意别把**存活探针**指向 `/readyz`，否则慢启动会变成重启循环。
-把权重打进镜像后它就能离线运行：
+已发布的镜像里已经带了权重，所以容器起来之后完全不需要网络：
 
 ```bash
 docker build -f docker/Dockerfile \
@@ -157,7 +157,9 @@ Decis 就是这种方式：一个稳定的 API，多个引擎，每个模型打�
 - **jev 契约只实现一次。** `POST /v1/systemone`、`GET /v1/models`、`choice` / `score` / `noul` 三种原语、官方 SDK 的错误形状和 request-id 头。线格式固定在 [`docs/api-compatibility.md`](docs/api-compatibility.md) 里，每条结论都标了证据等级——而且线上 API 是**实测过**而不是推断的，401/403 的分工就是这么发现的。
 - **引擎可插拔。** 引擎只需要给出每个选项的概率；服务端负责把它转成 `Noul` / `Choice` / `Score` answer，所以每个引擎返回的形状完全一致、可以互相比较，`confidence` 也只有一处有文档的定义。引擎按字符串路径注册，所以只装了某一个引擎依赖的镜像依然能列出其他引擎。
 - **为高频小请求而做。** 两个开源决策模型都只有一次前向，所以请求路径被设计成在问题送到模型之前*跨请求*合并成批——但这条收益还没测过，诚实说明见下面的性能一节。
-- **权重可以打进镜像，也可以挂卷。** 镜像自带模型，`docker run` 离线就能跑；`DECIS_MODEL_DIR` 可以用你自己的目录覆盖。
+- **权重就打在镜像里。** 每个已发布的镜像都带着自己的 checkpoint，所以 `docker run` 不需要网络、
+  不需要挂卷、也不需要下载步骤；`DECIS_MODEL_DIR` 可以改用你自己的目录，另外还有一个不带权重的
+  `-runtime` 变体，给"权重放共享卷、每个副本只挂一次"这类部署用。
 - **默认安全。** Bearer token 认证（从 `.env` 读）、常数时间比较、请求体大小上限，以及在公网地址上没配 token 就拒绝启动。
 
 ## 引擎
@@ -244,43 +246,62 @@ Decis 就是这种方式：一个稳定的 API，多个引擎，每个模型打�
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
 ```
 
-| Tag | 引擎 | 需要什么 |
+| Tag | 引擎 | 里面是什么 |
 |---|---|---|
-| `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 647 MiB 权重，冷启动约 80 秒，峰值 RSS 约 5 GB |
-| `kev-0.8b` | kev 0.8B | 1.7 GiB 权重；想要 GPU |
+| `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 已经打进去的 647 MiB 权重；CPU 上约 1-2 分钟到 `/readyz`，常驻约 3 GiB |
+| `kev-0.8b` | kev 0.8B | 已经打进去的 1.7 GiB adapter + Qwen 基座；想要 GPU |
 
 只有 `laya-multilingual` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的是默认引擎。
 每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。
 注册表里的 `laya`（英语）与 `laya-typed-decisions` **没有镜像**：构建矩阵只覆盖上面两个 tag，
 这两个 checkpoint 请从源码目录运行。
 
-默认镜像**不含权重**：容器首次启动时下载，进镜像里的 Hugging Face 缓存（`/models/.hf`，
-所以挂一个 `/models` 卷就能跨重建保留）。想更新模型而不重建镜像时，挂自己的权重更好：
+权重就在镜像**里面**，所以首次启动没有任何东西要下载：
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
+```
+
+想在不重新拉镜像的前提下换 checkpoint，就挂一个目录——但那个目录里必须已经有 `<engine-id>/`。
+把卷挂在 `/models` 上会**盖住烤进镜像的权重**（命名卷会用镜像内容初始化一次然后自己留一份，
+bind mount 则直接替换掉整个目录），于是容器悄悄退回联网下载：
+
+```bash
+# /srv/models/laya-multilingual/multilingual/... 必须已经存在
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
 ```
 
-给没有出口网络的环境，release tag 还会发布把权重打进去的 `-offline` 变体
-（`kingfs/decis:laya-multilingual-offline-v1.2.0`）。
+release tag 还会发布不带权重的变体 `<engine>-runtime-<version>`，给"权重放共享卷"或"每个节点
+的镜像要尽量小"的部署用。它是 release 产物而不是滚动的 tag，所以下面的例子带版本号——用当前那个。
+先把卷填一次，再让服务端读它：
 
-`docker compose` 把这一整套（包括首次下载）接好：
+```bash
+docker pull kingfs/decis:laya-multilingual-runtime-v1.2.0
+docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v1.2.0 \
+  decis download --engine laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
+  kingfs/decis:laya-multilingual-runtime-v1.2.0
+```
+
+`docker compose` 只跑发布的镜像本身——没有预取容器、没有卷、没有下载：
 
 ```bash
 cp .env.example .env        # 至少改 DECIS_API_KEY；COMPOSE_PROFILES 决定起哪个引擎
-docker compose up -d --wait # 默认只起 laya-multilingual
+docker compose -f docker-compose.yml up -d --wait   # 默认只起 laya-multilingual
 
-# `--wait` 只等到预取结束、`/healthz` 通过，此时引擎还没加载完——CPU 上 `/readyz`
-# 还会报约 80 秒的 "loading"。要等服务真的能作答：
+# 这里的 `--wait` 会一直等到引擎真的能作答：compose 层的探针打的是 `/readyz`，
+# 所以它把 CPU 上约 80-100 秒的冷启动等完了。镜像自带的 HEALTHCHECK 仍然留在
+# `/healthz` 上给编排器用——liveness 探针不能在引擎还在加载时就判失败。
+#
+# 不想用 `--wait` 就自己等：
 until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 
 docker compose --profile kev-0.8b up -d     # 或者另一个引擎（宿主端口 8001）
 ```
 
-权重落在 `decis_models` 卷里，所以这个下载只发生一次。一次性的 `weights-<engine>` 服务
-在服务端之前完成下载（`depends_on: service_completed_successfully`），它需要包含
-`docs/design-review.md` §2-D17 修复的镜像——该修复之后的每个镜像都有。
+`-f docker-compose.yml` 不是装饰：在源码目录里 Compose 还会自动加载
+`docker-compose.override.yml`，它会用你**当前的工作区**把同样的服务构建成 `decis-local:*`。
+想让改动生效就别加 `-f`；部署时只拷 `docker-compose.yml` 这一个文件。
 
 想自己构建：
 
@@ -288,11 +309,21 @@ docker compose --profile kev-0.8b up -d     # 或者另一个引擎（宿主端�
 docker build -f docker/Dockerfile \
   --build-arg DECIS_EXTRAS=laya \
   --build-arg DECIS_ENGINE=laya-multilingual \
+  --build-arg DECIS_PREDOWNLOAD=laya-multilingual \
   -t decis:laya-multilingual .
 ```
 
 除非显式指定，镜像不会安装任何引擎 extra，所以裸 `docker build` 得到的是纯 API 镜像：
-它能启动并回答 `/healthz` 与 `/v1/models`，但在引擎依赖和权重就位之前 `/readyz` 一直是 503。
+它能启动并回答 `/healthz` 与 `/v1/models`，但在引擎依赖和权重就位之前 `/readyz` 一直是 503；
+不传 `DECIS_PREDOWNLOAD` 得到的就是上面那个不带权重的变体。
+
+需要代理的网络里，代理要单独传给**构建**：`env_file` 只作用于容器，Docker 也不会把你 shell 里的
+`HTTP_PROXY` 带进 `RUN`，于是权重下载报 `Network is unreachable`，而依赖安装那一步可能照样成功。
+
+```bash
+docker compose build --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
+  --build-arg NO_PROXY="$NO_PROXY"
+```
 
 容器以非 root 用户运行，不需要任何外部服务——没有 Redis、没有 Postgres、没有 Celery——并且在公网地址上没配 token 时会拒绝启动。
 
@@ -333,7 +364,7 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 441 个测试，约 10 秒，无权重、无网络
+uv run pytest -q                        # 445 个测试，约 11 秒，无权重、无网络
 uv run pytest -m weights                # 27 个加载真实权重（Laya + kev）的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token

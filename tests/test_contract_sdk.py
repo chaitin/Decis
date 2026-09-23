@@ -27,6 +27,7 @@ from typesafe_sdk import (
     TypeSafePermissionDeniedError,
 )
 
+from conftest import VERSIONED_STUB
 from decis.app import create_app
 from decis.config import Settings
 
@@ -104,7 +105,7 @@ def test_sdk_answers_all_three_primitives(sdk) -> None:
         model="stub",
     )
 
-    assert result.model == "decis/stub@0.1.0"
+    assert result.model == VERSIONED_STUB
     assert result.usage.input_tokens >= 0
     assert result.usage.output_tokens >= 0
     assert set(result.answers) == {"complaint", "tone", "urgency"}
@@ -132,7 +133,7 @@ def test_sdk_parses_score_probability_keys_as_integers(sdk) -> None:
 def test_sdk_list_models(sdk) -> None:
     models = sdk.models.list()
     names = {model.name for model in models.models}
-    assert "decis/stub@0.1.0" in names
+    assert VERSIONED_STUB in names
     for model in models.models:
         assert model.description
         assert model.release_date
@@ -155,7 +156,7 @@ def test_sdk_default_model_jev_latest_works(sdk) -> None:
     that is the SDK's default. It must be served.
     """
     result = sdk.system_one(state="text", questions={"q": Noul(instructions="Is this a test?")})
-    assert result.model == "decis/stub@0.1.0"
+    assert result.model == VERSIONED_STUB
 
 
 def test_sdk_raises_permission_denied_without_a_key(live_server) -> None:

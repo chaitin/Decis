@@ -739,8 +739,8 @@ Decis/
 ├── NOTICE                        # ✅ 第三方署名（kev vendored 代码、Laya 等）
 ├── pyproject.toml                # ✅ uv / hatchling，extras: server,laya,kev,all
 ├── uv.lock                       # ✅
-├── docker-compose.yml            # ✅ profile = 引擎 id；一次性 init 把权重预取进命名卷（§12.1 第 3 条）
-├── docker-compose.build.yml      # ✅ 覆盖层：用本仓库源码构建 `decis-local:*`，不占用已发布的 tag
+├── docker-compose.yml            # ✅ 部署文件：profile = 引擎 id，一个引擎一个容器（权重在镜像里，§12.1 第 3 条）
+├── docker-compose.override.yml   # ✅ 靠文件名被 Compose 自动加载：源码目录里构建 `decis-local:*`
 ├── docker/
 │   └── Dockerfile                # ✅ 单文件 + ARG DECIS_ENGINE / DECIS_EXTRAS / DECIS_PREDOWNLOAD
 ├── .github/workflows/
@@ -905,11 +905,13 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   在实现它之前先测**（详下）。
 - ✅ `benchmarks/report.py` 现在也生成 `README.zh-CN.md` 与 `docs/design-review.md` 的批处理段，
   并拒绝渲染**没有正对照**的攒批数据。
-- ✅ `docker-compose.yml`（+ `docker-compose.build.yml`）：**profile 名 == 引擎 id == image tag ==
-  `--engine` == `DECIS_DEFAULT_ENGINE`**，一次性 init 服务把权重预取进命名卷后退出，服务端
-  `depends_on: service_completed_successfully`。默认只起 `.env.example` 里 `COMPOSE_PROFILES` 指定的那一个引擎
-  （两个引擎同时驻留要好几 GB 内存）。`tests/test_compose.py` 不用 docker daemon，把 image tag、
-  profile、端口、卷、鉴权与工作流 `plan` 脚本对起来；CI 的 docker job 另跑 `docker compose config -q`。
+- ✅ `docker-compose.yml`（+ 自动加载的 `docker-compose.override.yml`）：**profile 名 == 引擎 id ==
+  image tag == `--engine` == `DECIS_DEFAULT_ENGINE`**，**一个引擎一个容器**——权重烤在镜像里，
+  所以既没有预取服务也没有卷（§2-D20/D21）。默认只起 `.env.example` 里 `COMPOSE_PROFILES` 指定的那一个引擎
+  （两个引擎同时驻留要好几 GB 内存）。compose 层的探针打 `/readyz`，所以 `--wait` 真的等到能作答
+  （§2-D22）；镜像自带的探针仍是 `/healthz`。`tests/test_compose.py` 不用 docker daemon，把 image tag、
+  profile、端口、鉴权、两条探针、构建覆盖层与工作流 `plan` 脚本、Dockerfile 对起来；
+  CI 的 docker job 另跑 `docker compose [-f docker-compose.yml] config -q` 并断言两种解析方式的服务集合一致。
 
 未做：攒批器（**很可能不该做**，见下）、进程池、`/metrics`、
 各引擎 × 设备 × 批大小的完整表。**本阶段有三个必须先做的验证**：
@@ -938,7 +940,8 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
 **Stage 4 — 发布工程（3–5 天）** — 🟡 已开始
 
 - ✅ 三段式多引擎镜像工作流 `.github/workflows/docker-build.yml`：`test → plan → build(matrix) → merge`，
-  按引擎分镜像（`decis-laya-multilingual` / `decis-kev-0.8b`，以及带权重的 `-offline` 变体），
+  按引擎分镜像（`decis-<engine>`，**权重就烤在这个默认变体里**；不带权重的 `-runtime` 变体只在 release
+  与手动 dispatch 时构建，§2-D20），
   多架构用**原生** `ubuntu-24.04-arm` 而不是 QEMU（QEMU 装 torch 太慢），
   合并成多架构 manifest，push 时带 SBOM 与 provenance；PR 只构建 amd64 的 **engine-free 基础镜像**验证 Dockerfile。
   矩阵生成逻辑是纯 bash，因此可以**离线执行测试**：`tests/test_docker_workflow.py` 把 `plan` 步骤的脚本
@@ -949,16 +952,27 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
 - ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`laya-multilingual` 另外拿裸 `latest`。
   理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
 - ✅ **2026-09-23 推 Docker Hub 成功**（run 35807645301，commit `574c0ac`），仓库公开。
-- ✅ **tag 方案定型**：引擎名即 tag（`kingfs/decis:laya-multilingual`），只有 release tag 追加版本
-  （`laya-multilingual-v1.2.0`）；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
-  方案在 `plan` 步骤里算，有测试真跑。
-- ✅ **体积已量**（registry API 逐层求和，压缩后下载量）：`laya-multilingual` 3203 MB、
-  `kev-0.8b` 3206 MB。当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
+- ✅ **tag 方案定型**：引擎名即 tag（`kingfs/decis:laya-multilingual`），它是**烤权重**的那个变体；
+  只有 release tag 追加版本（`laya-multilingual-v1.2.0`），并同时发布瘦身的
+  `laya-multilingual-runtime-v1.2.0`；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
+  方案在 `plan` 步骤里算，有测试真跑（含"默认 tag 必须烤权重"和"不许给没装 extra 的腿烤权重"两条断言）。
+- ✅ **体积已量**（registry API 逐层求和，压缩后下载量）：**不带权重的** `laya-multilingual` 3203 MB、
+  `kev-0.8b` 3206 MB（§2-D20 翻转变体之后，这两个数只适用于 `-runtime` 变体；烤权重的默认 tag
+  等 CI 构建出来再量）。当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
   装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，
   那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
   容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
-- ⬜ 推一个 `v*` tag 验证 release 路径与 `-offline` 变体；`laya-multilingual` / `kev-0.8b` 的容器内冷启动
-  （需要拉权重，未测）；engine-free 基础镜像的体积与冷启动；README 定稿；首个 release。
+- 🟡 推一个 `v0.0.1` tag 验证 release 路径与 `-runtime` 变体；`laya-multilingual` 的容器内冷启动已测
+  （77.7 / 86.1 / 101.0 s，CPU，容器内），`kev-0.8b` 的还没测；engine-free 基础镜像的体积与冷启动未测；
+  README 定稿；首个 release。
+
+**§12.2 待决策：权重层的代价**。默认镜像烤权重（§2-D20）之后，权重的 `RUN` 层会被**任何**源码改动
+作废（下载器要读引擎的权重声明，而那是代码），于是每次 master 推送都要重新下载 647 MiB（laya）
+或 1.7 GiB + 1.65 GiB 基座（kev），每架构各一次。省这笔钱的做法是把权重放进一个单独发布、
+很少变化的"模型层"镜像（例如 `kingfs/decis-models:<engine>-<weights-rev>`），引擎镜像改成
+`COPY --from=` 它：`COPY` 的缓存键是源镜像的 digest，所以源码改动不再触碰权重层。
+代价是多一类需要自己版本化的产物，以及"模型层与引擎镜像的权重版本会不会漂移"这个新问题。
+**没有实现**；在 CI 时长成为问题之前不要做。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
@@ -995,7 +1009,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
   合成多架构 manifest，例如 `ghcr.io/kingfs/decis-laya-multilingual:latest@sha256:e6651499f7ba355155af16f5d52cdc1393f44afc08c0981b48d9c2d046f0d6f5`
   （amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了"能构建、能推送、能合并"** |
 | 镜像体积与容器内冷启动 | **仍未测**。上面那次运行没有记录体积，也没有在容器里起过服务量冷启动 |
-| `-offline` 变体（烘焙权重）与 release 路径 | **仍未验证**。那次是分支推送，只构建了非 offline 变体；`v*` tag 从未推过，所以 tag 触发的那条分支只在 `tests/test_docker_workflow.py` 里被模拟过 |
+| release tag 路径与 `-runtime` 变体 | **未验证**。`v*` tag 触发的分支只在 `tests/test_docker_workflow.py` 里被模拟过；`-runtime`（不带权重）变体在改成默认烤权重之后还没构建过 |
+| 默认镜像里确实有权重 | **已验证**（2026-09-23，aarch64）：带权重的默认镜像冷启动不需要任何下载，容器内 `/v1/systemone` 真的作答；见 `AGENTS.md` 的镜像段落 |
 | Docker Hub 仓库的可见性 | 未核实。首次推送会自动创建 `kingfs/decis`，新仓库默认是**公开**的（与 GHCR 相反），
   所以 `docker pull kingfs/decis:laya-multilingual` 应当无需登录——但这一点要等推送成功后再确认 |
 

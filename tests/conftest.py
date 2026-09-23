@@ -33,6 +33,16 @@ OPENAPI_SNAPSHOT = CONTRACT_DIR / "typesafe-openapi-0.2.0.json"
 
 TEST_KEY = "test-token-do-not-use-in-production"
 
+#: The response's `model` field is `decis/<engine>@<version>` (AGENTS.md §3-8), and the
+#: version is the *package* version. Tests that assert on it read it from here rather than
+#: writing the number again: a second copy of a version is a second thing to forget to
+#: bump, which is exactly what happened when this file's neighbours said `0.1.0` while
+#: `pyproject.toml` said something else. The format half of the id stays spelled out in
+#: each assertion, so a change to the *shape* is still caught.
+from decis import __version__  # noqa: E402 - see the proxy note above
+
+VERSIONED_STUB = f"decis/stub@{__version__}"
+
 #: The weight-free engine the contract suite runs on. It lives in `tests/`, and the
 #: shipped registry does not know about it: Decis registers real checkpoints, and a
 #: test double is not one of them. Registering it here is what keeps "no weights in

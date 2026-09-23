@@ -1,110 +1,106 @@
-# Local integration testing against the published images.
-#
-#   cp .env.example .env        # COMPOSE_PROFILES picks the engine; set DECIS_API_KEY
-#   docker compose up -d --wait # starts exactly the profile named in .env
-#   docker compose logs -f laya-multilingual
-#   curl -s localhost:8000/healthz
-#
-# One profile per engine. A bare `docker compose up` starts only what `.env` names,
-# because both engines together hold several GB of weights in memory and a local smoke
-# test rarely wants both. The profile name is the engine id, so it is also the image tag,
-# the `--engine` argument and `DECIS_DEFAULT_ENGINE`: one name, one thing.
-#
-# `tests/test_compose.py` reads the image tags out of
-# `.github/workflows/docker-build.yml`'s `plan` step, so a tag that no event publishes
-# cannot survive here (`docs/design-review.md` §2-D15).
 name: decis
+
+# The deployment file. `docker compose up -d` runs a published image, and the image
+# already carries the engine's weights (`DECIS_MODEL_DIR=/models`), so there is nothing
+# to download, nothing to mount and no second container to wait for.
+#
+#   cp .env.example .env          # set DECIS_API_KEY; COMPOSE_PROFILES picks the engine
+#   docker compose -f docker-compose.yml up -d --wait
+#
+# `-f docker-compose.yml` is not decoration: inside this checkout a bare
+# `docker compose up` also picks up `docker-compose.override.yml`, which builds the same
+# services from source and tags them `decis-local:*` (that is the Compose override
+# convention, and it is why the build file is named that). Deployments copy this file
+# alone and never see the build.
+#
+# One profile per engine, named after the engine: a bare `up` starts whatever `.env`
+# selects (one engine by default -- two engines resident at once hold several GB), and
+# `--profile kev-0.8b` starts that one instead of it, not in addition to it.
 
 x-service: &service
   restart: unless-stopped
-  # The same file `decis serve` reads, so a uv run and a container run cannot disagree
-  # about the token, the device or the log level. It also passes the compose-only knobs
-  # (`COMPOSE_PROFILES`, `DECIS_HOST_PORT`) into the container, which ignores them --
-  # `env_file` is all-or-nothing, and one source for the real settings is worth more.
-  env_file:
-    - .env
-  volumes:
-    # Weights and the Hugging Face cache both live under /models in the image, so one
-    # volume covers `DECIS_MODEL_DIR` and `HF_HOME`. Without it the download below is
-    # thrown away every time the container is recreated.
-    - models:/models
+  env_file: [.env]
+  # Compose is not an orchestrator: nothing restarts a container because a probe failed, so
+  # this probe is free to be the *readiness* one, which makes `--wait` mean "the model can
+  # answer". The image's own HEALTHCHECK stays on `/healthz` for orchestrators, where a
+  # liveness probe must not fail while the engine is still loading (§2-D22). The `env -u`
+  # list is required on both: a probe that inherits HTTP_PROXY asks the proxy for a loopback
+  # URL and gets a 502 (§2-D19).
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "env",
+        "-u",
+        "HTTP_PROXY",
+        "-u",
+        "HTTPS_PROXY",
+        "-u",
+        "http_proxy",
+        "-u",
+        "https_proxy",
+        "-u",
+        "ALL_PROXY",
+        "-u",
+        "all_proxy",
+        "python",
+        "-c",
+        "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status == 200 else 1)",
+      ]
+    interval: 5s
+    timeout: 5s
+    # The engine loads after the container starts (CPU cold start is ~80-100 s) and
+    # failures during the start period do not count towards `retries`, so this only has to
+    # be longer than a cold load -- not long enough to hide an engine that failed outright.
+    start_period: 300s
+    retries: 3
 
-# Pinned for every service that touches weights, so a `DECIS_MODEL_DIR` or `HF_HOME` in
-# `.env` cannot point the download outside the volume while the server looks inside it.
-x-paths: &paths
-  DECIS_MODEL_DIR: /models
-  HF_HOME: /models/.hf
-
-x-server-env: &server-env
-  <<: *paths
+x-environment: &environment
+  # The container listens on 8000 on every interface. `DECIS_PORT` from `.env` must not
+  # move it: only the published host port differs per engine.
   DECIS_HOST: 0.0.0.0
-  # The container always listens on the image's own port; only the host side of
-  # `ports:` is configurable. A DECIS_PORT in `.env` therefore cannot desync the two.
   DECIS_PORT: "8000"
-  # Fail before pulling a 3 GB image, and never fall back to a default token: an
-  # unauthenticated server on 0.0.0.0 is what §3-19 refuses to start.
-  DECIS_API_KEY: ${DECIS_API_KEY:?set DECIS_API_KEY in .env -- cp .env.example .env}
-
-# A one-shot prefetch: fills the volume, exits 0, and is a no-op once the weights are
-# there. The server waits for it (`service_completed_successfully`), so a 647 MiB download
-# is never racing the healthcheck's 180 s start-period. Note that `up --wait` waits for
-# /healthz -- liveness, which answers while the engine is still loading -- so poll /readyz
-# if you want to send a request right away.
-x-weights: &weights
-  <<: *service
-  restart: "no"
-  environment: *paths
-
-x-server: &server
-  <<: *service
-  environment: *server-env
-  ports:
-    - "${DECIS_HOST_PORT:-8000}:8000"
+  # Pinned because the weights are baked here and `.env` must not be able to point the
+  # loader at an empty directory, which would silently turn this into a downloading
+  # deployment (§2-D21).
+  DECIS_MODEL_DIR: /models
+  # `:?` rather than `:-`: starting with no token on a non-loopback address is the exact
+  # deployment AGENTS.md §3-19 refuses, so fail here first, with a better message.
+  DECIS_API_KEY: ${DECIS_API_KEY:?set DECIS_API_KEY in .env (cp .env.example .env)}
 
 services:
-  weights-laya-multilingual:
-    <<: *weights
-    image: kingfs/decis:laya-multilingual
-    profiles: ["laya-multilingual"]
-    command: ["decis", "download", "--engine", "laya-multilingual"]
-
   laya-multilingual:
-    <<: *server
+    <<: *service
     image: kingfs/decis:laya-multilingual
-    profiles: ["laya-multilingual"]
-    command: ["decis", "serve", "--engine", "laya-multilingual"]
+    profiles: [laya-multilingual]
     environment:
-      <<: *server-env
+      <<: *environment
+      # Pinned per service: `.env` sets DECIS_DEFAULT_ENGINE too, and `env_file` would
+      # otherwise aim this container at an engine its image does not contain. The
+      # `--engine` argument below beats both.
       DECIS_DEFAULT_ENGINE: laya-multilingual
-    depends_on:
-      weights-laya-multilingual:
-        condition: service_completed_successfully
-
-  weights-kev-0.8b:
-    <<: *weights
-    image: kingfs/decis:kev-0.8b
-    profiles: ["kev-0.8b"]
-    command: ["decis", "download", "--engine", "kev-0.8b"]
+    # compose's `command` *replaces* the image CMD, it does not append to it, so the
+    # entry point is named here (§2-D18).
+    command: ["decis", "serve", "--engine", "laya-multilingual"]
+    ports: ["${DECIS_HOST_PORT:-8000}:8000"]
 
   kev-0.8b:
-    <<: *server
+    <<: *service
     image: kingfs/decis:kev-0.8b
-    profiles: ["kev-0.8b"]
-    command: ["decis", "serve", "--engine", "kev-0.8b"]
+    profiles: [kev-0.8b]
     environment:
-      <<: *server-env
+      <<: *environment
       DECIS_DEFAULT_ENGINE: kev-0.8b
-      # kev on CPU works but is an order of magnitude slower than on a GPU. With the
-      # NVIDIA container toolkit installed, add to this service:
-      #   deploy:
-      #     resources:
-      #       reservations:
-      #         devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
-    ports:
-      - "${DECIS_KEV_HOST_PORT:-8001}:8000"
-    depends_on:
-      weights-kev-0.8b:
-        condition: service_completed_successfully
+    command: ["decis", "serve", "--engine", "kev-0.8b"]
+    ports: ["${DECIS_KEV_HOST_PORT:-8001}:8000"]
 
-volumes:
-  models:
+# Mount nothing at /models. A named volume there is seeded from the image and then keeps
+# its own copy; a bind mount replaces the baked weights outright. Either way an image that
+# answers offline starts reaching for the Hub (§2-D21). To keep the weights on a volume
+# instead, use a weightless image -- a release artifact, so the tag carries a version --
+# and fill the volume once:
+#
+#   docker run --rm -v decis_models:/models kingfs/decis:laya-multilingual-runtime-v1.2.0 \
+#     decis download --engine laya-multilingual
+#   docker run --rm -p 8000:8000 -v decis_models:/models -e DECIS_API_KEY=change-me \
+#     kingfs/decis:laya-multilingual-runtime-v1.2.0

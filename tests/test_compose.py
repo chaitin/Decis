@@ -2,12 +2,12 @@
 
 Compose is the documented way to run the published images locally, so it is exactly the
 place where a tag no event publishes (`docs/design-review.md` §2-D15), a host port that
-desyncs from the port inside the container, or a pretch that writes outside the volume
-would be found by a user instead of by us.
+desyncs from the port inside the container, or a mount that hides the weights baked into
+the image (§2-D21) would be found by a user instead of by us.
 
-No docker daemon is involved. The set of tags is read out of the workflow's real `plan`
-script (`test_docker_workflow`), not copied here: a second copy of the tag scheme is the
-defect these tests exist to catch.
+No docker daemon is involved. The set of tags, and which of them carry weights, are read out
+of the workflow's real `plan` script (`test_docker_workflow`), not copied here: a second
+copy of the tag scheme is the defect these tests exist to catch.
 """
 
 from __future__ import annotations
@@ -21,7 +21,10 @@ from test_docker_workflow import load_workflow, plan_script_of, run_plan
 
 ROOT = Path(__file__).resolve().parent.parent
 COMPOSE = ROOT / "docker-compose.yml"
-BUILD_OVERRIDE = ROOT / "docker-compose.build.yml"
+# The name is the mechanism: Compose loads `docker-compose.override.yml` on top of
+# `docker-compose.yml` whenever it is present, which is what makes a checkout build from
+# source while a copy of the base file alone pulls the published image.
+OVERRIDE = ROOT / "docker-compose.override.yml"
 ENV_EXAMPLE = ROOT / ".env.example"
 DOCKERFILE = ROOT / "docker" / "Dockerfile"
 READMES = (ROOT / "README.md", ROOT / "README.zh-CN.md")
@@ -41,31 +44,33 @@ def compose() -> dict:
 
 
 @pytest.fixture(scope="module")
+def override() -> dict:
+    return yaml.safe_load(OVERRIDE.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
 def planned(tmp_path_factory: pytest.TempPathFactory) -> dict:
-    """Everything the workflow publishes on a release, plus the master-push tag names."""
+    """Everything the workflow builds on a master push and on a release tag."""
     script = plan_script_of(load_workflow())
     tags: set[str] = set()
     extras: dict[str, str] = {}
+    bakes: dict[tuple[str, str], str] = {}
     for event, ref, name in (
         ("push", "refs/heads/master", "master"),
         ("push", "refs/tags/v1.2.0", "v1.2.0"),
     ):
-        planned = run_plan(script, tmp_path_factory.mktemp(name), EVENT=event, REF=ref, REF_NAME=name)
-        tags |= {build["image_tag"] for build in planned["builds"]}
-        if planned["tag"] == "latest":
+        plan = run_plan(script, tmp_path_factory.mktemp(name), EVENT=event, REF=ref, REF_NAME=name)
+        tags |= {build["image_tag"] for build in plan["builds"]}
+        if plan["tag"] == "latest":
             tags.add("latest")
-        extras.update({build["engine"]: build["extra"] for build in planned["builds"]})
-    return {"tags": tags, "extras": extras}
+        extras.update({build["engine"]: build["extra"] for build in plan["builds"]})
+        bakes.update({(build["engine"], build["variant"]): build["bake"] for build in plan["builds"]})
+    return {"tags": tags, "extras": extras, "bakes": bakes}
 
 
-def engines(compose: dict) -> dict[str, tuple[dict, dict]]:
-    """Engine id -> (server, weights) service, derived from the file rather than listed."""
-    services = compose["services"]
-    return {
-        name: (service, services[f"weights-{name}"])
-        for name, service in services.items()
-        if not name.startswith("weights-")
-    }
+def engines(compose: dict) -> dict[str, dict]:
+    """Engine id -> its service, derived from the file rather than listed here."""
+    return dict(compose["services"])
 
 
 def tag_of(image: str) -> str:
@@ -74,19 +79,37 @@ def tag_of(image: str) -> str:
     return tag
 
 
-def mount_target(service: dict, source: str) -> str | None:
+def mount_target(service: dict, target: str) -> str | None:
+    """The source of a mount whose target is `target`, if the service mounts one."""
     for entry in service.get("volumes", []):
-        if isinstance(entry, str) and entry.startswith(f"{source}:"):
-            return entry.split(":", 1)[1]
-        if isinstance(entry, dict) and entry.get("source") == source:
-            return str(entry["target"])
+        if isinstance(entry, str):
+            source, _, mounted = entry.partition(":")
+            if mounted.split(":", 1)[0] == target:
+                return source
+        elif isinstance(entry, dict) and str(entry.get("target")) == target:
+            return str(entry.get("source"))
     return None
 
 
+def dockerfile_env(variable: str) -> str:
+    """Read `ENV VAR=value` out of the Dockerfile, ignoring commented-out lines."""
+    for line in DOCKERFILE.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        match = re.match(rf"\s*{re.escape(variable)}=(\S+)", line)
+        if match:
+            return match.group(1).rstrip("\\")
+    raise AssertionError(f"the Dockerfile sets no ENV {variable}")
+
+
 def healthcheck_block() -> str:
-    """The Dockerfile's HEALTHCHECK instruction, which every service inherits."""
+    """The Dockerfile's HEALTHCHECK instruction."""
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
     return dockerfile.split("HEALTHCHECK", 1)[1].split("\n\n", 1)[0]
+
+
+def healthcheck_test(service: dict) -> str:
+    return " ".join(str(part) for part in service["healthcheck"]["test"])
 
 
 # --- the images are the published ones -----------------------------------------
@@ -100,13 +123,28 @@ def test_every_compose_image_is_a_tag_the_workflow_publishes(compose: dict, plan
         )
 
 
-def test_a_profile_is_an_engine_and_an_engine_is_a_profile(compose: dict, planned: dict) -> None:
+def test_the_engine_image_is_the_one_that_carries_the_weights(compose: dict, planned: dict) -> None:
+    """`docker run kingfs/decis:<engine>` must not need the network.
+
+    The published tag that is just the engine's name has to be the variant the workflow
+    bakes weights into. If the default is ever flipped back to the weightless one, every
+    documented `docker run` starts downloading -- which is what the image exists to avoid.
+    """
+    for engine, service in engines(compose).items():
+        tag = tag_of(service["image"])
+        assert planned["bakes"][(engine, "baked")] == engine, (
+            f"the workflow builds {engine}'s default image without weights: {planned['bakes'][(engine, 'baked')]!r}"
+        )
+        assert tag == engine, f"{engine} runs {service['image']}; the default tag must be the baked one"
+
+
+def test_a_profile_is_an_engine_and_an_engine_is_a_profile(compose: dict) -> None:
     """One name for the image, the profile, `--engine` and the default engine.
 
     If these drift, `COMPOSE_PROFILES=kev-0.8b` starts an image that serves something
     else, and no test that checks them one at a time would notice.
     """
-    for engine, (server, _) in engines(compose).items():
+    for engine, server in engines(compose).items():
         assert set(server["profiles"]) == {engine}, server["profiles"]
         assert tag_of(server["image"]) == engine, server["image"]
         assert server["command"] == ["decis", "serve", "--engine", engine], server["command"]
@@ -142,31 +180,38 @@ def test_every_service_is_behind_a_profile(compose: dict) -> None:
         assert service.get("profiles"), f"{name} would start unconditionally"
 
 
-# --- weights land in the volume the server reads -------------------------------
+def test_starting_one_engine_is_one_container(compose: dict) -> None:
+    """No prefetch container and no dependency chain: the weights are already in the image.
 
-
-def test_weights_are_fetched_once_into_the_volume_the_server_reads(compose: dict) -> None:
-    """The one-shot prefetch (`design-review.md` §2-D17 is why it works at all).
-
-    `decis download` writes `<DECIS_MODEL_DIR>/<engine id>/`, which is where
-    `paths.resolve` looks; both services must agree on that directory and on the volume,
-    or the server re-downloads what the prefetch just fetched.
+    A second service per engine was the first design (a one-shot `decis download` into a
+    named volume). It is gone because the published image carries the weights, and with them
+    gone there is nothing left to order: a `depends_on` or a `weights-*` service reappearing
+    means something is downloading at start-up again.
     """
-    for engine, (server, weights) in engines(compose).items():
-        assert weights["command"] == ["decis", "download", "--engine", engine], weights["command"]
-        assert weights["image"] == server["image"], weights
-        assert set(weights["profiles"]) == {engine}, weights["profiles"]
-        assert weights["restart"] == "no", "a one-shot that restarts would loop forever"
-        assert server["depends_on"][f"weights-{engine}"]["condition"] == "service_completed_successfully"
+    for name, service in compose["services"].items():
+        assert not name.startswith("weights-"), f"{name} is a prefetch service again"
+        assert "depends_on" not in service, f"{name} waits for another service: {service['depends_on']}"
+        assert "volumes" not in service, f"{name} mounts something: {service['volumes']}"
 
-        for name, service in ((engine, server), (f"weights-{engine}", weights)):
-            target = mount_target(service, "models")
-            assert target == "/models", f"{name} does not mount the weights volume: {service.get('volumes')}"
-            for variable in ("DECIS_MODEL_DIR", "HF_HOME"):
-                value = service["environment"][variable]
-                assert value == target or value.startswith(f"{target}/"), (
-                    f"{name}: {variable}={value} is outside {target}"
-                )
+
+# --- the baked weights must stay visible ---------------------------------------
+
+
+def test_nothing_is_mounted_over_the_weights_baked_into_the_image(compose: dict) -> None:
+    """`design-review.md` §2-D21: a mount at `DECIS_MODEL_DIR` hides the baked weights.
+
+    A named volume is seeded from the image once and then keeps its own copy; a bind mount
+    replaces the directory outright. Either way the image stops answering offline and starts
+    downloading, with no error to explain why. The path comes from the Dockerfile, so the
+    test follows it if it ever moves.
+    """
+    baked = dockerfile_env("DECIS_MODEL_DIR")
+    for name, service in compose["services"].items():
+        mounted = mount_target(service, baked)
+        assert mounted is None, f"{name} mounts {mounted} at {baked}, hiding the weights baked into the image"
+        assert service["environment"]["DECIS_MODEL_DIR"] == baked, (
+            f"{name} points the loader at {service['environment']['DECIS_MODEL_DIR']}, not at the baked {baked}"
+        )
 
 
 # --- the port contract ---------------------------------------------------------
@@ -180,7 +225,7 @@ def test_the_published_port_cannot_desync_from_the_port_decris_listens_on(compos
     whichever starts second fails.
     """
     defaults: dict[str, str] = {}
-    for engine, (server, _) in engines(compose).items():
+    for engine, server in engines(compose).items():
         entries = server["ports"]
         assert len(entries) == 1, entries
         match = PORT_MAPPING.match(entries[0])
@@ -199,38 +244,51 @@ def test_no_service_authenticates_with_a_default_token(compose: dict) -> None:
     text = COMPOSE.read_text(encoding="utf-8")
     assert "${DECIS_API_KEY:?" in text, "the missing-token failure must happen before an image is pulled"
     for name, service in engines(compose).items():
-        assert service[0]["environment"]["DECIS_API_KEY"].startswith("${DECIS_API_KEY:?"), name
+        assert service["environment"]["DECIS_API_KEY"].startswith("${DECIS_API_KEY:?"), name
 
 
-# --- liveness, not readiness ---------------------------------------------------
+# --- readiness in compose, liveness in the image -------------------------------
 
 
-def test_no_service_replaces_the_images_healthcheck(compose: dict) -> None:
-    """The image probes `/healthz`; a compose-level `/readyz` would restart-loop a loading engine.
+def test_compose_probes_readiness_while_the_image_probes_liveness(compose: dict) -> None:
+    """`design-review.md` §2-D22: `--wait` used to return before the model could answer.
 
-    `docs/design-review.md` §2-D7 is the reason the split exists, and `Dockerfile` says
-    so in a comment. Inheriting means not mentioning it, so a service that does mention a
-    healthcheck is the failure this looks for.
+    The image's HEALTHCHECK has to stay on `/healthz`: an orchestrator that restarts a
+    container for failing its liveness probe must not do so while the engine is loading.
+    Compose is not that orchestrator -- nothing restarts a container because a probe failed
+    -- so the compose-level probe can be the readiness one, which is what makes
+    `docker compose up -d --wait` mean "the model is loaded".
     """
-    for name, service in compose["services"].items():
-        assert "healthcheck" not in service, f"{name} overrides the image's healthcheck"
-
     healthcheck = healthcheck_block()
     assert "/healthz" in healthcheck, healthcheck
     assert "/readyz" not in healthcheck, healthcheck
 
+    for name, service in engines(compose).items():
+        probe = healthcheck_test(service)
+        assert "/readyz" in probe, f"{name}: `--wait` would return before the engine is loaded: {probe}"
+        assert "/healthz" not in probe, f"{name} probes liveness and calls it readiness: {probe}"
+        # A cold CPU start was measured at 77.7-101.0 s; the start period has to outlast it,
+        # and failures inside it do not count towards `retries`.
+        start_period = service["healthcheck"]["start_period"]
+        assert int(str(start_period).rstrip("s")) >= 180, start_period
 
-def test_the_healthcheck_cannot_be_hijacked_by_a_proxy_in_the_environment() -> None:
-    """`design-review.md` §2-D19: `urllib` reads `HTTP_PROXY`, so the probe must unset it.
 
-    An image that needs a proxy to fetch its weights exports one, and a probe that
-    inherits it asks the proxy for `http://127.0.0.1:8000/healthz`. The proxy answers 502,
-    and a server that logged `engine ready after 86.1s` is reported unhealthy -- in
-    Kubernetes that means restarting a healthy pod forever.
+def test_the_probe_cannot_be_hijacked_by_a_proxy_in_the_environment(compose: dict) -> None:
+    """`design-review.md` §2-D19: `urllib` reads `HTTP_PROXY`, so a probe must unset it.
+
+    An image that fetched its weights through a proxy withholds nothing: a probe that
+    inherits it asks the proxy for `http://127.0.0.1:8000/healthz`, gets a 502, and a server
+    that logged `engine ready after 86.1s` is reported unhealthy -- in Kubernetes that means
+    restarting a healthy pod forever. Both probes are built from that environment, so both
+    are checked here.
     """
-    healthcheck = healthcheck_block()
-    for variable in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
-        assert f"-u {variable}" in healthcheck, f"the probe would inherit {variable}: {healthcheck}"
+    variables = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
+    probes = {"the Dockerfile HEALTHCHECK": healthcheck_block()}
+    probes.update({f"the {name} healthcheck": healthcheck_test(service) for name, service in engines(compose).items()})
+
+    for where, probe in probes.items():
+        for variable in variables:
+            assert f"-u {variable}" in probe, f"{where} would inherit {variable}: {probe}"
 
 
 # --- the file `.env.example` ships ---------------------------------------------
@@ -243,7 +301,7 @@ def test_the_env_example_selects_one_engine_that_exists(compose: dict) -> None:
     assert match, ".env.example no longer sets COMPOSE_PROFILES, so `docker compose up` starts nothing"
 
     profiles = [name.strip() for name in match.group(1).split(",")]
-    known = {profile for name, service in engines(compose).items() for profile in service[0]["profiles"]}
+    known = {profile for name, service in engines(compose).items() for profile in service["profiles"]}
     assert set(profiles) <= known, f".env.example enables {profiles}, which is not a profile in {sorted(known)}"
     assert len(profiles) == 1, f"the default must start one engine, not {profiles}"
     # The bare `latest` image and the default profile must be the same engine, or the
@@ -252,7 +310,7 @@ def test_the_env_example_selects_one_engine_that_exists(compose: dict) -> None:
 
 
 def test_the_documented_profile_commands_name_real_profiles(compose: dict) -> None:
-    known = {profile for _, (server, _) in engines(compose).items() for profile in server["profiles"]}
+    known = {profile for _, service in engines(compose).items() for profile in service["profiles"]}
     for readme in READMES:
         for named in re.findall(r"--profile ([A-Za-z0-9._-]+)", readme.read_text(encoding="utf-8")):
             assert named in known, f"{readme.name} suggests --profile {named}, which is not one of {sorted(known)}"
@@ -261,27 +319,27 @@ def test_the_documented_profile_commands_name_real_profiles(compose: dict) -> No
 # --- the local-build override --------------------------------------------------
 
 
-def test_the_build_override_covers_every_service_without_taking_over_a_published_tag(
-    compose: dict, planned: dict
-) -> None:
-    """`-f docker-compose.build.yml` must build all four services from this checkout.
+def test_only_the_override_builds_and_only_for_this_checkout(compose: dict, override: dict, planned: dict) -> None:
+    """Deployment pulls, the checkout builds, and the two never share a tag.
 
-    Leaving one out would silently mix a local image with a pulled one, which is the kind
-    of difference that is invisible until the two disagree. The extras come from the
-    workflow's own engine -> extra mapping for the same reason.
+    The base file is what a deployment copies, so it must not contain a `build:` -- a
+    deployment that builds is a deployment that needs the source. The override has to cover
+    every engine: leaving one out would silently mix a locally built image with a pulled one,
+    which stays invisible until the two disagree. Its tags are `decis-local:*` so a build
+    cannot repoint `kingfs/decis:<engine>` at whatever is on this machine.
     """
-    override = yaml.safe_load(BUILD_OVERRIDE.read_text(encoding="utf-8"))
-    assert set(override["services"]) == set(compose["services"]), "the override misses a service"
+    for name, service in compose["services"].items():
+        assert "build" not in service, f"{name} builds in the deployment file"
 
+    assert set(override["services"]) == set(compose["services"]), "the override misses a service"
     for name, service in override["services"].items():
-        engine = name.removeprefix("weights-")
-        # A local build must not reuse the published repository: `kingfs/decis:laya-multilingual`
-        # would then point at whatever was built here, and a later `docker compose up`
-        # without the override would quietly run the local image.
-        assert service["image"] == f"decis-local:{engine}", service["image"]
-        assert not service["image"].startswith("kingfs/decis:"), service["image"]
+        repository, _, tag = service["image"].partition(":")
+        assert repository == "decis-local", service["image"]
+        assert tag == name, service["image"]
         build = service["build"]
         assert build["context"] == ".", build
         assert build["dockerfile"] == "docker/Dockerfile", build
-        assert build["args"]["DECIS_ENGINE"] == engine, build
-        assert build["args"]["DECIS_EXTRAS"] == planned["extras"][engine], build
+        assert build["args"]["DECIS_ENGINE"] == name, build
+        assert build["args"]["DECIS_EXTRAS"] == planned["extras"][name], build
+        # Same weights as the published image, so "it works locally" means the same thing.
+        assert build["args"]["DECIS_PREDOWNLOAD"] == name, build

@@ -123,17 +123,25 @@ def test_a_branch_push_builds_every_engine_for_both_architectures(push_to_master
     assert push_to_master["tag"] == "latest"
 
 
-def test_a_branch_push_does_not_bake_weights(push_to_master: dict) -> None:
-    """An offline image is large and needs no rebuilding on every commit."""
-    assert all(build["variant"] == "runtime" for build in push_to_master["builds"])
-    assert all(build["bake"] == "" for build in push_to_master["builds"])
+def test_a_branch_push_bakes_the_weights_in(push_to_master: dict) -> None:
+    """`docker pull kingfs/decis:<engine>` has to work with no network.
+
+    An engine's image exists to carry that engine, weights included; a published default
+    that downloads 647 MiB on first start is not what the tag promises. The weightless
+    build is the exception and only a release tag (or a dispatch) asks for it.
+    """
+    assert all(build["variant"] == "baked" for build in push_to_master["builds"])
+    assert all(build["bake"] == build["engine"] for build in push_to_master["builds"])
 
 
-def test_a_version_tag_also_builds_the_offline_variants(tmp_path: Path, plan_script: str) -> None:
+def test_a_version_tag_also_builds_the_weightless_variants(tmp_path: Path, plan_script: str) -> None:
+    """A deployment that mounts one copy of the weights still needs an image without them."""
     plan = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/tags/v1.2.0", REF_NAME="v1.2.0")
     variants = {build["variant"] for build in plan["builds"]}
-    assert variants == {"runtime", "offline"}, variants
+    assert variants == {"baked", "runtime"}, variants
     assert plan["tag"] == "v1.2.0"
+    for build in plan["builds"]:
+        assert build["bake"] == (build["engine"] if build["variant"] == "baked" else ""), build
 
 
 def test_weights_are_never_baked_for_an_engine_that_has_none(tmp_path: Path, plan_script: str) -> None:
@@ -148,6 +156,13 @@ def test_weights_are_never_baked_for_an_engine_that_has_none(tmp_path: Path, pla
         assert build["bake"] in ("", build["engine"]), build
     baked = {build["engine"] for build in plan["builds"] if build["bake"]}
     assert baked == {"laya-multilingual", "kev-0.8b"}, baked
+
+    # ...and baking needs the engine's extra: `decis download` verifies its work through
+    # `paths.resolve`, which needs the engine installed. An engine-free leg that asked for
+    # weights would download them and then fail the build (`design-review.md` §2-D14 is the
+    # same shape of mistake, caught here instead of after a 1.4 GB download).
+    for build in plan["builds"]:
+        assert not (build["bake"] and not build["extra"]), build
 
 
 def test_a_pull_request_builds_an_engine_free_image(tmp_path: Path, plan_script: str) -> None:
@@ -165,6 +180,7 @@ def test_a_pull_request_builds_an_engine_free_image(tmp_path: Path, plan_script:
     assert plan["tag"].startswith("sha-"), plan["tag"]
     build = plan["builds"][0]
     assert build["extra"] == "", f"a PR would install engine dependencies: {build['extra']!r}"
+    assert build["bake"] == "", f"a PR would download weights it cannot verify: {build['bake']!r}"
     assert build["engine"] == "laya-multilingual", build
 
 
@@ -183,13 +199,29 @@ def test_dispatch_inputs_are_honoured(tmp_path: Path, plan_script: str) -> None:
         REF="refs/heads/master",
         REF_NAME="master",
         INPUT_ENGINES="laya-multilingual kev-0.8b",
-        INPUT_BAKE="true",
+        INPUT_RUNTIME="true",
         INPUT_PUSH="true",
     )
     engines = {build["engine"] for build in plan["builds"]}
     assert engines == {"laya-multilingual", "kev-0.8b"}, engines
-    assert {build["variant"] for build in plan["builds"]} == {"runtime", "offline"}
+    assert {build["variant"] for build in plan["builds"]} == {"baked", "runtime"}
     assert plan["push"] == "true"
+
+
+def test_a_dispatch_without_the_runtime_flag_builds_only_the_default_images(tmp_path: Path, plan_script: str) -> None:
+    """The dispatch default is the same artifact a branch push publishes."""
+    plan = run_plan(
+        plan_script,
+        tmp_path,
+        EVENT="workflow_dispatch",
+        REF="refs/heads/master",
+        REF_NAME="master",
+        INPUT_ENGINES="laya-multilingual",
+        INPUT_RUNTIME="false",
+        INPUT_PUSH="false",
+    )
+    assert {build["variant"] for build in plan["builds"]} == {"baked"}, plan["builds"]
+    assert plan["builds"][0]["bake"] == "laya-multilingual", plan["builds"]
 
 
 def test_a_dispatch_dry_run_does_not_push(tmp_path: Path, plan_script: str) -> None:
@@ -201,7 +233,7 @@ def test_a_dispatch_dry_run_does_not_push(tmp_path: Path, plan_script: str) -> N
         REF="refs/heads/master",
         REF_NAME="master",
         INPUT_ENGINES="laya-multilingual",
-        INPUT_BAKE="false",
+        INPUT_RUNTIME="false",
         INPUT_PUSH="false",
     )
     assert plan["push"] == "false"
@@ -267,7 +299,7 @@ def test_an_engine_with_no_mapped_extra_stops_the_plan(tmp_path: Path, plan_scri
             "REF": "refs/heads/master",
             "REF_NAME": "master",
             "INPUT_ENGINES": "laya-typed-decisions",
-            "INPUT_BAKE": "false",
+            "INPUT_RUNTIME": "false",
             "INPUT_PUSH": "false",
         },
     )
@@ -407,17 +439,17 @@ def test_the_image_tag_is_the_engine_name_on_a_branch_push(
 ) -> None:
     """The tag a user types is decided by the plan script, so it is tested there."""
     planned = run_plan(plan_script, tmp_path, EVENT=event, REF=ref, REF_NAME=ref_name)
-    tags = {b["engine"]: b["image_tag"] for b in planned["builds"] if b["variant"] == "runtime"}
+    tags = {b["engine"]: b["image_tag"] for b in planned["builds"] if b["variant"] == "baked"}
     for engine, tag in expected.items():
         assert tags.get(engine) == tag, f"{engine} on {ref}: expected {tag!r}, got {tags.get(engine)!r}"
 
 
-def test_the_offline_variant_is_a_distinct_tag(tmp_path: Path, plan_script: str) -> None:
-    """Baked weights are a different artifact, so they must not share a tag."""
+def test_the_weightless_variant_is_a_distinct_tag(tmp_path: Path, plan_script: str) -> None:
+    """An image without weights is a different artifact, so it must not share a tag."""
     planned = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/tags/v1.2.0", REF_NAME="v1.2.0")
     tags = {(b["engine"], b["variant"]): b["image_tag"] for b in planned["builds"]}
-    assert tags[("laya-multilingual", "runtime")] == "laya-multilingual-v1.2.0", tags
-    assert tags[("laya-multilingual", "offline")] == "laya-multilingual-offline-v1.2.0", tags
+    assert tags[("laya-multilingual", "baked")] == "laya-multilingual-v1.2.0", tags
+    assert tags[("laya-multilingual", "runtime")] == "laya-multilingual-runtime-v1.2.0", tags
 
 
 def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, tmp_path: Path) -> None:
@@ -431,10 +463,10 @@ def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, 
     docker_bin, _ = fake_docker(tmp_path)
     published: dict[str, set[str]] = {}
     for engine, variant in (
+        ("laya-multilingual", "baked"),
         ("laya-multilingual", "runtime"),
-        ("laya-multilingual", "offline"),
+        ("kev-0.8b", "baked"),
         ("kev-0.8b", "runtime"),
-        ("kev-0.8b", "offline"),
     ):
         for arch in ("amd64", "arm64"):
             out = tmp_path / f"{engine}-{variant}-{arch}"
@@ -445,7 +477,7 @@ def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, 
                 ENGINE=engine,
                 VARIANT=variant,
                 ARCH=arch,
-                IMAGE_TAG=f"{engine}-{variant}" if variant != "runtime" else engine,
+                IMAGE_TAG=engine if variant == "baked" else f"{engine}-runtime",
                 GITHUB_OUTPUT=str(out),
             )
             assert completed.returncode == 0, completed.stderr
@@ -517,13 +549,14 @@ def merged_tags(log: Path) -> list[str]:
     ("engine", "variant", "image_tag", "moving_tag", "expected_latest"),
     [
         # `laya-multilingual` is the server's default engine and the one the README leads
-        # with, so it is the right answer to a bare `docker pull kingfs/decis`.
-        ("laya-multilingual", "runtime", "laya-multilingual", "latest", True),
+        # with, so it is the right answer to a bare `docker pull kingfs/decis`. It is the
+        # *baked* variant: the bare name has to be the one that runs with no network.
+        ("laya-multilingual", "baked", "laya-multilingual", "latest", True),
         # ...but only the image that actually moved `latest`. A version tag must not
-        # silently repoint the bare tag, and an offline image is not the default image.
-        ("laya-multilingual", "runtime", "laya-multilingual-v1.2.0", "v1.2.0", False),
-        ("laya-multilingual", "offline", "laya-multilingual-offline", "latest", False),
-        ("kev-0.8b", "runtime", "kev-0.8b", "latest", False),
+        # silently repoint the bare tag, and the weightless image is not the default one.
+        ("laya-multilingual", "baked", "laya-multilingual-v1.2.0", "v1.2.0", False),
+        ("laya-multilingual", "runtime", "laya-multilingual-runtime", "latest", False),
+        ("kev-0.8b", "baked", "kev-0.8b", "latest", False),
     ],
 )
 def test_only_the_default_engine_claims_the_bare_latest_tag(
@@ -677,7 +710,7 @@ def test_a_dry_run_needs_no_credentials(plan_script: str, tmp_path: Path) -> Non
             "REF": "refs/heads/master",
             "REF_NAME": "master",
             "INPUT_ENGINES": "laya-multilingual",
-            "INPUT_BAKE": "false",
+            "INPUT_RUNTIME": "false",
             "INPUT_PUSH": "false",
         },
     )
@@ -714,7 +747,7 @@ def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path,
 
     The expected set is read out of the plan script rather than written here: a second
     copy of the tag scheme is the defect this guards against (§2). Release tags are
-    included because that is where the README's `-offline` example comes from; `latest`
+    included because that is where the README's `-runtime` example comes from; `latest`
     is added by the merge job, not the matrix.
     """
     produced: set[str] = set()

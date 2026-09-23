@@ -19,6 +19,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import VERSIONED_STUB
 from decis.app import create_app
 from decis.config import Settings
 from decis.domain import MeasuredTokens, PreparedRequest
@@ -305,7 +306,7 @@ def test_models_is_available_without_weights(settings: Settings, auth: dict[str,
     with TestClient(app) as client:
         response = client.get("/v1/models", headers=auth)
         assert response.status_code == 200
-        assert any(model["name"] == "decis/stub@0.1.0" for model in response.json()["models"])
+        assert any(model["name"] == VERSIONED_STUB for model in response.json()["models"])
 
 
 # --- shutdown ---------------------------------------------------------------

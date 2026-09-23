@@ -1,0 +1,40 @@
+# Local build, discovered automatically by Compose because of the file name.
+#
+#   docker compose up -d --wait      # builds decis-local:* from this checkout, then runs it
+#   docker compose down
+#
+# Compose loads `docker-compose.override.yml` on top of `docker-compose.yml` whenever it is
+# present, so a checkout builds from source by default while a deployment that copies
+# `docker-compose.yml` alone pulls the published image. Only the `image:`/`build:` pair
+# differs between the two paths -- profiles, ports, environment and healthcheck stay
+# defined once, in the base file.
+#
+# The local tags are `decis-local:*` on purpose: building must not overwrite the published
+# `kingfs/decis:*` tags on this machine, and `docker images` should make it obvious which of
+# the two a container came from.
+#
+# The build args mirror what CI passes, weights included, so "it works locally" means the
+# same thing as "the published image works". Set `DECIS_PREDOWNLOAD` to an empty string to
+# build the weightless variant instead: ~650 MiB (Laya) or ~1.7 GiB (kev) smaller, and it
+# then needs the weights mounted or downloaded at run time.
+
+services:
+  laya-multilingual:
+    image: decis-local:laya-multilingual
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DECIS_EXTRAS: laya
+        DECIS_ENGINE: laya-multilingual
+        DECIS_PREDOWNLOAD: laya-multilingual
+
+  kev-0.8b:
+    image: decis-local:kev-0.8b
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DECIS_EXTRAS: kev
+        DECIS_ENGINE: kev-0.8b
+        DECIS_PREDOWNLOAD: kev-0.8b

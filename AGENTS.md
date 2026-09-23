@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**441 通过 / 33 跳过**，约 10 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**465 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**445 通过 / 33 跳过**，约 11 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**469 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -31,6 +31,11 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `kingfs/decis:kev-0.8b`），master 推送时 `laya-multilingual` 另外拿一个裸 `latest`（它是默认引擎），
 > 让 `docker pull kingfs/decis` 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
 > "当前版本"不加 `-latest`，加了就等于同一个东西有两个名字，而其中一个是文档里没有的。
+> **引擎名那个 tag 一定带权重**（`DECIS_PREDOWNLOAD=<engine>`）：一个引擎的镜像存在的意义就是
+> "拿到就能用"，所以 `docker pull` + `docker run` 不许依赖网络、卷或第二容器。不带权重的变体是例外，
+> 它带后缀 `-runtime`，且只在 release tag（或手动 dispatch 勾上）时发布：
+> `laya-multilingual-runtime-v1.2.0`。**没有 `-offline` 这个名字**——默认已经烤权重的时候，
+> `-offline` 就是同一个东西的第二个名字（§2、§9）。
 > 多架构（amd64 + arm64 原生 runner，不用 QEMU），带 SBOM 与 provenance；
 > PR 只构建 amd64 的 **engine-free 基础镜像**（不装任何 extra）以验证 Dockerfile。
 > **矩阵、tag 方案、引擎 → pip extra 的映射全部在 `plan` 步骤里算，并由 `tests/test_docker_workflow.py`
@@ -43,29 +48,38 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `usage`、`x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401** 也都实测。
 > 容器里没配 `DECIS_API_KEY` 而监听 `0.0.0.0` 时**拒绝启动**（§3-19 在容器里同样生效）。
 > 体积用 registry API **逐层求和**量出（压缩后的下载量，不是 Docker Hub 页面那个数，
-> 也不是本地解压后的大小）：`laya-multilingual` **3203 MB**、`kev-0.8b` **3206 MB**
-> （amd64；arm64 分别 3346 / 3349 MB）。**engine-free 基础镜像尚未量过体积与冷启动。**
+> 也不是本地解压后的大小）：**不带权重的** `laya-multilingual` **3203 MB**、`kev-0.8b` **3206 MB**
+> （amd64；arm64 分别 3346 / 3349 MB）——那两个数是 §2-D20 翻转变体**之前**的默认 tag，
+> 现在描述的是 `-runtime` 变体；**烤权重的默认 tag 体积在 CI 构建出来之前没有数字**
+> （本地 arm64 解压后 7.25 GB，不能和上面的"压缩下载量"混着报）。
+> **engine-free 基础镜像尚未量过体积与冷启动。**
 > 那个假引擎镜像曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），
 > 修好后构建时间从 9m16s 降到 59s——那个镜像已删除，但这条教训（§9 的三元表达式禁用）仍然有效。
-> **本地编排**：根目录 `docker-compose.yml` 用 profile 起服务，**profile 名 == 引擎 id == image tag ==
-> `--engine` == `DECIS_DEFAULT_ENGINE`**。`.env.example` 里 `COMPOSE_PROFILES=laya-multilingual`，
-> 所以裸 `docker compose up` 只起一个引擎（两个同时驻留要好几 GB 内存）。每个引擎有一个一次性
-> `weights-<engine>` 服务，把权重预取进命名卷后退出（`decis download` 写 `<DECIS_MODEL_DIR>/<engine id>/`，
-> 正是 `paths.resolve` 读的位置，§2-D17），服务端用 `depends_on: service_completed_successfully` 等它；
-> 权重已在卷里时它是 no-op。`tests/test_compose.py` 不需要 docker daemon：image tag、profile、端口、
-> 卷、鉴权全部**从工作流 `plan` 脚本和 compose 文件本身读出来**比对，不抄常量。
-> **本地编排已实测**（2026-09-23，aarch64 本机，**空卷冷启动**，镜像由 commit `e8b6bd2` 构建，
-> 也就是 §2-D17/D18/D19 三个修复之后的镜像）：
-> 一次性的 `weights-laya-multilingual` 自己把 **646.8 MiB** 权重下进 `decis_models` 卷、
-> 用 `paths.resolve` 校验通过后打印 `ready at /models/laya-multilingual/multilingual` 并 exit 0；
-> `docker compose up -d --wait` 全程 **74 s** 返回，容器里的 `/v1/systemone` 真的作答
+> **本地编排**：根目录 `docker-compose.yml` 是**部署文件**，用 profile 选引擎，
+> **profile 名 == 引擎 id == image tag == `--engine` == `DECIS_DEFAULT_ENGINE`**。
+> `.env.example` 里 `COMPOSE_PROFILES=laya-multilingual`，所以裸 `docker compose up` 只起一个引擎
+> （两个同时驻留要好几 GB 内存）。**一个引擎一个容器**：权重在镜像里，所以没有预取服务、没有卷、
+> 也没有 `depends_on`。`DECIS_MODEL_DIR` 被 compose 钉在 `/models`（镜像烤权重的位置），
+> 并且**不许往那里挂卷**——挂上去会把烤进镜像的权重盖掉，容器就悄悄开始联网下载（§2-D21）。
+> compose 层的探针打的是 `/readyz`（Docker 不会因为探针失败重启容器，所以这里可以当就绪用，
+> `--wait` 才真的等到"能作答"，§2-D22）；镜像自带的 `HEALTHCHECK` 仍然是 `/healthz`，给编排器用。
+> 名字 `docker-compose.override.yml` 就是机制：Compose 会自动把它叠在基文件上，于是**源码目录里
+> 裸 `docker compose up` 用本仓库源码构建 `decis-local:*`**，而部署只拷基文件、拉发布镜像。
+> `tests/test_compose.py` 不需要 docker daemon：image tag、profile、端口、鉴权、探针、构建覆盖层
+> 全部**从工作流 `plan` 脚本、Dockerfile 和 compose 文件本身读出来**比对，不抄常量。
+> **烤权重的镜像与 override 已实测**（2026-09-23，aarch64 本机，本次改动之后从源码构建的
+> `decis-local:laya-multilingual`，7.25 GB 解压后）：`docker compose up -d --wait` 起**一个容器**，
+> 没有卷、没有预取服务、**日志里没有任何下载**，加载路径就是 `/models/laya-multilingual/multilingual`；
+> `engine laya-multilingual ready after 120.7s`，而 `--wait` 在 **129 s** 返回且返回时 `/readyz` 已是
+> **200**（§2-D22 的修法就是这么验的），常驻 **2.804 GiB**。容器内 `/v1/systemone` 真的作答
 > （`noul` 标量、`score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、`usage`、
-> `x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401**、
-> 加载期间 `/readyz` 报 503 都复现。容器内引擎冷启动 **77.7 / 86.1 / 101.0 s**（三次，CPU，
-> 后一次是冷页缓存），常驻 **2.2–2.7 GiB**。
-> **`--wait` 等的是 `/healthz` 不是 `/readyz`**：它返回时引擎可能还在加载，
-> 要等服务真能作答得自己轮询 `/readyz`。
-> **未验证**：`-offline` 变体（§2-D17 修好后还没重建过）、`v*` tag 触发的 release 路径、
+> `x-typesafe-request-id`、`decis` 命名空间），`jev-latest` 被替换成 `decis/laya-multilingual@0.3.6`，
+> 无凭证 **403** / 错 key **401**、加载期间 `/readyz` 报 503 都复现；`docker compose config` 在
+> 两个方向（带/不带 override）都解析通过。
+> 构建期实测到两个环境事实，都写进了 `design-review.md §2-D23`：Docker **不把** shell 或 `.env` 里的
+> 代理带进 `RUN`（本地构建必须 `--build-arg HTTP_PROXY=...`），而代理 build arg **不进** BuildKit 的
+> 缓存键（重建复用了依赖层）。
+> **未验证**：`-runtime` 变体（改成默认烤权重之后还没构建过）、release tag 触发的构建与版本化 tag、
 > kev 的 compose 路径（只跑了 laya）。报镜像相关的结论时不要超出这个范围。
 
 ---
@@ -230,7 +244,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：441 通过 / 33 跳过，约 10 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：445 通过 / 33 跳过，约 11 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
@@ -269,24 +283,30 @@ uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45
 镜像（已发布，CI 构建）：
 
 ```bash
-docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 默认引擎；需要机器上已有权重或联网下载
+docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 权重在镜像里，不需要网络也不需要挂卷
 docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
+#   想换成自己的权重目录：-v /srv/models:/models，但那个目录里必须已经有 <engine-id>/
+#   ——挂在 /models 上会盖掉烤进镜像的权重（§2-D21）。要"权重放卷"就用 release 的
+#   <engine>-runtime-<version> 镜像先 `decis download` 填一次卷。
 ```
 
 本地编排（发布镜像；profile 决定起哪个引擎，选择写在 `.env` 的 `COMPOSE_PROFILES` 里）：
 
 ```bash
 cp .env.example .env                      # COMPOSE_PROFILES=laya-multilingual
-docker compose up -d --wait               # 只起默认引擎；首次先把 647 MiB 权重下进 decis_models 卷
-#   `--wait` 只等到预取结束 + `/healthz` 通过；引擎加载期间 `/readyz` 仍报 "loading"
-#   （本机 CPU 容器内实测 77.7-101.0 s）。等服务真能作答：
-#   until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
+docker compose -f docker-compose.yml up -d --wait   # 只起默认引擎，没有下载也没有预取容器
+#   这次 `--wait` 真的等到能作答（compose 层探针打 /readyz，本机 CPU 冷启动 77.7-101.0 s）；
+#   不想用 --wait：until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 docker compose --profile kev-0.8b up -d   # 换一个引擎（宿主端口 8001）；这个 flag 会取代 .env 里的选择
 docker compose config -q                  # 只校验 schema / 插值 / profile，不拉镜像（CI 的 docker job 跑这个）
-docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build   # 或从本仓库源码构建 decis-local:*
+docker compose up -d --build              # 源码目录里：自动叠 docker-compose.override.yml，构建 decis-local:*
 ```
 
-本地构建（不传 `DECIS_EXTRAS` 得到的是 engine-free 的纯 API 镜像：能起、能列模型，但不会 ready）：
+`docker-compose.override.yml` 是靠**文件名**被 Compose 自动发现的，所以源码目录里裸
+`docker compose up` 走本地构建；部署只拷 `docker-compose.yml`（或加 `-f docker-compose.yml`）。
+
+本地构建（不传 `DECIS_EXTRAS` 得到的是 engine-free 的纯 API 镜像：能起、能列模型，但不会 ready；
+不传 `DECIS_PREDOWNLOAD` 得到的是不带权重的变体）：
 
 ```bash
 docker build -f docker/Dockerfile \
@@ -402,6 +422,18 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
   `http://127.0.0.1:8000/healthz`、拿到 502，一个 `ready after 86.1s` 的服务被判成 unhealthy，
   Kubernetes 会一直重启它：`design-review.md §2-D19`）。探针命令必须 `env -u` 掉代理变量，
   并且有一条测试盯住这一点
+- ❌ 让**引擎名那个 tag** 指向不带权重的镜像（`design-review.md §2-D20`：一个引擎的镜像存在的
+  意义就是"拿到就能用"，而 README 曾把它写成"需要网络或挂卷"，同时真正的烤权重变体叫 `-offline`
+  并且从没构建成功过）。默认变体必须是烤权重那个，瘦身变体只能带后缀；同一个东西不给两个名字
+- ❌ 在 compose 里把卷/目录挂到镜像烤权重的路径上（`DECIS_MODEL_DIR`，`design-review.md §2-D21`：
+  命名卷会用镜像内容初始化一次然后自己留一份，bind mount 直接盖掉整个目录，于是"离线镜像"变成
+  "启动就联网下载"，而且不报任何错）。守卫必须**从 Dockerfile 读出**那个路径再断言没人挂它
+- ❌ 在编排器里把 liveness 探针指向 `/readyz`（`design-review.md §2-D22`：镜像还在加载引擎就被判
+  不健康，等于每次冷启动都重启一遍）。这个分工的例外只有 compose——它不会因为探针失败重启容器，
+  所以那里的探针**就是**就绪探针，`--wait` 才有意义
+- ❌ 以为 `.env` 里的网络配置会进入构建步骤（`design-review.md §2-D23`：`env_file` 只作用于容器，
+  Docker 也不转发 shell 的 `HTTP_PROXY`，于是"依赖装好了、权重下不来"，而 `.env.example` 曾
+  建议在那里设代理来跑构建）。构建要用 `--build-arg` 传，文档必须写成两条路
 
 ---
 

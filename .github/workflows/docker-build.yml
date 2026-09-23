@@ -5,7 +5,15 @@ name: Docker images
 # because the engine is a flavour of the same server, not a different product, and
 # because adding an engine should not mean creating and configuring a new Docker Hub
 # repository. The consequence is that every tag carries its engine: `laya-multilingual-v1.2.0`,
-# `kev-0.8b-latest`, `laya-multilingual-offline-latest`.
+# `laya-multilingual-runtime-v1.2.0`.
+#
+# The image that carries the engine's name carries its *weights*: `docker pull
+# kingfs/decis:laya-multilingual && docker run` has to work with no network, no volume and
+# no download step, or the tag is not doing the one thing a per-engine image is for. A
+# release tag also publishes the weightless variant as `<engine>-runtime-<version>`, for
+# deployments that keep one copy of the weights on a shared volume or that must keep every
+# node's image small. There is no `-offline` suffix: with the weights baked into the
+# default, `-offline` would be a second name for the same thing.
 #
 # Why one image per engine rather than one image with everything: the engine extras
 # conflict and are large (`AGENTS.md §6`), and a `kev` image that also carried Laya's
@@ -31,8 +39,8 @@ on:
       engines:
         description: Space-separated engine ids to build
         default: "laya-multilingual kev-0.8b"
-      bake_weights:
-        description: Also build the offline variants with weights baked in
+      runtime_variants:
+        description: Also build the weightless `-runtime` variants
         type: boolean
         default: false
       push:
@@ -98,7 +106,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           GITHUB_SHA: ${{ github.sha }}
           INPUT_ENGINES: ${{ inputs.engines }}
-          INPUT_BAKE: ${{ inputs.bake_weights }}
+          INPUT_RUNTIME: ${{ inputs.runtime_variants }}
           INPUT_PUSH: ${{ inputs.push }}
           # Present so the guard below can fail fast. Configuration, not a secret used
           # here: the value only has to be *non-empty* for the publish to be possible.
@@ -151,14 +159,14 @@ jobs:
             exit 1
           fi
 
-          # The offline variant bakes the weights in, so the image runs with no network at
-          # all. It is much larger, so it is built for release tags and on request, not on
-          # every commit.
-          offline=false
-          if [ "$EVENT" = "workflow_dispatch" ] && [ "$INPUT_BAKE" = "true" ]; then
-            offline=true
+          # The default image for an engine bakes that engine's weights in, so
+          # `docker run` needs no network and no volume. The weightless variant is the
+          # exception and carries a suffix: `-runtime`.
+          runtime_variants=false
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$INPUT_RUNTIME" = "true" ]; then
+            runtime_variants=true
           elif [ "$EVENT" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
-            offline=true
+            runtime_variants=true
           fi
 
           # Which pip extra provides an engine's dependencies. The matrix carries this
@@ -211,15 +219,22 @@ jobs:
             # On a PR the image is deliberately engine-free: no extra is installed, so
             # the build validates the Dockerfile without pulling torch.
             [ "$base_only" = "true" ] && extra=""
-            variants=(runtime)
-            if [ "$offline" = "true" ] && [[ " ${bakeable[*]} " == *" $engine "* ]]; then
-              variants=(runtime offline)
+            # `baked` is the default: the weights go into the image whose tag is the engine
+            # name. `-runtime` is the weightless variant, and it is only worth a second
+            # build when something consumes it (a release, or a dispatch that asks).
+            variants=(baked)
+            if [ "$base_only" = "true" ]; then
+              # The PR build is engine-free -- no extra is installed, so there is nothing to
+              # bake with. Naming it `runtime` (weightless) keeps the job name honest.
+              variants=(runtime)
+            elif [ "$runtime_variants" = "true" ] && [[ " ${bakeable[*]} " == *" $engine "* ]]; then
+              variants=(baked runtime)
             fi
             for variant in "${variants[@]}"; do
-              bake=""
-              [ "$variant" = "offline" ] && bake="$engine"
+              bake="$engine"
+              [ "$variant" = "runtime" ] && bake=""
               image_tag="$engine"
-              [ "$variant" = "offline" ] && image_tag="${image_tag}-offline"
+              [ "$variant" = "runtime" ] && image_tag="${image_tag}-runtime"
               [ "$moving" = "latest" ] || image_tag="${image_tag}-${moving}"
               [ $first_merge -eq 1 ] || merges+=","
               first_merge=0
@@ -396,9 +411,10 @@ jobs:
 
           # `laya-multilingual` is the server's default engine and the one whose install
           # the README leads with, so it is the right answer to a bare
-          # `docker pull kingfs/decis`. Nothing else gets a bare `latest`, and only when
-          # this run actually moved `latest`.
-          if [ "$ENGINE" = "laya-multilingual" ] && [ "$VARIANT" = "runtime" ] && [ "$MOVING_TAG" = "latest" ]; then
+          # `docker pull kingfs/decis`. It is the *baked* variant, not `-runtime`: the bare
+          # name has to be the one that works with no network. Nothing else gets a bare
+          # `latest`, and only when this run actually moved `latest`.
+          if [ "$ENGINE" = "laya-multilingual" ] && [ "$VARIANT" = "baked" ] && [ "$MOVING_TAG" = "latest" ]; then
             docker buildx imagetools create --tag "${image}:latest" "${sources[@]}"
             docker buildx imagetools inspect "${image}:latest"
           fi

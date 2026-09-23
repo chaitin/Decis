@@ -8,7 +8,7 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 > **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
 > contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **441 tests passing** without weights — including the official
+> Dockerfile and CI are implemented, with **445 tests passing** without weights — including the official
 > `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
 > **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
 > real requests today; 27 further tests load the real weights. Adding kev required **no change to
@@ -112,7 +112,7 @@ rather than leaving you to guess.
 
 ```
 $ curl -s localhost:8000/healthz   # 0.5 s after start
-{"status":"ok","version":"0.1.0"}
+{"status":"ok","version":"0.0.1"}
 $ curl -s localhost:8000/readyz    # still loading
 {"status":"loading","engine":"laya-multilingual"}     # 503, with retry-after
 $ curl -s localhost:8000/readyz    # ~80 s later
@@ -122,8 +122,8 @@ $ curl -s localhost:8000/readyz    # ~80 s later
 A request that arrives mid-load gets a `503` with `"The model is still loading. Please retry
 shortly."`, and one that arrives on an engine whose weights failed to load gets a `503` that says
 so and carries **no** `retry-after` — retrying something that will never recover only wastes your
-time. Don't point a *liveness* probe at `/readyz`, or a slow start becomes a restart loop. Weights
-in the image means it then runs with no network:
+time. Don't point a *liveness* probe at `/readyz`, or a slow start becomes a restart loop. The
+published images ship the weights, so the container then runs with no network at all:
 
 ```bash
 docker build -f docker/Dockerfile \
@@ -161,7 +161,10 @@ Decis is that uniform way: one stable API, many engines, packaged as one contain
 - **The jev contract, implemented once.** `POST /v1/systemone`, `GET /v1/models`, `choice` / `score` / `noul` primitives, the official SDK's error shapes and request-id header. The wire format is pinned down in [`docs/api-compatibility.md`](docs/api-compatibility.md) with an evidence level on every claim — and the live API was probed rather than assumed, which is how we found that a missing credential is 403 while an invalid one is 401.
 - **Pluggable engines.** An engine only has to produce a probability per option; the server turns that into `Noul` / `Choice` / `Score` answers, so every engine returns identical, comparable shapes — including a single documented `confidence` definition. Engines are referenced by string path, so an image with one engine's dependencies installed can still list the others.
 - **Aimed at small, frequent calls.** Both open decision models are a single forward pass, so the request path is designed to batch questions *across requests* before they reach the model — see the honesty note under Performance.
-- **Baked-in weights or a mounted volume.** Images ship with the model so `docker run` works offline; `DECIS_MODEL_DIR` overrides it with your own directory.
+- **Baked-in weights.** Every published image carries its checkpoint, so `docker run` needs no network, no
+  volume and no download step. `DECIS_MODEL_DIR` points the loader at your own directory instead, and a
+  weightless `-runtime` variant exists for deployments that keep one copy of the weights on a shared
+  volume.
 - **Safe by default.** Bearer-token auth (from `.env`), a constant-time comparison, a request-size cap, and a refusal to start on a public address with no token configured.
 
 ## Engines
@@ -263,58 +266,91 @@ Docker Hub repository, with the engine in the tag:
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
 ```
 
-| Tag | Engine | What it needs |
+| Tag | Engine | What it carries |
 |---|---|---|
-| `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | 647 MiB of weights, ~80 s cold start, ~5 GB RSS |
-| `kev-0.8b` | kev 0.8B | 1.7 GiB of weights; wants a GPU |
+| `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | the 647 MiB checkpoint, baked in; on CPU ~1-2 min to `/readyz`, ~3 GiB resident |
+| `kev-0.8b` | kev 0.8B | the 1.7 GiB adapter and Qwen base, baked in; wants a GPU |
 
 `laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis`
 gives you the default engine. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
 The registered `laya` (English) and `laya-typed-decisions` checkpoints have **no image**: the build
 matrix covers exactly the two tags above. Run those from a source checkout.
 
-The default images carry no weights: a container fetches them on first start, into the Hugging Face
-cache (`/models/.hf` in the image, so a mounted `/models` keeps them across recreations). Mounting
-your own weights beats downloading when you want to update a model without rebuilding:
+The weights are *inside* the image, so there is nothing to fetch on first start:
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
+```
+
+Mount a directory instead when you want to swap a checkpoint without pulling an image — but mount one
+that already holds `<engine-id>/`. A mount at `/models` **hides the baked weights** (a named volume is
+seeded from the image and then keeps its own copy; a bind mount replaces the directory outright), and
+the container quietly goes back to downloading:
+
+```bash
+# /srv/models/laya-multilingual/multilingual/... must already exist
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
 ```
 
-For a cluster with no egress, release tags also publish an `-offline` variant with the weights already
-baked in (`kingfs/decis:laya-multilingual-offline-v1.2.0`).
+Release tags also publish the weightless variant, `<engine>-runtime-<version>`, for a deployment that
+keeps one copy of the weights on a volume or must keep every node's image small. It is a release
+artifact, not a moving tag, so the examples below name a version — use the current one. Fill the
+volume once, then run the server against it:
 
-`docker compose` wires the whole thing up, including that first-start download:
+```bash
+docker pull kingfs/decis:laya-multilingual-runtime-v1.2.0
+docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v1.2.0 \
+  decis download --engine laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
+  kingfs/decis:laya-multilingual-runtime-v1.2.0
+```
+
+`docker compose` runs the published image and nothing else — no prefetch container, no volume, no
+download:
 
 ```bash
 cp .env.example .env        # set DECIS_API_KEY; COMPOSE_PROFILES picks the engine
-docker compose up -d --wait # laya-multilingual only, by default
+docker compose -f docker-compose.yml up -d --wait   # laya-multilingual only, by default
 
-# `--wait` returns when the prefetch has finished and /healthz answers, which is before
-# the engine is loaded -- /readyz reports "loading" for ~80 s more on CPU. Wait for it:
+# `--wait` returns when the engine can actually answer: the compose-level probe asks
+# /readyz, so this waits out the ~80-100 s CPU cold start. The image's own HEALTHCHECK
+# stays on /healthz for orchestrators, where a liveness probe must not fail while the
+# engine is still loading.
+#
+# Or ask directly, if you would rather not use --wait:
 until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 
 docker compose --profile kev-0.8b up -d     # or the other engine (host port 8001)
 ```
 
-The weights live in the `decis_models` volume, so this download happens once. The one-shot
-`weights-<engine>` service does it before the server starts (`depends_on:
-service_completed_successfully`), which needs an image newer than `docs/design-review.md`
-§2-D17 — every image built after that fix has it.
+The `-f docker-compose.yml` is not decoration: inside a checkout Compose also loads
+`docker-compose.override.yml`, which builds the same services from your working tree into
+`decis-local:*` instead. Leave it off to develop against your edit; a deployment copies
+`docker-compose.yml` alone.
 
-To build an image yourself instead:
+To build an image yourself:
 
 ```bash
 docker build -f docker/Dockerfile \
   --build-arg DECIS_EXTRAS=laya \
   --build-arg DECIS_ENGINE=laya-multilingual \
+  --build-arg DECIS_PREDOWNLOAD=laya-multilingual \
   -t decis:laya-multilingual .
 ```
 
 The image installs no engine extra unless you ask for one, so a bare `docker build` produces an
 API-only image: it starts and answers `/healthz` and `/v1/models`, but `/readyz` stays 503 until an
-engine's dependencies and weights are present.
+engine's dependencies and weights are present. Leaving out `DECIS_PREDOWNLOAD` gives the weightless
+variant described above.
+
+On a network that needs a proxy, pass it to the *build* as well — `env_file` only reaches
+containers, and Docker forwards neither `.env` nor your shell's `HTTP_PROXY` into a `RUN`, so the
+weight download fails with `Network is unreachable` while the dependency install may still succeed:
+
+```bash
+docker compose build --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
+  --build-arg NO_PROXY="$NO_PROXY"
+```
 
 The container runs as a non-root user, needs no external services — no Redis, no Postgres, no Celery —
 and refuses to start on a public address with no token configured.
@@ -357,7 +393,7 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 441 tests, ~10 s, no weights, no network
+uv run pytest -q                        # 445 tests, ~11 s, no weights, no network
 uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token

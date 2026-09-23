@@ -143,18 +143,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Check the compose file still resolves
+      - name: Check the compose files still resolve
         # No daemon work and no 3 GB pull: this only validates the schema, the
         # interpolation and the profile selection. What the services are *made of* is
         # checked without docker by `tests/test_compose.py`, against the same `plan`
         # script that decides the published tags.
         run: |
           cp .env.example .env
+          # The deployment file on its own, then the same file with the build override
+          # that Compose discovers in this checkout. Both have to resolve, and the
+          # override must not change which services or profiles exist.
+          docker compose -f docker-compose.yml config -q
           docker compose config -q
-          docker compose --profile kev-0.8b config -q
-          services=$(docker compose config --services | sort | tr '\n' ' ')
-          [ "$services" = "laya-multilingual weights-laya-multilingual " ] || {
-            echo "the default profile started something else: $services"; exit 1; }
+          default_services=$(docker compose -f docker-compose.yml config --services | sort | tr '\n' ' ')
+          [ "$default_services" = "laya-multilingual " ] || {
+            echo "the default profile started something else: $default_services"; exit 1; }
+          override_services=$(docker compose config --services | sort | tr '\n' ' ')
+          [ "$override_services" = "$default_services" ] || {
+            echo "the build override changed the service set: $override_services"; exit 1; }
+          kev_services=$(docker compose -f docker-compose.yml --profile kev-0.8b config --services | sort | tr '\n' ' ')
+          [ "$kev_services" = "kev-0.8b " ] || {
+            echo "the kev profile started something else: $kev_services"; exit 1; }
       - name: Build the engine-free image
         uses: docker/build-push-action@v6
         with:
