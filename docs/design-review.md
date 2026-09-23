@@ -455,6 +455,29 @@ GitHub Actions 的表达式里没有真正的三元运算符，社区惯用 `A &
 空数组在 GitHub 表达式里都是假值，所以这个惯用法只在所有分支都为真值时才等价于三元。
 凡是"选一个可以合法为空的值"，都不要用它。
 
+### D15（低，但同一类）README 写的 tag 根本不存在：文档说 `:laya-multilingual`，镜像叫 `:laya-multilingual-latest`
+
+推完之后按文档去拉，第一步就失败：
+
+```
+$ docker pull kingfs/decis:mock
+Error response from daemon: manifest for kingfs/decis:mock not found
+```
+
+工作流给 master 推送打的 tag 是 `${engine}-${MOVING_TAG}`，也就是 `mock-latest`。
+用户（以及本仓库 README 和 AGENTS.md）预期的名字是 `kingfs/decis:mock` ——
+**一个引擎一个仓库时才是那个名字，改成"引擎进 tag"之后 `-latest` 就纯属多余**：
+`:laya-multilingual` 本身就是"当前的 Laya 镜像"，正如 `:latest` 是单用途仓库的当前镜像。
+
+更值得记的是它为什么能溜过去：**没有任何测试拿 tag 和文档对照过**，
+而 D14 刚刚证明"文档/测试里的名字与工作流真正产出的名字不一致"这类缺陷是真实存在的。
+和 D12（手抄的性能表）是同一个形状：**同一个事实存在两份，只有一份被执行**。
+
+**修法**：tag 方案整个搬进 `plan` 步骤，矩阵里带 `image_tag`，构建与合并步骤只做插值，
+测试从**执行 plan 后产出的矩阵**里读 tag（master 推送 → 引擎名；release tag → 引擎名 + 版本；
+offline → 引擎名 + `-offline`）。顺带把"两个步骤各自拼一遍 tag"这个第二处实现也消掉了。
+已按新方案删掉 Docker Hub 上 21 个旧 tag，避免留下再也不会更新、但看起来仍然有效的 `-latest` 别名。
+
 **同一批发现里更值得记住的一点**：这个缺陷是**镜像体积**这种维度暴露的，
 而它此前躲过了全部 422 个测试。体积不是被断言出来的，是推上去之后用 registry API 量出来的——
 `AGENTS.md §8` 那条"数字必须来自实测"在这里救了一次场。

@@ -351,8 +351,55 @@ def test_the_published_registry_is_docker_hub(workflow: dict) -> None:
     assert "ghcr.io" not in text, "a GHCR reference survived the move to Docker Hub"
 
 
-def test_every_engine_shares_one_repository_with_the_engine_in_the_tag(build_meta_script: str, tmp_path: Path) -> None:
-    """`kingfs/decis:laya-multilingual-latest`, not `kingfs/decis-laya-multilingual`."""
+@pytest.mark.parametrize(
+    ("event", "ref", "ref_name", "expected"),
+    [
+        # On a branch push the engine name IS the tag, as if the repository held one model:
+        # `docker pull kingfs/decis:laya-multilingual`. Nothing is appended, so the
+        # documented tag is a tag that exists -- `:laya-multilingual` did not, the
+        # workflow produced `:laya-multilingual-latest` while the README said otherwise.
+        (
+            "push",
+            "refs/heads/master",
+            "master",
+            {"mock": "mock", "laya-multilingual": "laya-multilingual"},
+        ),
+        # A release tag pins, so it must say which release.
+        (
+            "push",
+            "refs/tags/v1.2.0",
+            "v1.2.0",
+            {"mock": "mock-v1.2.0", "laya-multilingual": "laya-multilingual-v1.2.0"},
+        ),
+        # A feature branch never moves a name someone could have pinned to.
+        (
+            "push",
+            "refs/heads/topic",
+            "topic",
+            {"mock": "mock-sha-a1b2c3d", "laya-multilingual": "laya-multilingual-sha-a1b2c3d"},
+        ),
+    ],
+)
+def test_the_image_tag_is_the_engine_name_on_a_branch_push(
+    tmp_path: Path, plan_script: str, event: str, ref: str, ref_name: str, expected: dict[str, str]
+) -> None:
+    """The tag a user types is decided by the plan script, so it is tested there."""
+    planned = run_plan(plan_script, tmp_path, EVENT=event, REF=ref, REF_NAME=ref_name)
+    tags = {b["engine"]: b["image_tag"] for b in planned["builds"] if b["variant"] == "runtime"}
+    for engine, tag in expected.items():
+        assert tags.get(engine) == tag, f"{engine} on {ref}: expected {tag!r}, got {tags.get(engine)!r}"
+
+
+def test_the_offline_variant_is_a_distinct_tag(tmp_path: Path, plan_script: str) -> None:
+    """Baked weights are a different artifact, so they must not share a tag."""
+    planned = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/tags/v1.2.0", REF_NAME="v1.2.0")
+    tags = {(b["engine"], b["variant"]): b["image_tag"] for b in planned["builds"]}
+    assert tags[("laya-multilingual", "runtime")] == "laya-multilingual-v1.2.0", tags
+    assert tags[("laya-multilingual", "offline")] == "laya-multilingual-offline-v1.2.0", tags
+
+
+def test_every_engine_shares_one_repository(build_meta_script: str, tmp_path: Path) -> None:
+    """`kingfs/decis:laya-multilingual`, not `kingfs/decis-laya-multilingual`."""
     docker_bin, _ = fake_docker(tmp_path)
     completed = run_step(
         build_meta_script,
@@ -361,35 +408,17 @@ def test_every_engine_shares_one_repository_with_the_engine_in_the_tag(build_met
         ENGINE="laya-multilingual",
         VARIANT="runtime",
         ARCH="amd64",
-        MOVING_TAG="latest",
+        IMAGE_TAG="laya-multilingual",
         GITHUB_OUTPUT=str(tmp_path / "out"),
     )
     assert completed.returncode == 0, completed.stderr
     outputs = parse_outputs(tmp_path / "out")
     assert outputs["image"] == "docker.io/kingfs/decis", outputs
     tags = outputs["tags"].splitlines()
-    assert "docker.io/kingfs/decis:laya-multilingual-latest-amd64" in tags, tags
-    # The per-arch tag the merge job consumes must stay platform-qualified, or the two
-    # legs would overwrite each other.
-    assert "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64" in tags, tags
-
-
-def test_the_offline_variant_gets_its_own_prefix(build_meta_script: str, tmp_path: Path) -> None:
-    """Baked weights are a different artifact, so they must not be the same tag."""
-    docker_bin, _ = fake_docker(tmp_path)
-    completed = run_step(
-        build_meta_script,
-        tmp_path,
-        docker_bin,
-        ENGINE="kev-0.8b",
-        VARIANT="offline",
-        ARCH="arm64",
-        MOVING_TAG="v1.2.0",
-        GITHUB_OUTPUT=str(tmp_path / "out"),
-    )
-    assert completed.returncode == 0, completed.stderr
-    outputs = parse_outputs(tmp_path / "out")
-    assert "docker.io/kingfs/decis:kev-0.8b-offline-v1.2.0-arm64" in outputs["tags"], outputs
+    assert "docker.io/kingfs/decis:laya-multilingual-amd64" in tags, tags
+    # The per-arch provenance tag the merge job consumes must stay platform-qualified, or
+    # the two legs would overwrite each other.
+    assert "docker.io/kingfs/decis:sha-a1b2c3d4e5f6-amd64" in tags, tags
 
 
 def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta_script: str, tmp_path: Path) -> None:
@@ -402,7 +431,7 @@ def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta
         ENGINE="mock",
         VARIANT="runtime",
         ARCH="amd64",
-        MOVING_TAG="latest",
+        IMAGE_TAG="mock",
         # A fork would see its own owner here; the image name must ignore it.
         GITHUB_REPOSITORY_OWNER="someone-else",
         DOCKERHUB_USERNAME="KingFS",  # registries require lowercase
@@ -423,17 +452,17 @@ def merged_tags(log: Path) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("engine", "variant", "moving_tag", "expected_latest"),
+    ("engine", "variant", "image_tag", "moving_tag", "expected_latest"),
     [
         # `mock` needs no weights and no GPU, so it is the right answer to a bare
         # `docker pull kingfs/decis`.
-        ("mock", "runtime", "latest", True),
+        ("mock", "runtime", "mock", "latest", True),
         # ...but only the image that actually moved `latest`. A version tag must not
         # silently repoint the bare tag, and an offline image is not the small default.
-        ("mock", "runtime", "v1.2.0", False),
-        ("mock", "offline", "latest", False),
-        ("laya-multilingual", "runtime", "latest", False),
-        ("kev-0.8b", "runtime", "latest", False),
+        ("mock", "runtime", "mock-v1.2.0", "v1.2.0", False),
+        ("mock", "offline", "mock-offline", "latest", False),
+        ("laya-multilingual", "runtime", "laya-multilingual", "latest", False),
+        ("kev-0.8b", "runtime", "kev-0.8b", "latest", False),
     ],
 )
 def test_only_mock_claims_the_bare_latest_tag(
@@ -441,6 +470,7 @@ def test_only_mock_claims_the_bare_latest_tag(
     tmp_path: Path,
     engine: str,
     variant: str,
+    image_tag: str,
     moving_tag: str,
     expected_latest: bool,
 ) -> None:
@@ -451,13 +481,12 @@ def test_only_mock_claims_the_bare_latest_tag(
         docker_bin,
         ENGINE=engine,
         VARIANT=variant,
+        IMAGE_TAG=image_tag,
         MOVING_TAG=moving_tag,
     )
     assert completed.returncode == 0, completed.stderr
     tags = merged_tags(log)
-    assert f"docker.io/kingfs/decis:{engine}-{moving_tag}" in tags or any(
-        tag.endswith(f":{engine}-offline-{moving_tag}") for tag in tags
-    ), tags
+    assert f"docker.io/kingfs/decis:{image_tag}" in tags, tags
     assert ("docker.io/kingfs/decis:latest" in tags) is expected_latest, tags
 
 
@@ -470,6 +499,7 @@ def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tm
         docker_bin,
         ENGINE="laya-multilingual",
         VARIANT="runtime",
+        IMAGE_TAG="laya-multilingual",
         MOVING_TAG="latest",
     )
     assert completed.returncode == 0, completed.stderr
@@ -480,8 +510,8 @@ def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tm
     skip = {words.index("--tag") + 1} if "--tag" in words else set()
     sources = [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
     assert sources == [
-        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64",
-        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-arm64",
+        "docker.io/kingfs/decis:sha-a1b2c3d4e5f6-amd64",
+        "docker.io/kingfs/decis:sha-a1b2c3d4e5f6-arm64",
     ], sources
 
 
@@ -509,6 +539,7 @@ def test_a_missing_platform_leg_is_left_out_rather_than_faked(merge_script: str,
         bin_dir,
         ENGINE="mock",
         VARIANT="runtime",
+        IMAGE_TAG="mock",
         MOVING_TAG="latest",
     )
     assert completed.returncode == 0, completed.stderr
@@ -525,7 +556,15 @@ def test_merging_nothing_at_all_fails(merge_script: str, tmp_path: Path) -> None
     (bin_dir / "docker").write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
     (bin_dir / "docker").chmod(0o755)
 
-    completed = run_step(merge_script, tmp_path, bin_dir, ENGINE="mock", VARIANT="runtime", MOVING_TAG="latest")
+    completed = run_step(
+        merge_script,
+        tmp_path,
+        bin_dir,
+        ENGINE="mock",
+        VARIANT="runtime",
+        IMAGE_TAG="mock",
+        MOVING_TAG="latest",
+    )
     assert completed.returncode != 0
     assert "nothing to merge" in completed.stderr, completed.stderr
 

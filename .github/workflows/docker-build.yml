@@ -174,8 +174,27 @@ jobs:
             esac
           }
 
+          # The moving tag. A branch push must not move `latest`, and `latest` is not part
+          # of an image's name: `kingfs/decis:laya-multilingual` IS the current Laya image,
+          # the way `:latest` is the current image of a single-purpose repository. Only a
+          # release tag appends something, and then it pins: `laya-multilingual-v1.2.0`.
+          if [[ "$REF" == refs/tags/v* ]]; then
+            moving="$REF_NAME"
+          elif [ "$REF_NAME" = "master" ] || [ "$REF_NAME" = "main" ]; then
+            moving=latest
+          else
+            # Prefer the SHA the runner was given: `git rev-parse` needs a commit to
+            # exist, and a shallow checkout or a detached HEAD can leave it unable to
+            # answer, which would fail the run before it built anything.
+            moving="sha-${GITHUB_SHA:0:7}"
+          fi
+
           # One build per engine x variant x platform, and one merge per engine x variant
           # (the merge is what turns two platform images into one multi-arch manifest).
+          #
+          # `image_tag` is computed here, not in the build and merge steps, because both of
+          # them need it and two copies of a tag scheme is how a manifest ends up named
+          # differently from the images it points at. This script is executed by the tests.
           builds="["
           merges="["
           first_build=1
@@ -189,15 +208,18 @@ jobs:
             for variant in "${variants[@]}"; do
               bake=""
               [ "$variant" = "offline" ] && bake="$engine"
+              image_tag="$engine"
+              [ "$variant" = "offline" ] && image_tag="${image_tag}-offline"
+              [ "$moving" = "latest" ] || image_tag="${image_tag}-${moving}"
               [ $first_merge -eq 1 ] || merges+=","
               first_merge=0
-              merges+="{\"engine\":\"$engine\",\"variant\":\"$variant\"}"
+              merges+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"image_tag\":\"$image_tag\"}"
               for platform in "${platforms[@]}"; do
                 # shellcheck disable=SC2086
                 set -- $platform
                 [ $first_build -eq 1 ] || builds+=","
                 first_build=0
-                builds+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"bake\":\"$bake\",\"extra\":\"$extra\",\"platform\":\"$1\",\"runner\":\"$2\",\"arch\":\"${1#linux/}\"}"
+                builds+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"bake\":\"$bake\",\"extra\":\"$extra\",\"image_tag\":\"$image_tag\",\"platform\":\"$1\",\"runner\":\"$2\",\"arch\":\"${1#linux/}\"}"
               done
             done
           done
@@ -207,22 +229,10 @@ jobs:
           echo "matrix={\"include\":$builds}" >> "$GITHUB_OUTPUT"
           echo "merges={\"include\":$merges}" >> "$GITHUB_OUTPUT"
           echo "push=$push" >> "$GITHUB_OUTPUT"
-
-          # The moving tag each image also gets. A branch push must not move `latest`.
-          if [[ "$REF" == refs/tags/v* ]]; then
-            tag="$REF_NAME"
-          elif [ "$REF_NAME" = "master" ] || [ "$REF_NAME" = "main" ]; then
-            tag=latest
-          else
-            # Prefer the SHA the runner was given: `git rev-parse` needs a commit to
-            # exist, and a shallow checkout or a detached HEAD can leave it unable to
-            # answer, which would fail the run before it built anything.
-            tag="sha-${GITHUB_SHA:0:7}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$moving" >> "$GITHUB_OUTPUT"
           echo "builds: $builds"
           echo "merges: $merges"
-          echo "push=$push tag=$tag"
+          echo "push=$push tag=$moving"
 
   build:
     name: ${{ matrix.engine }} ${{ matrix.variant }} (${{ matrix.arch }})
@@ -256,7 +266,7 @@ jobs:
           ENGINE: ${{ matrix.engine }}
           VARIANT: ${{ matrix.variant }}
           ARCH: ${{ matrix.arch }}
-          MOVING_TAG: ${{ needs.plan.outputs.tag }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
           # Passed through the environment rather than interpolated into this script.
           # Interpolation would splice a secret into shell *source*: a value containing a
           # quote would break the script, and one containing `$(...)` would run. It also
@@ -271,17 +281,13 @@ jobs:
           image="${REGISTRY}/${owner}/${IMAGE_REPO}"
           short="${GITHUB_SHA::12}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
-          # The engine is part of the tag because all engines share one repository. The
-          # offline variant is the same server plus baked weights -- a genuinely different
-          # artifact to pull -- so it gets its own prefix rather than a suffix on the
-          # repository name.
-          prefix="${ENGINE}"
-          [ "$VARIANT" = "offline" ] && prefix="${prefix}-offline"
-          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
           {
             echo "tags<<EOF"
-            echo "${image}:${prefix}-${MOVING_TAG}-${ARCH}"
-            echo "${image}:${prefix}-sha-${short}-${ARCH}"
+            # The human-readable tag, then the provenance tag. The merge job consumes the
+            # latter, which must stay platform-qualified or the two legs would overwrite
+            # each other.
+            echo "${image}:${IMAGE_TAG}-${ARCH}"
+            echo "${image}:sha-${short}-${ARCH}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -348,14 +354,13 @@ jobs:
         env:
           ENGINE: ${{ matrix.engine }}
           VARIANT: ${{ matrix.variant }}
+          IMAGE_TAG: ${{ matrix.image_tag }}
           MOVING_TAG: ${{ needs.plan.outputs.tag }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
           owner="$(echo "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
           image="${REGISTRY}/${owner}/${IMAGE_REPO}"
-          prefix="${ENGINE}"
-          [ "$VARIANT" = "offline" ] && prefix="${prefix}-offline"
           short="${GITHUB_SHA::12}"
 
           # The per-arch tags exist only if that platform's leg ran. Merging a digest that
@@ -364,22 +369,22 @@ jobs:
           # printed, so an amd64-only release cannot look like a multi-arch one.
           sources=()
           for arch in amd64 arm64; do
-            ref="${image}:${prefix}-sha-${short}-${arch}"
+            ref="${image}:sha-${short}-${arch}"
             if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
               sources+=("$ref")
             else
               echo "note: $ref was not built; leaving it out of the manifest" >&2
             fi
           done
-          [ ${#sources[@]} -gt 0 ] || { echo "nothing to merge for ${image}:${prefix}" >&2; exit 1; }
+          [ ${#sources[@]} -gt 0 ] || { echo "nothing to merge for ${image}:${IMAGE_TAG}" >&2; exit 1; }
 
-          docker buildx imagetools create --tag "${image}:${prefix}-${MOVING_TAG}" "${sources[@]}"
-          docker buildx imagetools inspect "${image}:${prefix}-${MOVING_TAG}"
+          docker buildx imagetools create --tag "${image}:${IMAGE_TAG}" "${sources[@]}"
+          docker buildx imagetools inspect "${image}:${IMAGE_TAG}"
 
           # `mock` is the image you can run with no weights and no GPU, so it is the right
           # answer to a bare `docker pull kingfs/decis`. Nothing gets a bare `latest`
           # unless it is that, and only when this run actually moved `latest`.
-          if [ "$prefix" = "mock" ] && [ "$MOVING_TAG" = "latest" ]; then
+          if [ "$ENGINE" = "mock" ] && [ "$VARIANT" = "runtime" ] && [ "$MOVING_TAG" = "latest" ]; then
             docker buildx imagetools create --tag "${image}:latest" "${sources[@]}"
             docker buildx imagetools inspect "${image}:latest"
           fi

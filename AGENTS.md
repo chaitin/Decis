@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**423 通过 / 31 跳过**，约 10 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**445 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**426 通过 / 31 跳过**，约 10 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**448 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -25,23 +25,21 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 >
 > **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 **Docker Hub**：
-> **所有引擎共用一个仓库 `kingfs/decis`，引擎进 tag**（`kingfs/decis:laya-multilingual-latest`、
-> `kingfs/decis:kev-0.8b-v1.2.0`、`kingfs/decis:laya-multilingual-offline-latest`），
-> 另外 `mock` 在 master 推送时同时打一个裸 `latest`，让 `docker pull kingfs/decis` 开箱可用。
+> **所有引擎共用一个仓库 `kingfs/decis`，引擎就是 tag**（`kingfs/decis:laya-multilingual`、
+> `kingfs/decis:kev-0.8b`），master 推送时 `mock` 另外拿一个裸 `latest`，让 `docker pull kingfs/decis`
+> 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
+> "当前版本"不加 `-latest`，加了就等于同一个东西有两个名字，而其中一个是文档里没有的。
 > 多架构（amd64 + arm64 原生 runner，不用 QEMU），带 SBOM 与 provenance；
-> PR 只构建 amd64 的 `mock` 以验证 Dockerfile。矩阵与 tag 生成逻辑由 `tests/test_docker_workflow.py`
-> 把脚本从 YAML 里抠出来**真跑**验证（用一个假的 `docker` 记录它被要求创建哪些 tag）。
+> PR 只构建 amd64 的 `mock` 以验证 Dockerfile。
+> **矩阵、tag 方案、引擎 → pip extra 的映射全部在 `plan` 步骤里算，并由 `tests/test_docker_workflow.py`
+> 把那段脚本从 YAML 里抠出来真跑验证**（构建/合并步骤只做插值，用一个假的 `docker` 记录它被要求创建哪些 tag）。
 > **GHCR 已不再推送**（只有 Docker Hub 一个 registry）。
-> **已跑通**：[run 35804685017](https://github.com/kingfs/Decis/actions/runs/35804685017)
-> （2026-09-23，commit `3506463`）6 个构建腿 + 3 个 merge 全绿，`kingfs/decis` 仓库已建且**公开**，
-> tag 为 `mock-latest` / `laya-multilingual-latest` / `kev-0.8b-latest` / 裸 `latest`（都是 amd64+arm64）。
-> **已实测体积**（registry API 逐层求和的层总量，不是 Docker Hub 页面那个数）：
-> 三个引擎的镜像**几乎一样大**——`mock` 与 `laya-multilingual` 都是 3203 MB，`kev-0.8b` 3206 MB。
-> **`mock` 的体积是个已修正的缺陷（`design-review.md §2-D14`）**：它是被一行
-> `engine == 'mock' && '' || 'laya'` 的三元表达式装上了 Laya + torch 才变成 3.2 GB 的；
-> 修好之后 `mock` 应当只有约 150 MB，**但修完之后的数字尚未量过**。
-> **未验证**：修正后的 `mock` 体积、`-offline` 变体、`v*` tag 触发的 release 路径、
-> 容器内冷启动、镜像体积与容器冷启动的一致性。
+> **已实测**（run 35805760838，commit `b25e0d0`）6 个构建腿 + 3 个 merge 全绿；
+> `kingfs/decis` 公开。体积用 registry API **逐层求和**量出（不是 Docker Hub 页面那个数）：
+> `mock` **72 MB**（amd64）/ 71 MB（arm64），`laya-multilingual` 3203 / 3346 MB，`kev-0.8b` 3206 / 3349 MB。
+> **`mock` 曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），此数字是修好之后量的**——
+> 顺带可见构建时间也从 9m16s 降到 59s。
+> **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、容器内冷启动。
 > 报镜像相关的结论时不要超出这个范围。
 
 ---
@@ -206,7 +204,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：423 通过 / 31 跳过，约 10 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：426 通过 / 31 跳过，约 10 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -244,7 +242,7 @@ uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45
 镜像（已发布，CI 构建）：
 
 ```bash
-docker run --rm -p 8000:8000 kingfs/decis:mock          # 无权重，立刻可跑
+docker run --rm -p 8000:8000 kingfs/decis:mock          # 72 MB，无权重，立刻可跑
 docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 需要机器上已有权重或联网下载
 docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
 ```
@@ -346,6 +344,10 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
   见 `design-review.md §2-D14`）。选一个可以合法为空的值时，用真正的分支，或把决定搬到脚本里
 - ❌ 让测试里的映射表是**手抄的常量**而不是从被执行的那份东西读出来的
   （`design-review.md §2-D14`：表达式错了、抄本对了，于是测试恒绿地放过了一个 3.1 GB 的缺陷）
+- ❌ 在文档里写出一个**没被任何测试对照过**的镜像 tag / URL / 文件名
+  （`design-review.md §2-D15`：README 写 `kingfs/decis:mock`，工作流产出的是 `mock-latest`，
+  照着文档拉的第一条命令就失败）。凡是文档里出现的、由 CI 产出的名字，都要有一条测试从
+  **真正产出它的那段脚本**里读出来比对
 
 ---
 

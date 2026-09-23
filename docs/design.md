@@ -943,8 +943,12 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   彼时镜像在 GHCR（`ghcr.io/kingfs/decis-{mock,laya-multilingual,kev-0.8b}:latest`）。
 - ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`mock` 另外拿裸 `latest`。
   理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
-- ⬜ **验证 Docker Hub 这条路径**（下面的记录写的就是它）；推一个 `v*` tag 验证 release 路径与 `-offline` 变体；
-  记录镜像体积与容器内冷启动；核实 Docker Hub 仓库可见性；`docker-compose.yml`；README 定稿；首个 release。
+- ✅ **2026-09-23 推 Docker Hub 成功**（run 35804685017），仓库公开。
+- ✅ **tag 方案定型**：引擎名即 tag（`kingfs/decis:laya-multilingual`），只有 release tag 追加版本
+  （`laya-multilingual-v1.2.0`）；`mock` 在 master 推送时另拿裸 `latest`。方案在 `plan` 步骤里算，有测试真跑。
+- ✅ **体积已量**（registry API 逐层求和，run 35805760838）：`mock` 72 MB、`laya-multilingual` 3203 MB、
+  `kev-0.8b` 3206 MB。`mock` 原来是 3203 MB —— 被一行三元表达式装上了 torch（`design-review.md §2-D14`）。
+- ⬜ 推一个 `v*` tag 验证 release 路径与 `-offline` 变体；容器内冷启动；`docker-compose.yml`；README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
