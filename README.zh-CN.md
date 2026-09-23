@@ -287,7 +287,7 @@ cp .env.example .env        # 至少改 DECIS_API_KEY；COMPOSE_PROFILES 决定�
 docker compose -f docker-compose.yml up -d --wait   # 默认只起 laya-multilingual
 
 # 这里的 `--wait` 会一直等到引擎真的能作答：compose 层的探针打的是 `/readyz`，
-# 所以它把 CPU 上约 80-100 秒的冷启动等完了。镜像自带的 HEALTHCHECK 仍然留在
+# 所以它把 CPU 上约 2 分钟的冷启动等完了。镜像自带的 HEALTHCHECK 仍然留在
 # `/healthz` 上给编排器用——liveness 探针不能在引擎还在加载时就判失败。
 #
 # 不想用 `--wait` 就自己等：

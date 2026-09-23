@@ -267,7 +267,7 @@ def test_compose_probes_readiness_while_the_image_probes_liveness(compose: dict)
         probe = healthcheck_test(service)
         assert "/readyz" in probe, f"{name}: `--wait` would return before the engine is loaded: {probe}"
         assert "/healthz" not in probe, f"{name} probes liveness and calls it readiness: {probe}"
-        # A cold CPU start was measured at 77.7-101.0 s; the start period has to outlast it,
+        # A cold CPU start was measured at 78-122 s across runs; the start period has to outlast it,
         # and failures inside it do not count towards `retries`.
         start_period = service["healthcheck"]["start_period"]
         assert int(str(start_period).rstrip("s")) >= 180, start_period

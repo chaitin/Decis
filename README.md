@@ -311,7 +311,7 @@ cp .env.example .env        # set DECIS_API_KEY; COMPOSE_PROFILES picks the engi
 docker compose -f docker-compose.yml up -d --wait   # laya-multilingual only, by default
 
 # `--wait` returns when the engine can actually answer: the compose-level probe asks
-# /readyz, so this waits out the ~80-100 s CPU cold start. The image's own HEALTHCHECK
+# /readyz, so this waits out the ~2 min CPU cold start. The image's own HEALTHCHECK
 # stays on /healthz for orchestrators, where a liveness probe must not fail while the
 # engine is still loading.
 #

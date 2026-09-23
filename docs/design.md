@@ -963,9 +963,10 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，
   那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
   容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
-- 🟡 推一个 `v0.0.1` tag 验证 release 路径与 `-runtime` 变体；`laya-multilingual` 的容器内冷启动已测
-  （77.7 / 86.1 / 101.0 s，CPU，容器内），`kev-0.8b` 的还没测；engine-free 基础镜像的体积与冷启动未测；
-  README 定稿；首个 release。
+- ✅ 推了 `v0.0.1`：release 路径跑通（8 条构建腿 + 4 个 merge，产出 `<engine>-v0.0.1` 与
+  `<engine>-runtime-v0.0.1`），烤权重那个从 Docker Hub 拉下来在容器里跑过（冷启动到 `/readyz`
+  122.3 s，常驻 2.87 GiB），体积逐层量过。**`-runtime` 变体没拉下来跑过**；
+  `kev-0.8b` 的容器内冷启动仍然没测（只在容器里起过 laya）；engine-free 基础镜像的体积与冷启动未测。
 
 **§12.2 待决策：权重层的代价**。默认镜像烤权重（§2-D20）之后，权重的 `RUN` 层会被**任何**源码改动
 作废（下载器要读引擎的权重声明，而那是代码），于是每次 master 推送都要重新下载 647 MiB（laya）
@@ -1033,10 +1034,11 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 2. **`/metrics`**——本来的理由是"让攒批器真的触发了在生产里可观测"。攒批器若不做，这条的理由要重新论证；
    仍然值得有的是**单进程饱和度的可观测性**（队列深度、排队时间、`decis.batch_size` 分布），因为
    M5 说明这台机器的瓶颈是算力本身，不是攒批。
-3. ✅ **`docker-compose.yml`**——已实现，并且**已在空卷上用发布镜像（commit `e8b6bd2` 构建）跑通**：
-   一次性预取自己下载 646.8 MiB 权重并 exit 0，`docker compose up -d --wait` 74 s 返回，
-   容器内 `/v1/systemone` 真的作答；容器内引擎冷启动 **77.7 / 86.1 / 101.0 s**，常驻 **2.2–2.7 GiB**
-   （见 `AGENTS.md` 的镜像段落与 `design-review.md` §2-D17/§2-D18/§2-D19）。这些数字来自本机
+3. ✅ **`docker-compose.yml`**——已实现，并且**用这里构建的镜像与从 Docker Hub 拉下来的发布镜像
+   各跑通一次**（2026-09-23，aarch64）：`docker compose up -d --wait` 起**一个容器**，没有卷、
+   没有预取服务，`--wait` 在 129 s 返回且返回时 `/readyz` 已是 200，容器内 `/v1/systemone` 真的作答；
+   容器内引擎冷启动 **120.7 / 122.3 s**（两次，后者是发布镜像），常驻 **2.80 / 2.87 GiB**
+   （见 `AGENTS.md` 的镜像段落与 `design-review.md` §2-D20/§2-D21/§2-D22/§2-D23）。这些数字来自本机
    aarch64 CPU 实测，**不来自 `benchmarks/results/` 的 checked-in JSON**，所以按 §8 它们不进 README
    的性能表，只在状态记录里出现。
 4. **镜像的实测记录**——在真实 runner 上跑一次工作流，把镜像体积与容器内冷启动记进 `benchmarks/`。

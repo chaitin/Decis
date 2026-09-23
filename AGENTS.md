@@ -302,7 +302,7 @@ docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
 ```bash
 cp .env.example .env                      # COMPOSE_PROFILES=laya-multilingual
 docker compose -f docker-compose.yml up -d --wait   # 只起默认引擎，没有下载也没有预取容器
-#   这次 `--wait` 真的等到能作答（compose 层探针打 /readyz，本机 CPU 冷启动 77.7-101.0 s）；
+#   这次 `--wait` 真的等到能作答（compose 层探针打 /readyz，本机 CPU 冷启动约 2 分钟）；
 #   不想用 --wait：until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 docker compose --profile kev-0.8b up -d   # 换一个引擎（宿主端口 8001）；这个 flag 会取代 .env 里的选择
 docker compose config -q                  # 只校验 schema / 插值 / profile，不拉镜像（CI 的 docker job 跑这个）
