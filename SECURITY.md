@@ -20,8 +20,8 @@ first and publish afterwards, and we will credit you unless you ask us not to.
 ## Supported versions
 
 Decis is pre-1.0. Security fixes land on `master` and in the next release; only the most
-recent release image is supported. Pin a versioned tag (the published ones today are
-`...-v0.0.1`) rather than a moving tag in production.
+recent release image is supported. Pin a versioned tag (`...-v0.1.0` is the current one)
+rather than a moving tag in production.
 
 ## Security model
 

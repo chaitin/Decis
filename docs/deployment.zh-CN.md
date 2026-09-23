@@ -18,8 +18,8 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 | `kingfs/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已烤进镜像 | 6.0 GB / 6.2 GB |
 
 `kingfs/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
-以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。如果 `docker compose`
-拉不到它，`make build-playground` 会在几秒内构建出 Compose 文件所期望的那个 tag。
+以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。`make build-playground`
+会在几秒内从当前 checkout 构建出同一个 tag，源码目录里的 Compose 覆盖层走的就是这条路。
 
 体积是压缩后的下载体积，由上面这些 tag 的 registry manifest 逐层求和得出。它们不属于
 `benchmarks/results/`，`report.py` 也不会重新生成它们，所以把体积当成拉取大小的参考，而不是
@@ -33,9 +33,10 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 就是默认引擎。每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。注册的 `laya`（英文）
 与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
-release 还会发布带版本的 tag，这些 tag 不会移动：`laya-multilingual-v0.0.1` 与
-`kev-0.8b-v0.0.1` 就是已发布的例子。带版本的 tag 在对应的 `v*` git tag 被推送时创建——
-`v0.1.0` 是这棵树里的版本，所以它的 tag 会在那次 release 打 tag 之后出现。
+release 还会发布带版本的 tag，这些 tag 不会移动：`laya-multilingual-v0.1.0` 与
+`kev-0.8b-v0.1.0` 是 `v0.1.0` 发布的，`laya-multilingual-v0.0.1` 与 `kev-0.8b-v0.0.1` 是它
+前一次发布的。带版本的 tag 在对应的 `v*` git tag 被推送时创建，而引擎名那些 tag 会随着每次
+推送到 `master` 移动。
 
 ### 自带权重
 
@@ -57,15 +58,15 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs
 然后运行：
 
 ```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v0.0.1
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.0.1 \
+docker pull kingfs/decis:laya-multilingual-runtime-v0.1.0
+docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.1.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v0.0.1
+  kingfs/decis:laya-multilingual-runtime-v0.1.0
 ```
 
-卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。上面的 `v0.0.1` 是当前已发布的版本；
-`-v0.1.0` 变体会在那次 release 打 tag 之后出现。
+卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。`v0.1.0` 是当前版本，
+而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master` 移动。
 
 ## Docker Compose
 

@@ -20,8 +20,8 @@ All engines share one Docker Hub repository; the engine is the tag:
 
 `kingfs/decis:playground` is the third image in the same repository, built and pushed by the
 same workflow: three browser games and the proxy that fronts them, with no model weights and
-no `RUN` in its Dockerfile. If `docker compose` cannot pull it, `make build-playground`
-builds the tag the Compose file expects, in seconds.
+no `RUN` in its Dockerfile. `make build-playground` builds the same tag from this checkout in
+seconds, which is what the source tree's Compose override does.
 
 Sizes are the compressed download size, summed from the registry manifests of the tags
 above. They are not part of `benchmarks/results/` and `report.py` does not regenerate them,
@@ -36,10 +36,11 @@ kingfs/decis` gives you the default engine. Every tag is a multi-arch manifest c
 `amd64` and `arm64`. The registered `laya` (English) and `laya-typed-decisions` checkpoints
 have no image; run those from a source checkout.
 
-Releases also publish versioned tags, which do not move: `laya-multilingual-v0.0.1` and
-`kev-0.8b-v0.0.1` are the published examples. A versioned tag is created when the matching
-`v*` git tag is pushed — `v0.1.0` is the version in this tree, so its tags appear once that
-release is tagged.
+Releases also publish versioned tags, which do not move: `laya-multilingual-v0.1.0` and
+`kev-0.8b-v0.1.0` are what `v0.1.0` published, `kev-0.8b-v0.0.1` and
+`laya-multilingual-v0.0.1` what the release before it did. A versioned tag is created when the
+matching `v*` git tag is pushed, and the engine-named tags keep moving with every push to
+`master`.
 
 ### Bringing your own weights
 
@@ -64,16 +65,16 @@ node's image small, releases also publish a weightless variant named
 fill the volume once and mount it from then on:
 
 ```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v0.0.1
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.0.1 \
+docker pull kingfs/decis:laya-multilingual-runtime-v0.1.0
+docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.1.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v0.0.1
+  kingfs/decis:laya-multilingual-runtime-v0.1.0
 ```
 
 The volume must be filled before the service starts: this image has nothing to fall back on.
-The `v0.0.1` above is the currently published version; a `-v0.1.0` variant appears when that
-release is tagged.
+`v0.1.0` is the current version, and pinning it is the point of this variant — the
+engine-named tags move with every push to `master`.
 
 ## Docker Compose
 
