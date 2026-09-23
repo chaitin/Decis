@@ -7,7 +7,7 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**445 个无权重测试通过**——
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**480 个无权重测试通过**——
 > 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
 > 现在都能回答真实请求**；另有 27 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
@@ -250,6 +250,7 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 |---|---|---|
 | `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 已经打进去的 647 MiB 权重——amd64 要拉 4.4 GB、arm64 4.5 GB；CPU 上约 2 分钟到 `/readyz`，常驻约 3 GiB |
 | `kev-0.8b` | kev 0.8B | 已经打进去的 1.7 GiB adapter + Qwen 基座——6.0 GB / 6.2 GB；想要 GPU |
+| `playground` | 三个网页小游戏，不是引擎 | 四个 HTML 页面加一个纯标准库的 Python 代理；它把游戏发来的 `/v1/systemone` 请求转给当前在跑的引擎 |
 
 只有 `laya-multilingual` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的是默认引擎。
 每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。
@@ -299,6 +300,53 @@ docker compose --profile kev-0.8b up -d     # 或者另一个引擎（宿主端�
 `-f docker-compose.yml` 不是装饰：在源码目录里 Compose 还会自动加载
 `docker-compose.override.yml`，它会用你**当前的工作区**把同样的服务构建成 `decis-local:*`。
 想让改动生效就别加 `-f`；部署时只拷 `docker-compose.yml` 这一个文件。
+
+### Playground：在浏览器里玩三个小游戏
+
+同一条 `docker compose up` 会在 <http://localhost:8080> 起一个 playground：snake、dino、
+tetris，每一步都由页面调用一次 `POST /v1/systemone` 来自己做决定。
+
+| 游戏 | 问的是什么 |
+|---|---|
+| `/snake` | 一个 `choice`，在 flood-fill 安全分析给出的四个方向里选 |
+| `/dino` | 一个 `choice`，在物理规划器标出的 jump/duck/run 里选 |
+| `/tetris` | 一个五选一的 `choice`（落点）、一个 `choice`（策略）、一个 `score`（堆叠健康度）、一个 `noul` |
+
+"给几个落点"是容量问题，不是口味问题。Laya 会把整个问题记在 `head_max_len` 上，超了就报
+422 而不是截断，所以页面按**最小**的那个兜底预算来定数量。用引擎自己的 `measure()` 实测：
+五个落点时这个问题是 178 token，整个请求占 512 的 `state + 问题` 预算里的 415（兜底预算是
+512/192）；六个落点约 207 token，会被 422 拒掉。引擎仍然拒绝时页面会退回自己的启发式——
+`sim` 标记就是这个意思。
+
+改了页面上的问题之后想重测，不需要自己准备 tokenizer：超预算时引擎会把数字写在错误里——
+`Question 'placement' is about N tokens, over this model's limit of M per question`，
+成功响应里同样的数字在 `usage.input_tokens` 和 `decis` 命名空间下。把页面自己的请求发过去读就行。
+
+它是代理，不是客户端：浏览器请求的是 playground 自己这个源上的 `/v1/systemone`，
+由 playground 附上 `DECIS_API_KEY` 再转发。所以页面里永远没有密钥——也因此**谁能访问
+playground 的端口，谁就能用这个模型**，这和直接暴露引擎端口是同一个决定，只是连 token 都
+不用填。默认和引擎一样发布在所有网卡上；`.env.example` 里写了只绑回环的写法
+（`DECIS_PLAYGROUND_HOST_PORT=127.0.0.1:8080`）。
+
+它找引擎不需要任何配置：按 `http://laya-multilingual:8000`、`http://kev-0.8b:8000`、
+`http://host.docker.internal:8000` 的顺序去打 `/readyz`，谁先答就用谁——所以同一份服务在
+`--profile kev-0.8b` 下、以及在宿主机上跑 `decis serve` 时都能用。引擎还在加载时，
+playground 自己的 `/readyz` 报 `searching`，页面会如实显示而不是直接报错。想跳过搜索就设
+`DECIS_PLAYGROUND_UPSTREAM`。
+
+转发时它还会把 `model` 改写成引擎在 `/readyz` 里报的 id，所以页面可以继续发 `jev-latest`，
+在两个 profile 下都能用，不需要 `DECIS_ACCEPT_FOREIGN_DEFAULTS`。
+
+构建它只需要一个 Dockerfile，没有任何 Python 依赖：
+
+```bash
+docker build -f playground/Dockerfile -t decis-playground .
+docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
+  -e DECIS_PLAYGROUND_CANDIDATES=http://host.docker.internal:8000 decis-playground
+```
+
+CPU 上游戏比参考实现（GPU）慢，每个游戏都按自己测到的延迟来调整节奏。dino 和 tetris 退回本地
+启发式时会显示 `sim` 标记——那意味着 API 拒绝了或连不上，不是模型在走棋。
 
 想自己构建：
 
@@ -356,12 +404,13 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 - **[kev](https://github.com/jaredpalmer/kev)**（Jared Palmer）——基于 Qwen3.5 的 Jev 风格决策模型，本身已经是一个只服务自己权重的 TypeSafe 兼容服务端。Decis 复用 kev 的推理内核（vendor 固定版本，Apache-2.0，署名见 `NOTICE`），并把服务层泛化到多个引擎。
 - **[Laya](https://huggingface.co/convaiinnovations/laya)**（Convai Innovations）——Apache-2.0，多语言，非自回归，一次前向。Decis 把官方的 `laya` 包当作一个引擎使用。
 - **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)**——Decis 沿用的多模型容器构建方式（一个 Dockerfile 加一个 build arg，GitHub Actions matrix 按 digest 推送，再用 `imagetools create` 合并）。
+- **[djev-run](https://github.com/taeold/djev-run)**（Daniel Lee）——`playground/web/` 里的 snake、dino、tetris 三个页面改编自它。Decis 的改动是：请求地址改成 playground 自己的源（密钥留在服务端），删掉借来的延迟对比数字，把 tetris 从 16 个冗长选项压到 6 个精简选项以适配默认引擎的单题 token 预算。署名见 `NOTICE`；游戏里的物理与规划代码来自那个仓库致谢的项目。
 
 ## 开发
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 445 个测试，约 11 秒，无权重、无网络
+uv run pytest -q                        # 480 个测试，约 22 秒，无权重、无网络
 uv run pytest -m weights                # 27 个加载真实权重（Laya + kev）的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token

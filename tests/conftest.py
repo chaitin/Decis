@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -30,6 +31,12 @@ from decis.engines import registry  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACT_DIR = REPO_ROOT / "docs" / "contract"
 OPENAPI_SNAPSHOT = CONTRACT_DIR / "typesafe-openapi-0.2.0.json"
+
+# `playground/` is a top-level program rather than part of the `decis` package -- its image
+# does not contain `decis` at all -- so it is not installed and pytest never puts the
+# repository root on the path for it. `tests/test_playground.py` imports it directly.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 TEST_KEY = "test-token-do-not-use-in-production"
 

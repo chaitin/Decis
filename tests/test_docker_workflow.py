@@ -342,6 +342,14 @@ def merge_script(workflow: dict) -> str:
     pytest.fail("the merge job has no 'Create the multi-arch manifest' step")
 
 
+@pytest.fixture(scope="module")
+def playground_meta_script(workflow: dict) -> str:
+    for step in workflow["jobs"]["playground"]["steps"]:
+        if step.get("id") == "meta":
+            return step["run"]
+    pytest.fail("the playground job has no step with id 'meta'")
+
+
 def parse_outputs(path: Path) -> dict[str, str]:
     """Parse a `$GITHUB_OUTPUT` file, heredocs included.
 
@@ -450,6 +458,79 @@ def test_the_weightless_variant_is_a_distinct_tag(tmp_path: Path, plan_script: s
     tags = {(b["engine"], b["variant"]): b["image_tag"] for b in planned["builds"]}
     assert tags[("laya-multilingual", "baked")] == "laya-multilingual-v1.2.0", tags
     assert tags[("laya-multilingual", "runtime")] == "laya-multilingual-runtime-v1.2.0", tags
+
+
+# --- the one non-engine image ---------------------------------------------------
+
+
+def test_the_playground_is_tagged_but_never_as_an_engine(tmp_path: Path, plan_script: str) -> None:
+    """`playground` on the default branch, `playground-v1.2.0` on a release.
+
+    It shares the engines' repository -- a second Docker Hub repository would be a manual
+    step nothing else needs -- so its tag has to be as predictable as theirs. It must also
+    never *collide* with one: `kingfs/decis:playground` is a web page, not a checkpoint, and
+    a tag that matched an engine's would publish one over the other.
+    """
+    for event, ref, name, expected in (
+        ("push", "refs/heads/master", "master", "playground"),
+        ("push", "refs/tags/v1.2.0", "v1.2.0", "playground-v1.2.0"),
+        ("push", "refs/heads/topic", "topic", "playground-sha-a1b2c3d"),
+    ):
+        directory = tmp_path / name
+        directory.mkdir()
+        plan = run_plan(plan_script, directory, EVENT=event, REF=ref, REF_NAME=name)
+        assert plan["playground_tag"] == expected, plan["playground_tag"]
+        engine_tags = {build["image_tag"] for build in plan["builds"]}
+        assert plan["playground_tag"] not in engine_tags, "the playground tag collides with an engine's"
+
+
+def test_a_pull_request_builds_the_playground_for_one_platform(tmp_path: Path, plan_script: str) -> None:
+    """A build that does not push cannot export a multi-platform manifest list.
+
+    `test_a_pull_request_builds_an_engine_free_image` covers the engines; this is the same
+    trap for the playground's single job, which pushes both architectures in one step
+    (safe without emulation because that Dockerfile has no `RUN`).
+    """
+    pull_request = tmp_path / "pr"
+    pull_request.mkdir()
+    plan = run_plan(plan_script, pull_request, EVENT="pull_request", REF="refs/pull/7/merge", REF_NAME="7/merge")
+    assert plan["push"] == "false"
+    assert plan["playground_platforms"] == "linux/amd64", plan["playground_platforms"]
+
+    master = tmp_path / "master"
+    master.mkdir()
+    released = run_plan(plan_script, master, EVENT="push", REF="refs/heads/master", REF_NAME="master")
+    assert set(released["playground_platforms"].split(",")) == {"linux/amd64", "linux/arm64"}, released[
+        "playground_platforms"
+    ]
+
+
+def test_the_playground_image_shares_the_engines_repository(playground_meta_script: str, tmp_path: Path) -> None:
+    """`kingfs/decis:playground`, not a second repository to create by hand."""
+    docker_bin, _ = fake_docker(tmp_path)
+    completed = run_step(
+        playground_meta_script,
+        tmp_path,
+        docker_bin,
+        PLAYGROUND_TAG="playground",
+        GITHUB_OUTPUT=str(tmp_path / "out"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    outputs = parse_outputs(tmp_path / "out")
+    assert outputs["image"] == "docker.io/kingfs/decis", outputs
+    assert outputs["tag"] == "playground", outputs
+
+
+def test_the_playground_job_builds_the_playground_dockerfile(workflow: dict) -> None:
+    """The path in the workflow is the Dockerfile `docker-compose.override.yml` builds.
+
+    The compose override and the publish job are two places that name this file; a rename
+    in one of them has to fail here rather than at release time.
+    """
+    steps = workflow["jobs"]["playground"]["steps"]
+    build = next(step for step in steps if step.get("name") == "Build and push")
+    assert build["with"]["file"] == "playground/Dockerfile", build["with"]
+    assert build["with"]["platforms"] == "${{ needs.plan.outputs.playground_platforms }}", build["with"]
 
 
 def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, tmp_path: Path) -> None:
@@ -759,6 +840,9 @@ def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path,
         directory.mkdir()
         planned = run_plan(plan_script, directory, EVENT=event, REF=ref, REF_NAME=name)
         produced |= {build["image_tag"] for build in planned["builds"]}
+        # The playground is published by its own job, but under a tag computed here, so it
+        # is part of "what the workflow creates" just as the engine tags are.
+        produced.add(planned["playground_tag"])
         if planned["tag"] == "latest":
             produced.add("latest")
 

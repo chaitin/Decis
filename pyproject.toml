@@ -113,4 +113,6 @@ ignore = [
 # `fixture_engine` is our own code too: the weight-free test double lives in `tests/`
 # (it is deliberately absent from the shipped registry), and it is imported as a
 # top-level module because `tests/` is not a package.
-known-first-party = ["decis", "fixture_engine"]
+# `playground` is the web service: it is not part of the `decis` wheel either (its image
+# installs nothing and imports nothing), but it is ours, so its imports sort as first-party.
+known-first-party = ["decis", "fixture_engine", "playground"]

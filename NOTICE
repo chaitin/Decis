@@ -47,6 +47,34 @@ this repository. Model weights are downloaded separately by the user or baked in
 an image at build time; they are not redistributed by this repository.
 
 --------------------------------------------------------------------------------
+djev-run  (the playground's three games: adapted HTML)
+--------------------------------------------------------------------------------
+Source:  https://github.com/taeold/djev-run
+Author:  Daniel Lee (taeold)
+
+playground/web/snake.html, playground/web/dino.html and playground/web/tetris.html
+are adapted from that project's pages of the same names. What Decis changed is
+listed in each file's header comment and in README.md ("Relationship to other
+projects"); in substance: the endpoint is the playground's own origin (so the API
+key stays server-side and the browser never holds it), a head-to-head latency
+comparison against another deployment was removed rather than re-published with
+stale numbers, and the Tetris placement question was cut from sixteen verbose
+options to six terse ones so that it fits the default engine's per-question token
+budget.
+
+The upstream repository declares no license (it has no LICENSE file), so this
+adaptation is recorded as a fact a distributor can act on rather than as a claim
+of a grant. The pages themselves derive from projects that repository credits, and
+those are recorded here for the same reason:
+
+  Snake  <- https://github.com/mizorewww/laya-coreml
+  Dino   <- https://github.com/virajbhartiya/laya-vs-jev   (laya_mlx/trex physics)
+  Tetris <- https://github.com/trungdq88/jev-tetris
+
+playground/server.py, playground/index.html and playground/Dockerfile are Decis's
+own and carry the Apache-2.0 license at the top of this file.
+
+--------------------------------------------------------------------------------
 Model weights (not redistributed)
 --------------------------------------------------------------------------------
 Decis does not redistribute model weights. Images built from this repository

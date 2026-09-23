@@ -13,6 +13,7 @@ copy of the tag scheme is the defect these tests exist to catch.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ COMPOSE = ROOT / "docker-compose.yml"
 OVERRIDE = ROOT / "docker-compose.override.yml"
 ENV_EXAMPLE = ROOT / ".env.example"
 DOCKERFILE = ROOT / "docker" / "Dockerfile"
+PLAYGROUND_DOCKERFILE = ROOT / "playground" / "Dockerfile"
 READMES = (ROOT / "README.md", ROOT / "README.zh-CN.md")
 
 yaml = pytest.importorskip("yaml", reason="pyyaml is needed to read the compose file; it is not a runtime dependency")
@@ -55,22 +57,39 @@ def planned(tmp_path_factory: pytest.TempPathFactory) -> dict:
     tags: set[str] = set()
     extras: dict[str, str] = {}
     bakes: dict[tuple[str, str], str] = {}
+    #: The playground's moving tag, i.e. what a master push publishes. Read from the plan
+    #: script rather than written here, for the same reason the engine tags are.
+    playground_tag = ""
     for event, ref, name in (
         ("push", "refs/heads/master", "master"),
         ("push", "refs/tags/v1.2.0", "v1.2.0"),
     ):
         plan = run_plan(script, tmp_path_factory.mktemp(name), EVENT=event, REF=ref, REF_NAME=name)
         tags |= {build["image_tag"] for build in plan["builds"]}
+        tags.add(plan["playground_tag"])
         if plan["tag"] == "latest":
             tags.add("latest")
+            playground_tag = plan["playground_tag"]
         extras.update({build["engine"]: build["extra"] for build in plan["builds"]})
         bakes.update({(build["engine"], build["variant"]): build["bake"] for build in plan["builds"]})
-    return {"tags": tags, "extras": extras, "bakes": bakes}
+    return {"tags": tags, "extras": extras, "bakes": bakes, "playground_tag": playground_tag}
 
 
 def engines(compose: dict) -> dict[str, dict]:
-    """Engine id -> its service, derived from the file rather than listed here."""
-    return dict(compose["services"])
+    """Engine id -> its service, derived rather than listed here.
+
+    A service is an engine service when the tag of its `kingfs/decis` image is a registered
+    engine id. The playground shares that repository but its tag is not an engine, so it
+    falls out of this mapping -- which is what keeps the engine invariants below (a profile
+    is an engine, a command names `decis`, a port mirrors `DECIS_PORT`) about engines
+    instead of being loosened for the one service that is not one. A *new* engine is picked
+    up automatically; a new non-engine service would too, which is why
+    `test_every_service_is_either_an_engine_or_the_playground` exists.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    from decis.engines.registry import SPECS  # after the sys.path insert
+
+    return {name: service for name, service in compose["services"].items() if tag_of(service["image"]) in SPECS}
 
 
 def tag_of(image: str) -> str:
@@ -102,10 +121,9 @@ def dockerfile_env(variable: str) -> str:
     raise AssertionError(f"the Dockerfile sets no ENV {variable}")
 
 
-def healthcheck_block() -> str:
-    """The Dockerfile's HEALTHCHECK instruction."""
-    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-    return dockerfile.split("HEALTHCHECK", 1)[1].split("\n\n", 1)[0]
+def healthcheck_block(dockerfile: Path = DOCKERFILE) -> str:
+    """A Dockerfile's HEALTHCHECK instruction."""
+    return dockerfile.read_text(encoding="utf-8").split("HEALTHCHECK", 1)[1].split("\n\n", 1)[0]
 
 
 def healthcheck_test(service: dict) -> str:
@@ -121,6 +139,23 @@ def test_every_compose_image_is_a_tag_the_workflow_publishes(compose: dict, plan
             f"{name} runs {service['image']}, which no event in the workflow creates "
             f"(it creates {sorted(planned['tags'])})"
         )
+
+
+def test_every_service_is_either_an_engine_or_the_playground(compose: dict, planned: dict) -> None:
+    """Every service is classified, so a new one cannot hide from the invariants below.
+
+    `engines()` derives its answer from the registry and the playground is identified by
+    the tag the plan script publishes, so this is a partition of the file: add a service
+    that is neither and one of these two tests goes red before it can ship.
+    """
+    classified = set(engines(compose))
+    classified |= {
+        name for name, service in compose["services"].items() if tag_of(service["image"]) == planned["playground_tag"]
+    }
+    assert classified == set(compose["services"]), (
+        f"unclassified services: {sorted(set(compose['services']) - classified)}"
+    )
+    assert len(engines(compose)) == len(planned["extras"]), "a workflow engine has no service, or the reverse"
 
 
 def test_the_engine_image_is_the_one_that_carries_the_weights(compose: dict, planned: dict) -> None:
@@ -165,7 +200,10 @@ def test_every_command_names_the_console_script(compose: dict) -> None:
     if any(line.startswith("ENTRYPOINT") for line in dockerfile.splitlines()):
         pytest.skip("the image has an ENTRYPOINT, so `command:` is appended to it")
 
-    for name, service in compose["services"].items():
+    # Engine services only: `command:` overrides the engine image's CMD, and this is the
+    # file/CMD pair it has to agree with. The playground's command is its own image's CMD,
+    # which `test_the_playground_runs_its_own_entry_point` reads from its own Dockerfile.
+    for name, service in engines(compose).items():
         command = service["command"]
         assert command[0] == "decis", f"{name} would exec {command[0]!r}, which is not on PATH: {command}"
 
@@ -180,13 +218,15 @@ def test_every_service_is_behind_a_profile(compose: dict) -> None:
         assert service.get("profiles"), f"{name} would start unconditionally"
 
 
-def test_starting_one_engine_is_one_container(compose: dict) -> None:
+def test_starting_one_engine_is_one_engine_container(compose: dict) -> None:
     """No prefetch container and no dependency chain: the weights are already in the image.
 
     A second service per engine was the first design (a one-shot `decis download` into a
     named volume). It is gone because the published image carries the weights, and with them
     gone there is nothing left to order: a `depends_on` or a `weights-*` service reappearing
-    means something is downloading at start-up again.
+    means something is downloading at start-up again. The playground is a second container,
+    but not a second *engine* container: it mounts nothing, waits for nothing, and finds the
+    engine by asking, so it cannot reintroduce an ordering or a volume.
     """
     for name, service in compose["services"].items():
         assert not name.startswith("weights-"), f"{name} is a prefetch service again"
@@ -209,6 +249,7 @@ def test_nothing_is_mounted_over_the_weights_baked_into_the_image(compose: dict)
     for name, service in compose["services"].items():
         mounted = mount_target(service, baked)
         assert mounted is None, f"{name} mounts {mounted} at {baked}, hiding the weights baked into the image"
+    for name, service in engines(compose).items():
         assert service["environment"]["DECIS_MODEL_DIR"] == baked, (
             f"{name} points the loader at {service['environment']['DECIS_MODEL_DIR']}, not at the baked {baked}"
         )
@@ -240,10 +281,15 @@ def test_the_published_port_cannot_desync_from_the_port_decris_listens_on(compos
 
 
 def test_no_service_authenticates_with_a_default_token(compose: dict) -> None:
-    """§3-19: an unauthenticated server on 0.0.0.0 must not be reachable by default."""
+    """§3-19: an unauthenticated server on 0.0.0.0 must not be reachable by default.
+
+    The playground counts twice over: it attaches the engine's token to every request it
+    forwards, so its own port is model access without even a token prompt. It must refuse
+    to start without `DECIS_API_KEY` for the same reason the engine must.
+    """
     text = COMPOSE.read_text(encoding="utf-8")
     assert "${DECIS_API_KEY:?" in text, "the missing-token failure must happen before an image is pulled"
-    for name, service in engines(compose).items():
+    for name, service in compose["services"].items():
         assert service["environment"]["DECIS_API_KEY"].startswith("${DECIS_API_KEY:?"), name
 
 
@@ -258,6 +304,12 @@ def test_compose_probes_readiness_while_the_image_probes_liveness(compose: dict)
     Compose is not that orchestrator -- nothing restarts a container because a probe failed
     -- so the compose-level probe can be the readiness one, which is what makes
     `docker compose up -d --wait` mean "the model is loaded".
+
+    The playground is the opposite case: `/readyz` on it means "an engine was found", which
+    is legitimately false for the minutes an engine spends loading, so *its* probe is its
+    own `/healthz` in both places. Probing the playground's `/readyz` would report a
+    healthy process unhealthy, and probing its `/healthz` for readiness would defeat
+    `--wait`.
     """
     healthcheck = healthcheck_block()
     assert "/healthz" in healthcheck, healthcheck
@@ -272,6 +324,10 @@ def test_compose_probes_readiness_while_the_image_probes_liveness(compose: dict)
         start_period = service["healthcheck"]["start_period"]
         assert int(str(start_period).rstrip("s")) >= 180, start_period
 
+    probe = healthcheck_test(compose["services"]["playground"])
+    assert "/healthz" in probe, probe
+    assert "/readyz" not in probe, f"the playground's liveness would fail while the engine loads: {probe}"
+
 
 def test_the_probe_cannot_be_hijacked_by_a_proxy_in_the_environment(compose: dict) -> None:
     """`design-review.md` §2-D19: `urllib` reads `HTTP_PROXY`, so a probe must unset it.
@@ -279,12 +335,17 @@ def test_the_probe_cannot_be_hijacked_by_a_proxy_in_the_environment(compose: dic
     An image that fetched its weights through a proxy withholds nothing: a probe that
     inherits it asks the proxy for `http://127.0.0.1:8000/healthz`, gets a 502, and a server
     that logged `engine ready after 86.1s` is reported unhealthy -- in Kubernetes that means
-    restarting a healthy pod forever. Both probes are built from that environment, so both
-    are checked here.
+    restarting a healthy pod forever. Every probe is built from that environment -- the two
+    images' and the compose-level ones -- so all of them are checked here.
     """
     variables = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy")
-    probes = {"the Dockerfile HEALTHCHECK": healthcheck_block()}
-    probes.update({f"the {name} healthcheck": healthcheck_test(service) for name, service in engines(compose).items()})
+    probes = {
+        "the engine Dockerfile HEALTHCHECK": healthcheck_block(DOCKERFILE),
+        "the playground Dockerfile HEALTHCHECK": healthcheck_block(PLAYGROUND_DOCKERFILE),
+    }
+    probes.update(
+        {f"the {name} healthcheck": healthcheck_test(service) for name, service in compose["services"].items()}
+    )
 
     for where, probe in probes.items():
         for variable in variables:
@@ -310,10 +371,79 @@ def test_the_env_example_selects_one_engine_that_exists(compose: dict) -> None:
 
 
 def test_the_documented_profile_commands_name_real_profiles(compose: dict) -> None:
-    known = {profile for _, service in engines(compose).items() for profile in service["profiles"]}
+    known = {profile for service in compose["services"].values() for profile in service["profiles"]}
     for readme in READMES:
         for named in re.findall(r"--profile ([A-Za-z0-9._-]+)", readme.read_text(encoding="utf-8")):
             assert named in known, f"{readme.name} suggests --profile {named}, which is not one of {sorted(known)}"
+
+
+# --- the playground ------------------------------------------------------------
+
+
+def test_the_playground_is_in_every_engine_profile(compose: dict) -> None:
+    """It must start with whichever engine the profile selects, not only the default one.
+
+    Derived from the engine services rather than written as `[laya-multilingual, kev-0.8b]`:
+    adding an engine whose profile omits the playground would otherwise ship a compose file
+    where `--profile <new-engine>` silently has no games.
+    """
+    playground = compose["services"]["playground"]
+    assert set(playground["profiles"]) == set(engines(compose)), playground["profiles"]
+
+
+def test_the_playground_does_not_inherit_the_engine_env_file(compose: dict) -> None:
+    """`env_file: [.env]` carries `DECIS_PORT`, `DECIS_MODEL_DIR` and the engine's proxy
+    settings; the playground runs none of that, and inheriting it would make the two
+    containers' configurations look interchangeable when they are not. It gets exactly the
+    variables its own interface names, plus the token it must attach.
+    """
+    playground = compose["services"]["playground"]
+    assert "env_file" not in playground, playground["env_file"]
+    assert set(playground["environment"]) == {
+        "DECIS_PLAYGROUND_HOST",
+        "DECIS_PLAYGROUND_PORT",
+        "DECIS_PLAYGROUND_UPSTREAM",
+        "DECIS_PLAYGROUND_CANDIDATES",
+        "DECIS_API_KEY",
+    }, playground["environment"]
+
+
+def test_the_playground_runs_its_own_entry_point(compose: dict) -> None:
+    """The image's CMD is the program; the compose file must not replace it.
+
+    Same trap as `design-review.md` §2-D18 from the other side: an engine service has to
+    name `decis` because `command:` replaces the CMD, and the playground has to name
+    *nothing* because its CMD already starts the server. Both are read from the Dockerfile
+    that actually decides it.
+    """
+    playground = compose["services"]["playground"]
+    assert "command" not in playground, f"the playground replaces its image CMD: {playground['command']}"
+
+    dockerfile = PLAYGROUND_DOCKERFILE.read_text(encoding="utf-8")
+    assert not any(line.startswith("ENTRYPOINT") for line in dockerfile.splitlines()), (
+        "update this test: the entry point moved"
+    )
+    cmd = next(line for line in dockerfile.splitlines() if line.startswith("CMD "))
+    # The last argument is the script the image runs; it has to exist in the build context,
+    # and it is the same file `playground/server.py` that the server tests exercise.
+    script = cmd.rstrip("]").rsplit(",", 1)[1].strip().strip('"')
+    in_checkout = script.replace("/app/", "playground/", 1).lstrip("/")
+    assert (ROOT / in_checkout).is_file(), f"{cmd} runs {script}, which is not {in_checkout} in this checkout"
+    assert script.endswith("server.py"), cmd
+
+
+def test_the_playground_publishes_the_tag_the_workflow_builds(compose: dict, planned: dict) -> None:
+    """A documented port and a documented image, both from the file that produces them."""
+    playground = compose["services"]["playground"]
+    assert tag_of(playground["image"]) == planned["playground_tag"], playground["image"]
+    assert playground["ports"] == ["${DECIS_PLAYGROUND_HOST_PORT:-8080}:8080"], playground["ports"]
+    assert playground["environment"]["DECIS_PLAYGROUND_PORT"] == "8080", playground["environment"]
+
+
+def test_the_playground_refuses_to_start_without_a_token(compose: dict) -> None:
+    """It is a proxy that attaches the engine's key, so its port *is* model access."""
+    playground = compose["services"]["playground"]
+    assert playground["environment"]["DECIS_API_KEY"].startswith("${DECIS_API_KEY:?"), playground["environment"]
 
 
 # --- the local-build override --------------------------------------------------
@@ -324,9 +454,13 @@ def test_only_the_override_builds_and_only_for_this_checkout(compose: dict, over
 
     The base file is what a deployment copies, so it must not contain a `build:` -- a
     deployment that builds is a deployment that needs the source. The override has to cover
-    every engine: leaving one out would silently mix a locally built image with a pulled one,
+    every service: leaving one out would silently mix a locally built image with a pulled one,
     which stays invisible until the two disagree. Its tags are `decis-local:*` so a build
     cannot repoint `kingfs/decis:<engine>` at whatever is on this machine.
+
+    Each service builds the Dockerfile that actually produces it: the engines share
+    `docker/Dockerfile` with different build args, and the playground has its own because it
+    is not an engine.
     """
     for name, service in compose["services"].items():
         assert "build" not in service, f"{name} builds in the deployment file"
@@ -338,8 +472,12 @@ def test_only_the_override_builds_and_only_for_this_checkout(compose: dict, over
         assert tag == name, service["image"]
         build = service["build"]
         assert build["context"] == ".", build
-        assert build["dockerfile"] == "docker/Dockerfile", build
-        assert build["args"]["DECIS_ENGINE"] == name, build
-        assert build["args"]["DECIS_EXTRAS"] == planned["extras"][name], build
-        # Same weights as the published image, so "it works locally" means the same thing.
-        assert build["args"]["DECIS_PREDOWNLOAD"] == name, build
+        if name in engines(compose):
+            assert build["dockerfile"] == "docker/Dockerfile", build
+            assert build["args"]["DECIS_ENGINE"] == name, build
+            assert build["args"]["DECIS_EXTRAS"] == planned["extras"][name], build
+            # Same weights as the published image, so "it works locally" means the same thing.
+            assert build["args"]["DECIS_PREDOWNLOAD"] == name, build
+        else:
+            assert build["dockerfile"] == "playground/Dockerfile", build
+            assert "args" not in build, f"the playground Dockerfile declares no ARG: {build['args']}"

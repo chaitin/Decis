@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**445 通过 / 33 跳过**，约 11 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**469 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**480 通过 / 33 跳过**，约 22 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**504 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -31,6 +31,11 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `kingfs/decis:kev-0.8b`），master 推送时 `laya-multilingual` 另外拿一个裸 `latest`（它是默认引擎），
 > 让 `docker pull kingfs/decis` 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
 > "当前版本"不加 `-latest`，加了就等于同一个东西有两个名字，而其中一个是文档里没有的。
+> **同一仓库里还有一个非引擎镜像 `playground`**：`kingfs/decis:playground`（release 为
+> `playground-v1.2.0`），是三个网页小游戏 + 一个只转发 `/v1/systemone` 的纯标准库代理
+> （`playground/`）。它不由引擎矩阵构建，而是单独一个 job；`playground/Dockerfile` 里
+> **没有 `RUN`**，所以一个 job 直接推 amd64+arm64 的 manifest，不需要 QEMU 也不需要合并腿。
+> 它之所以和引擎共用一个仓库，是为了不新建一个要手工配置的 Docker Hub repository。
 > **引擎名那个 tag 一定带权重**（`DECIS_PREDOWNLOAD=<engine>`）：一个引擎的镜像存在的意义就是
 > "拿到就能用"，所以 `docker pull` + `docker run` 不许依赖网络、卷或第二容器。不带权重的变体是例外，
 > 它带后缀 `-runtime`，且只在 release tag（或手动 dispatch 勾上）时发布：
@@ -68,6 +73,14 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 裸 `docker compose up` 用本仓库源码构建 `decis-local:*`**，而部署只拷基文件、拉发布镜像。
 > `tests/test_compose.py` 不需要 docker daemon：image tag、profile、端口、鉴权、探针、构建覆盖层
 > 全部**从工作流 `plan` 脚本、Dockerfile 和 compose 文件本身读出来**比对，不抄常量。
+> **playground 是同一个 compose 里的第二个服务**，`profiles` 同时挂着两个引擎 id，所以它能起来
+> 不是因为"默认引擎也在跑"：它**不 `depends_on` 任何引擎**——没启用的 profile 其服务名在
+> Compose 网络里根本不解析，`depends_on` 会直接起不来。它靠**自己**按顺序打候选的 `/readyz`
+> 找到引擎（容器名两个 + `host.docker.internal:8000`），并把转发请求里的 `model` 改写成引擎
+> 报出的 id；token 只留在服务端（页面永远拿不到），也因此**它的端口等于模型的端口**，默认
+> 和引擎一样发布在所有网卡上（`.env.example` 给了只绑回环的写法）。`DECIS_PLAYGROUND_UPSTREAM`
+> 可以跳过搜索。它有自己的 `DECIS_PLAYGROUND_*` 变量，**不读引擎的 `env_file`**（那个文件里有
+> `DECIS_DEFAULT_ENGINE` 之类只对引擎有意义的键）。
 > **烤权重的镜像与 override 已实测**（2026-09-23，aarch64 本机，本次改动之后从源码构建的
 > `decis-local:laya-multilingual`，7.25 GB 解压后）：`docker compose up -d --wait` 起**一个容器**，
 > 没有卷、没有预取服务、**日志里没有任何下载**，加载路径就是 `/models/laya-multilingual/multilingual`；
@@ -89,6 +102,22 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **未验证**：`-runtime` 变体只验证了"能构建、能合并、体积对"，**没有拉下来跑过**（烤权重那个跑了）；
 > kev 镜像的容器内冷启动（没在容器里起过 kev）、kev 的 compose 路径（只跑了 laya）。
 > 报镜像相关的结论时不要超出这个范围。
+> **playground 已实测**（2026-09-23，同一台 aarch64 本机）：`docker build -f playground/Dockerfile` 成功
+> （没有 `RUN`，所以不装任何依赖），镜像直接跑在一个自建 bridge 网络上、旁边是
+> `kingfs/decis:laya-multilingual-v0.0.1`；它**自己**从候选里找到了 `http://decis-test-engine:8000`，
+> `/readyz` 报 `{"status":"ready","engine":"laya-multilingual"}`，`/`、`/snake`、`/dino`、`/tetris`
+> 都是 200，`/../server.py` 是 404，引擎还在加载时它如实报 `searching`。**三个页面自己的 JS**
+> （node 里给 DOM 打桩、把 `fetch` 换成记录器）发出的真实请求都拿到了 200：
+> snake 一次 `choice`、dino 一次 `choice`、tetris 四问（`choice`/`choice`/`score`/`noul`），
+> `model` 被改写成 `decis/laya-multilingual@0.3.6`，token 是 playground 附的而不是页面带的。
+> 用引擎自己的 `measure()` 量了这些真实请求（`head_max_len=256`、`max_len=1024`，由 checkpoint
+> 的 config 提供而非代码默认）：snake 的 head 79 / 序列 287，dino 78 / 128，tetris 的四个问题
+> 分别 178、100、97、69，state 233、序列 415——**全部落在代码兜底的 512/192 之内**。
+> 正是这个测量把 tetris 的落点候选从 6 压到 5：6 个约 207 > 192。
+> **playground 未验证**：没有用 `docker compose up` 起过（是 `docker run` 起在等价网络上），
+> 所以 compose 的 profile 交互与健康检查只经 `docker compose config` 校验；
+> kev profile 下没跑过；**没有任何浏览器渲染验证**——页面在真实浏览器里的显示、点击、
+> canvas 绘制都没测过，测的只是它们发出去的请求与拿回来的答案；那条 CI job 也还没在 GitHub 上跑过。
 
 ---
 
@@ -252,7 +281,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：445 通过 / 33 跳过，约 11 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：480 通过 / 33 跳过，约 22 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）

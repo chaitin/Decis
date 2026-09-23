@@ -1,7 +1,7 @@
 name: decis
 
-# The deployment file. `docker compose up -d` runs a published image, and the image
-# already carries the engine's weights (`DECIS_MODEL_DIR=/models`), so there is nothing
+# The deployment file. `docker compose up -d` runs a published image, and the engine
+# image already carries its weights (`DECIS_MODEL_DIR=/models`), so there is nothing
 # to download, nothing to mount and no second container to wait for.
 #
 #   cp .env.example .env          # set DECIS_API_KEY; COMPOSE_PROFILES picks the engine
@@ -16,9 +16,19 @@ name: decis
 # One profile per engine, named after the engine: a bare `up` starts whatever `.env`
 # selects (one engine by default -- two engines resident at once hold several GB), and
 # `--profile kev-0.8b` starts that one instead of it, not in addition to it.
+#
+# The `playground` service is not an engine and has no profile of its own: it is listed
+# under both engine profiles, so whichever engine `up` starts, the games start with it.
+# It finds that engine by asking `/readyz` rather than by reading a name out of `.env`,
+# because a service that is not running does not resolve its Compose name at all -- which
+# is also why there is no `depends_on` here (and why there cannot be: Compose refuses a
+# dependency on a service the active profile does not enable).
 
-x-service: &service
+x-restart: &restart
   restart: unless-stopped
+
+x-engine: &engine
+  <<: *restart
   env_file: [.env]
   # Compose is not an orchestrator: nothing restarts a container because a probe failed, so
   # this probe is free to be the *readiness* one, which makes `--wait` mean "the model can
@@ -70,7 +80,7 @@ x-environment: &environment
 
 services:
   laya-multilingual:
-    <<: *service
+    <<: *engine
     image: kingfs/decis:laya-multilingual
     profiles: [laya-multilingual]
     environment:
@@ -85,7 +95,7 @@ services:
     ports: ["${DECIS_HOST_PORT:-8000}:8000"]
 
   kev-0.8b:
-    <<: *service
+    <<: *engine
     image: kingfs/decis:kev-0.8b
     profiles: [kev-0.8b]
     environment:
@@ -93,6 +103,61 @@ services:
       DECIS_DEFAULT_ENGINE: kev-0.8b
     command: ["decis", "serve", "--engine", "kev-0.8b"]
     ports: ["${DECIS_KEV_HOST_PORT:-8001}:8000"]
+
+  playground:
+    <<: *restart
+    image: kingfs/decis:playground
+    # In both engine profiles, so it starts with whichever engine does. It cannot be in
+    # neither and start by default: a service with no profile starts on *every* `up`,
+    # including a deployment that deliberately runs one engine.
+    profiles: [laya-multilingual, kev-0.8b]
+    # No `env_file: [.env]` on purpose: the values in that file are the engine's
+    # (`DECIS_PORT`, `DECIS_MODEL_DIR`, ...), and this container runs none of it. Only the
+    # things that are actually its interface are passed.
+    environment:
+      DECIS_PLAYGROUND_HOST: 0.0.0.0
+      DECIS_PLAYGROUND_PORT: "8080"
+      # Empty means "find the engine yourself": `server.py` tries this first when it is
+      # set, then the candidate list below. The candidates name both engine services and
+      # the host, so the same image works under either profile and next to a
+      # `decis serve` running outside Compose.
+      DECIS_PLAYGROUND_UPSTREAM: ${DECIS_PLAYGROUND_UPSTREAM:-}
+      DECIS_PLAYGROUND_CANDIDATES: ${DECIS_PLAYGROUND_CANDIDATES:-http://laya-multilingual:8000,http://kev-0.8b:8000,http://host.docker.internal:8000}
+      DECIS_API_KEY: ${DECIS_API_KEY:?set DECIS_API_KEY in .env (cp .env.example .env)}
+    # Makes `host.docker.internal` resolve on Linux too, for the "engine running on the
+    # host" case above.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["${DECIS_PLAYGROUND_HOST_PORT:-8080}:8080"]
+    # The playground's probe is its own liveness, not the engine's readiness: the process
+    # is healthy whether or not it has found an engine, because "no engine yet" is the
+    # normal state for the minutes a CPU engine spends loading. `/readyz` on the playground
+    # is where "connected" is answered. Proxies are unset for the same reason as the
+    # engine probe (§2-D19).
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "env",
+          "-u",
+          "HTTP_PROXY",
+          "-u",
+          "HTTPS_PROXY",
+          "-u",
+          "http_proxy",
+          "-u",
+          "https_proxy",
+          "-u",
+          "ALL_PROXY",
+          "-u",
+          "all_proxy",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).status == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
 
 # Mount nothing at /models. A named volume there is seeded from the image and then keeps
 # its own copy; a bind mount replaces the baked weights outright. Either way an image that

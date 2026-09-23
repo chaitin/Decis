@@ -25,6 +25,12 @@ name: Docker images
 # turns a five-minute build into a very long one. `ubuntu-24.04-arm` is a native arm64
 # runner, so each platform builds on real hardware and the manifests are merged after.
 #
+# The playground image (`playground/Dockerfile`) is the one non-engine artifact: its tag
+# is `playground` on the default branch and `playground-<version>` on a release, it is
+# built for both architectures in a single job because that Dockerfile has no `RUN`, and
+# it shares this repository because a second Docker Hub repository would be a manual step
+# that nothing else needs.
+#
 # If your repository cannot use `ubuntu-24.04-arm` (it needs a public repository or a paid
 # plan), delete the `linux/arm64 ubuntu-24.04-arm` entry from `platforms` in the plan job
 # below. Everything else keeps working and the images become amd64-only.
@@ -97,6 +103,11 @@ jobs:
       merges: ${{ steps.plan.outputs.merges }}
       push: ${{ steps.plan.outputs.push }}
       tag: ${{ steps.plan.outputs.tag }}
+      # The playground is not an engine, so it is not in the engine matrix above: it is one
+      # build of `playground/Dockerfile` under its own tag. Its values are decided here for
+      # the same reason the engines' are -- one place computes a published name.
+      playground_tag: ${{ steps.plan.outputs.playground_tag }}
+      playground_platforms: ${{ steps.plan.outputs.playground_platforms }}
     steps:
       - uses: actions/checkout@v4
       - id: plan
@@ -204,6 +215,24 @@ jobs:
             moving="sha-${GITHUB_SHA:0:7}"
           fi
 
+          # The playground's tag. It shares the repository with the engines (there is no
+          # second Docker Hub repository to create), and it follows the same shape -- the
+          # name alone on the default branch, `-<version>` on a release, `-sha-<commit>`
+          # on anything else -- but it is a different artifact, so it never wears an
+          # engine's tag. `test_compose.py` reads this value rather than writing
+          # `playground` again.
+          playground_tag="playground"
+          [ "$moving" = "latest" ] || playground_tag="playground-$moving"
+
+          # A PR builds the playground too -- it is the cheapest Dockerfile in the
+          # repository, and the check is the point -- but only for one platform: a
+          # multi-platform build with `push: false` cannot export a manifest list, so
+          # asking for both would fail the PR for a reason that has nothing to do with
+          # the change. A publish builds both, and the Dockerfile has no `RUN`, so the
+          # arm64 half needs no emulation.
+          playground_platforms="linux/amd64,linux/arm64"
+          [ "$base_only" = "true" ] && playground_platforms="linux/amd64"
+
           # One build per engine x variant x platform, and one merge per engine x variant
           # (the merge is what turns two platform images into one multi-arch manifest).
           #
@@ -255,9 +284,11 @@ jobs:
           echo "merges={\"include\":$merges}" >> "$GITHUB_OUTPUT"
           echo "push=$push" >> "$GITHUB_OUTPUT"
           echo "tag=$moving" >> "$GITHUB_OUTPUT"
+          echo "playground_tag=$playground_tag" >> "$GITHUB_OUTPUT"
+          echo "playground_platforms=$playground_platforms" >> "$GITHUB_OUTPUT"
           echo "builds: $builds"
           echo "merges: $merges"
-          echo "push=$push tag=$moving"
+          echo "push=$push tag=$moving playground_tag=$playground_tag"
 
   build:
     name: ${{ matrix.engine }} ${{ matrix.variant }} (${{ matrix.arch }})
@@ -356,6 +387,75 @@ jobs:
           provenance: ${{ steps.attest.outputs.provenance }}
           cache-from: type=gha,scope=${{ matrix.engine }}-${{ matrix.variant }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.engine }}-${{ matrix.variant }}-${{ matrix.arch }}
+
+  # The playground: the three browser games and the proxy that feeds them. A separate
+  # job rather than another matrix leg, because it is not an engine -- a different
+  # Dockerfile, no engine extra, no weights, no per-architecture merge to do. Pushing a
+  # multi-platform build in one step produces the manifest list directly, which is only
+  # safe because `playground/Dockerfile` has no `RUN`: nothing has to execute under
+  # emulation to produce the arm64 half.
+  playground:
+    name: playground image
+    needs: [test, plan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Image name and tag
+        id: meta
+        env:
+          # The name comes from the plan script, not from here: `latest` is not part of
+          # the playground's name either, and a release appends its version.
+          PLAYGROUND_TAG: ${{ needs.plan.outputs.playground_tag }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          owner="$(echo "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${REGISTRY}/${owner}/${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
+          echo "tag=${PLAYGROUND_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to attest
+        id: attest
+        env:
+          PUSHING: ${{ needs.plan.outputs.push }}
+        run: |
+          if [ "$PUSHING" = "true" ]; then
+            echo "sbom=true" >> "$GITHUB_OUTPUT"
+            echo "provenance=mode=max" >> "$GITHUB_OUTPUT"
+          else
+            echo "sbom=false" >> "$GITHUB_OUTPUT"
+            echo "provenance=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: playground/Dockerfile
+          platforms: ${{ needs.plan.outputs.playground_platforms }}
+          push: ${{ needs.plan.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.tag }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          sbom: ${{ steps.attest.outputs.sbom }}
+          provenance: ${{ steps.attest.outputs.provenance }}
+          cache-from: type=gha,scope=playground
+          cache-to: type=gha,mode=max,scope=playground
 
   # A multi-arch manifest is what makes one tag correct on a laptop and on an arm server.
   # The build legs push per-architecture images; this job stitches them into one manifest.

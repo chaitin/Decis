@@ -1,0 +1,1699 @@
+<!DOCTYPE html>
+<!--
+  Decis playground. Adapted from https://github.com/taeold/djev-run (see NOTICE).
+  Changed for Decis: the endpoint is the playground's own origin (it proxies
+  /v1/systemone and attaches the API key server-side), the engine comparison that
+  quoted another deployment's latencies is gone, and tetris asks with five terse
+  options instead of sixteen verbose ones so that it fits the engine's per-question
+  token budget.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Decis / tetris</title>
+  <style>
+    :root {
+      --bg-canvas: #090a0f;
+      --bg-subtle: #0d0f17;
+      --bg-surface: #121520;
+      --border: #1e2336;
+      --border-muted: #161a29;
+      --text-primary: #e2e8f0;
+      --text-muted: #64748b;
+      --text-secondary: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #10b981;
+      --accent-amber: #eab308;
+      --accent-red: #ef4444;
+      --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      background: var(--bg-canvas);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      padding: 20px 24px;
+    }
+
+    .wrap {
+      width: 960px;
+      max-width: 100%;
+      margin: 0 auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: nowrap;
+      white-space: nowrap;
+      height: 44px;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      gap: 16px;
+    }
+
+    .top-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .title {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.01em;
+    }
+
+    .title .model-tag {
+      color: var(--text-secondary);
+      font-weight: 400;
+      font-size: 13px;
+    }
+
+    .nav-links {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .nav-links a {
+      color: var(--text-secondary);
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--accent-blue);
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      width: 108px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .dot.live { background: var(--accent-green); }
+    .dot.warn { background: var(--accent-amber); }
+    .dot.err { background: var(--accent-red); }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    select#mode-select {
+      height: 32px;
+      padding: 0 10px;
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 400;
+      cursor: pointer;
+      outline: none;
+    }
+
+    select#mode-select:focus {
+      border-color: var(--accent-blue);
+    }
+
+    button {
+      height: 32px;
+      padding: 0 14px;
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background-color 150ms ease, border-color 150ms ease;
+    }
+
+    button:focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: 2px;
+    }
+
+    #btn-start {
+      width: 128px;
+      background: var(--accent-blue);
+      color: #090a0f;
+      border: 1px solid var(--accent-blue);
+    }
+    #btn-start:hover {
+      background: #7dd3fc;
+      border-color: #7dd3fc;
+    }
+
+    #btn-reset {
+      width: 72px;
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+    #btn-reset:hover {
+      border-color: var(--text-muted);
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 388px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .left-stage {
+      height: 560px;
+      display: grid;
+      grid-template-columns: 280px 96px;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .board-box {
+      position: relative;
+      width: 280px;
+      height: 560px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    canvas#board {
+      display: block;
+      width: 280px;
+      height: 560px;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(9, 10, 15, 0.86);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      text-align: center;
+      padding: 16px;
+      gap: 6px;
+    }
+
+    .overlay.hidden {
+      display: none;
+    }
+
+    .side-rail {
+      height: 560px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 10px;
+    }
+
+    .next-block {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rail-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .next-canvas-wrap {
+      width: 74px;
+      height: 56px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-muted);
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    canvas#next {
+      display: block;
+      width: 74px;
+      height: 56px;
+    }
+
+    .stat-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
+    }
+
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .stat-val {
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat-sub {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .right-col {
+      height: 560px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      min-width: 0;
+    }
+
+    .probs-panel {
+      height: 234px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .reads-panel {
+      height: 176px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .json-panel {
+      height: 126px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 8px;
+      margin-bottom: 6px;
+      border-bottom: 1px solid var(--border-muted);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .panel-sub {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .prob-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .prob-row {
+      display: grid;
+      grid-template-columns: 58px 184px 1fr 48px;
+      align-items: center;
+      gap: 10px;
+      height: 24px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slot-id {
+      color: var(--text-secondary);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .slot-id.chosen {
+      color: var(--accent-blue);
+    }
+
+    .slot-desc {
+      color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .slot-desc.chosen {
+      color: var(--text-primary);
+    }
+
+    .bar-track {
+      height: 8px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-muted);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #334155;
+      border-radius: 3px;
+      transition: width 90ms linear;
+    }
+    .bar-fill.chosen {
+      background: var(--accent-blue);
+    }
+    .bar-fill.good {
+      background: var(--accent-green);
+    }
+    .bar-fill.warn {
+      background: var(--accent-amber);
+    }
+    .bar-fill.bad {
+      background: var(--accent-red);
+    }
+
+    .prob-pct {
+      text-align: right;
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+    .prob-pct.dim {
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .read-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .read-row {
+      display: grid;
+      grid-template-columns: 112px 150px 1fr 56px;
+      align-items: center;
+      gap: 10px;
+      height: 26px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .read-key {
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    .read-val {
+      color: var(--text-primary);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .strategy-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      padding-top: 6px;
+      border-top: 1px solid var(--border-muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .strat-cell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--text-muted);
+      padding: 2px 6px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-muted);
+      border-radius: 4px;
+    }
+
+    .strat-cell.active {
+      color: var(--accent-blue);
+      border-color: var(--accent-blue);
+    }
+
+    pre#live-json {
+      flex: 1;
+      margin: 0;
+      padding: 6px 10px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-muted);
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--text-secondary);
+      overflow: hidden;
+      white-space: pre;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .foot-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .foot-bar a {
+      color: var(--text-secondary);
+      text-decoration: none;
+    }
+    .foot-bar a:hover {
+      color: var(--accent-blue);
+    }
+
+    @media (max-width: 860px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+      .right-col {
+        height: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="top-left">
+        <span class="title">Decis <span class="model-tag">(System One)</span> / tetris</span>
+        <nav class="nav-links" aria-label="Demos">
+          <span>·</span>
+          <a href="/snake">/snake</a>
+          <span>·</span>
+          <a href="/dino">/dino</a>
+        </nav>
+        <span class="status">
+          <span id="dot" class="dot live"></span>
+          <span id="status-text">Ready</span>
+        </span>
+      </div>
+
+      <div class="top-actions">
+        <select id="mode-select" aria-label="Control Mode">
+          <option value="jev" selected>Decis engine</option>
+          <option value="heuristic">Heuristic (0 ms)</option>
+          <option value="manual">Manual (Arrows + Space)</option>
+        </select>
+        <button id="btn-start" type="button">Start Autopilot</button>
+        <button id="btn-reset" type="button">Reset</button>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section class="left-stage" aria-label="Tetris board and metrics">
+        <div class="board-box">
+          <canvas id="board"></canvas>
+          <div id="overlay" class="overlay hidden">
+            <div id="overlay-title">Game Over</div>
+            <div id="overlay-sub" class="stat-sub">Press Reset to play again</div>
+          </div>
+        </div>
+
+        <aside class="side-rail">
+          <div class="next-block">
+            <span class="rail-label">Next Piece</span>
+            <div class="next-canvas-wrap">
+              <canvas id="next"></canvas>
+            </div>
+          </div>
+
+          <div class="stat-stack">
+            <div class="stat-item">
+              <span class="rail-label">Score</span>
+              <span id="m-score" class="stat-val">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="rail-label">Lines</span>
+              <span id="m-lines" class="stat-val">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="rail-label">Pieces</span>
+              <span id="m-pieces" class="stat-val">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="rail-label">Latency</span>
+              <span id="m-ms" class="stat-val">0 ms</span>
+              <span id="m-pipeline" class="stat-sub">pipelined</span>
+            </div>
+            <div class="stat-item">
+              <span class="rail-label">Agreement</span>
+              <span id="m-agree" class="stat-val">100%</span>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="right-col" aria-label="Decis single-pass telemetry">
+        <div class="panel probs-panel">
+          <div class="panel-head">
+            <span>Placement Probability Distribution (choice)</span>
+            <span id="choice-summary" class="panel-sub">rot 0, col 4 (0.0%)</span>
+          </div>
+          <div id="prob-rows" class="prob-rows"></div>
+        </div>
+
+        <div class="panel reads-panel">
+          <div class="panel-head">
+            <span>Board Read (strategy · board_health · next_piece_fits)</span>
+            <span id="read-summary" class="panel-sub">1 pass · 4 questions</span>
+          </div>
+          <div class="read-rows">
+            <div class="read-row">
+              <span class="read-key">Strategy</span>
+              <span id="read-strat-val" class="read-val">build_clean</span>
+              <div class="bar-track"><div id="read-strat-bar" class="bar-fill chosen" style="width: 50%"></div></div>
+              <span id="read-strat-pct" class="prob-pct">50.0%</span>
+            </div>
+            <div class="read-row">
+              <span class="read-key">Board Health</span>
+              <span id="read-health-val" class="read-val">Clean (1.00)</span>
+              <div class="bar-track"><div id="read-health-bar" class="bar-fill good" style="width: 95%"></div></div>
+              <span id="read-health-score" class="prob-pct">1.0 / 4</span>
+            </div>
+            <div class="read-row">
+              <span class="read-key">Next Piece Fits</span>
+              <span id="read-fit-val" class="read-val">YES (clean spot)</span>
+              <div class="bar-track"><div id="read-fit-bar" class="bar-fill good" style="width: 88%"></div></div>
+              <span id="read-fit-pct" class="prob-pct">88.0%</span>
+            </div>
+          </div>
+          <div class="strategy-strip">
+            <div id="st-build_clean" class="strat-cell active"><span>build</span><span id="stp-build_clean">50%</span></div>
+            <div id="st-clear_lines" class="strat-cell"><span>clear</span><span id="stp-clear_lines">25%</span></div>
+            <div id="st-repair_surface" class="strat-cell"><span>repair</span><span id="stp-repair_surface">15%</span></div>
+            <div id="st-survive" class="strat-cell"><span>survive</span><span id="stp-survive">10%</span></div>
+          </div>
+        </div>
+
+        <div class="panel json-panel">
+          <div class="panel-head">
+            <span>Last /v1/systemone Call</span>
+            <span id="json-meta" class="panel-sub">Decis engine · 6 options</span>
+          </div>
+          <pre id="live-json"></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot-bar">
+      <span>Adapted from <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a> · served by the <a href="/">Decis playground</a></span>
+      <span id="calls-counter">0 /v1/systemone calls · 0 tokens</span>
+    </footer>
+  </div>
+
+<script>
+const WIDTH = 10;
+const HEIGHT = 20;
+const CSS_W = 280;
+const CSS_H = 560;
+const MODEL = "jev-latest"; // rewritten by the playground proxy to the running engine
+
+// How many placements the model is asked to choose between -- and, deliberately, the
+// same number the local simulation ranks, so the two columns describe the same choice.
+//
+// Five is a measurement, not a taste. Laya charges a whole question against `head_max_len`,
+// and each option costs about 29 tokens of `"rot0_col0": "cols 3-6: 1 clear, 0 new holes,
+// height 6, slightly uneven"`. Measured by running the engine's own `measure()` over this
+// page's payload: the placement question is 178 tokens at five options and would be ~207 at
+// six, while the whole request is 415 sequence tokens against a 512 state+question budget.
+// The multilingual checkpoint declares max_len=1024/head_max_len=256, where six fit; a
+// checkpoint that declares nothing falls back to 512/192 (laya.py's DEFAULT_MAX_LEN and
+// DEFAULT_HEAD_MAX_LEN), where only five do. Five is what makes the page fit either.
+const PLACEMENT_SHORTLIST = 5;
+
+// Desaturated-yet-distinct tetromino palette (strictly zero purple/violet/indigo)
+const PIECE_COLORS = {
+  I: "#38bdf8", // Sky cyan
+  O: "#eab308", // Amber gold
+  T: "#2563eb", // Cobalt blue
+  S: "#10b981", // Emerald green
+  Z: "#ef4444", // Coral red
+  J: "#0284c7", // Steel blue
+  L: "#f97316", // Warm orange
+};
+
+const BASE_SHAPES = {
+  I: [[0, 0], [1, 0], [2, 0], [3, 0]],
+  O: [[0, 0], [1, 0], [0, 1], [1, 1]],
+  T: [[0, 0], [1, 0], [2, 0], [1, 1]],
+  S: [[1, 0], [2, 0], [0, 1], [1, 1]],
+  Z: [[0, 0], [1, 0], [1, 1], [2, 1]],
+  J: [[0, 0], [0, 1], [1, 1], [2, 1]],
+  L: [[2, 0], [0, 1], [1, 1], [2, 1]],
+};
+
+function normalize(cells) {
+  const minX = Math.min(...cells.map(([x]) => x));
+  const minY = Math.min(...cells.map(([, y]) => y));
+  const shifted = cells.map(([x, y]) => [x - minX, y - minY]);
+  shifted.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const width = Math.max(...shifted.map(([x]) => x)) + 1;
+  const height = Math.max(...shifted.map(([, y]) => y)) + 1;
+  return { cells: shifted, width, height, key: shifted.map(([x, y]) => `${x},${y}`).join(";") };
+}
+
+function rotateCW(cells) {
+  return normalize(cells.map(([x, y]) => [-y, x]));
+}
+
+const PIECES = Object.fromEntries(
+  Object.entries(BASE_SHAPES).map(([name, base]) => {
+    const rotations = [];
+    let current = normalize(base);
+    for (let r = 0; r < 4; r++) {
+      if (!rotations.some((existing) => existing.key === current.key)) {
+        rotations.push({ rotation: rotations.length, ...current });
+      }
+      current = rotateCW(current.cells);
+    }
+    return [name, rotations];
+  })
+);
+
+const PIECE_NAMES = Object.keys(PIECES);
+
+function emptyBoard() {
+  return Array.from({ length: HEIGHT }, () => Array(WIDTH).fill(null));
+}
+
+function cloneBoard(board) {
+  return board.map((row) => row.slice());
+}
+
+function collides(board, cells, ox, oy) {
+  for (const [cx, cy] of cells) {
+    const x = ox + cx;
+    const y = oy + cy;
+    if (x < 0 || x >= WIDTH || y >= HEIGHT) return true;
+    if (y >= 0 && board[y][x]) return true;
+  }
+  return false;
+}
+
+function hardDropY(board, cells, ox) {
+  let y = 0;
+  if (collides(board, cells, ox, y)) return null;
+  while (!collides(board, cells, ox, y + 1)) y++;
+  return y;
+}
+
+function lockPiece(board, piece, rotation, ox, oy) {
+  const next = cloneBoard(board);
+  const { cells } = PIECES[piece][rotation];
+  for (const [cx, cy] of cells) {
+    const x = ox + cx;
+    const y = oy + cy;
+    if (y >= 0 && y < HEIGHT && x >= 0 && x < WIDTH) next[y][x] = piece;
+  }
+  return next;
+}
+
+function clearLines(board) {
+  const kept = board.filter((row) => row.some((cell) => !cell));
+  const cleared = HEIGHT - kept.length;
+  const empty = Array.from({ length: cleared }, () => Array(WIDTH).fill(null));
+  return { board: [...empty, ...kept], cleared };
+}
+
+function boardStats(board) {
+  const heights = Array(WIDTH).fill(0);
+  let holes = 0;
+  let coveredCells = 0;
+  for (let x = 0; x < WIDTH; x++) {
+    let topFound = false;
+    let cellsAbove = 0;
+    for (let y = 0; y < HEIGHT; y++) {
+      if (board[y][x]) {
+        if (!topFound) {
+          heights[x] = HEIGHT - y;
+          topFound = true;
+        }
+        cellsAbove++;
+      } else if (topFound) {
+        holes++;
+        coveredCells += cellsAbove;
+      }
+    }
+  }
+  let bumpiness = 0;
+  for (let x = 0; x < WIDTH - 1; x++) bumpiness += Math.abs(heights[x] - heights[x + 1]);
+  let wells = 0;
+  for (let x = 0; x < WIDTH; x++) {
+    const left = x === 0 ? HEIGHT : heights[x - 1];
+    const right = x === WIDTH - 1 ? HEIGHT : heights[x + 1];
+    const neighborMin = Math.min(left, right);
+    if (neighborMin - heights[x] >= 3) wells += neighborMin - heights[x];
+  }
+  const maxHeight = Math.max(...heights);
+  const avgHeight = heights.reduce((a, b) => a + b, 0) / WIDTH;
+  let clearableNext = 0;
+  for (let y = 0; y < HEIGHT; y++) {
+    const filled = board[y].filter(Boolean).length;
+    if (filled === WIDTH - 1) clearableNext++;
+  }
+  return { heights, holes, coveredCells, bumpiness, wells, maxHeight, avgHeight, clearableNext };
+}
+
+function enumeratePlacements(board, piece) {
+  const before = boardStats(board);
+  const rotations = PIECES[piece];
+  const placements = [];
+  for (const rot of rotations) {
+    for (let x = 0; x <= WIDTH - rot.width; x++) {
+      const y = hardDropY(board, rot.cells, x);
+      if (y === null) continue;
+      const locked = lockPiece(board, piece, rot.rotation, x, y);
+      const { board: afterBoard, cleared } = clearLines(locked);
+      const after = boardStats(afterBoard);
+      const landingHeight = HEIGHT - y - rot.height / 2;
+      const holesDelta = after.holes - before.holes;
+      const heightDelta = after.maxHeight - before.maxHeight;
+      const bumpDelta = after.bumpiness - before.bumpiness;
+      const heuristic =
+        cleared * 1.25 -
+        after.holes * 0.9 -
+        holesDelta * 1.4 -
+        after.bumpiness * 0.12 -
+        after.maxHeight * 0.18 -
+        landingHeight * 0.08 -
+        after.wells * 0.1;
+
+      const id = `rot${rot.rotation}_col${x}`;
+      placements.push({
+        id,
+        piece,
+        rotation: rot.rotation,
+        x,
+        y,
+        width: rot.width,
+        height: rot.height,
+        cells: rot.cells.map(([cx, cy]) => [x + cx, y + cy]),
+        afterBoard,
+        linesCleared: cleared,
+        holesAfter: after.holes,
+        holesCreated: Math.max(0, holesDelta),
+        maxHeightAfter: after.maxHeight,
+        heightDelta,
+        bumpinessAfter: after.bumpiness,
+        bumpDelta,
+        wellsAfter: after.wells,
+        landingHeight,
+        heuristic,
+      });
+    }
+  }
+  return placements;
+}
+
+function describeClear(n) {
+  if (n === 0) return "none";
+  if (n === 1) return "single (1 line)";
+  if (n === 2) return "double (2 lines)";
+  if (n === 3) return "triple (3 lines)";
+  return "TETRIS (4 lines)";
+}
+
+function describeHoles(n) {
+  if (n === 0) return "none";
+  if (n === 1) return "1 hole";
+  if (n === 2) return "2 holes";
+  if (n <= 4) return "a few holes";
+  return "many holes";
+}
+
+function describeHeight(h) {
+  if (h <= 4) return "very low (safe)";
+  if (h <= 8) return "low";
+  if (h <= 12) return "medium";
+  if (h <= 15) return "high (caution)";
+  return "dangerously high (near top)";
+}
+
+function describeSurface(bump) {
+  if (bump <= 3) return "flat";
+  if (bump <= 7) return "slightly uneven";
+  if (bump <= 12) return "bumpy";
+  return "very jagged";
+}
+
+function describeWells(w) {
+  if (w === 0) return "none";
+  if (w <= 4) return "one I-piece well";
+  return "deep wells";
+}
+
+// One short line per option. The eight-field object this used to return is a good
+// description and an unaffordable one: it is what pushed a tetris question past Laya's
+// 192-token head budget, so the API refused the request (see buildQuestions below).
+function describePlacement(p) {
+  const where = p.width === 1 ? `col ${p.x + 1}` : `cols ${p.x + 1}-${p.x + p.width}`;
+  const clearTxt = p.linesCleared === 0 ? "0 clear" : `${p.linesCleared} clear`;
+  const holeTxt = p.holesCreated === 0 ? "0 new holes" : `+${p.holesCreated} hole`;
+  return `${where}: ${clearTxt}, ${holeTxt}, height ${p.maxHeightAfter}, ${describeSurface(p.bumpinessAfter)}`;
+}
+
+function shortDesc(p) {
+  const clearTxt = p.linesCleared > 0 ? `clear ${p.linesCleared}` : "0 clear";
+  const holeTxt = p.holesCreated === 0 ? "0 holes" : `+${p.holesCreated} hole`;
+  return `${clearTxt} · ${holeTxt} · ${describeSurface(p.bumpinessAfter)}`;
+}
+
+function boardToText(board) {
+  return board.map((row) => row.map((c) => (c ? "#" : ".")).join(""));
+}
+
+const STRATEGY_OPTIONS = {
+  build_clean: "Stack is low and tidy: keep the surface flat and wait for a multi-line clear.",
+  clear_lines: "A clear is available: take it and keep the stack from growing.",
+  repair_surface: "Surface is jagged or has holes: smooth it out or uncover holes.",
+  survive: "Stack is near the top: take anything that does not raise it.",
+};
+
+const HEALTH_LEVELS = [
+  "Clean: low, flat stack with no holes",
+  "Fine: some unevenness or a hole or two, plenty of room",
+  "Rough: several holes or a jagged surface, room is shrinking",
+  "Critical: stack near the top, the game may be lost within a few pieces",
+];
+
+function buildState({ board, piece, nextPiece, stats, linesCleared }) {
+  return {
+    game: {
+      rules: "Standard Tetris. Board is 10 columns wide and 20 rows tall. Rows fill left to right; a full row disappears. The game is lost when the stack reaches the top.",
+      board_rows_top_to_bottom: boardToText(board),
+      legend: "# is a filled cell, . is an empty cell. The first row is the top of the board.",
+      column_heights_left_to_right: stats.heights,
+      stack_height: describeHeight(stats.maxHeight),
+      holes_in_stack: describeHoles(stats.holes),
+      surface: describeSurface(stats.bumpiness),
+      current_piece: piece,
+      next_piece: nextPiece,
+      lines_cleared_so_far: linesCleared,
+    },
+  };
+}
+
+function buildQuestions(placements) {
+  const criteria = {};
+  // The API refuses an over-budget question with a 422 rather than truncating it in
+  // silence (AGENTS.md §3-9), so the shortlist is sized to the budget -- see
+  // PLACEMENT_SHORTLIST. The page still falls back to its local heuristic on a 422.
+  const shortlist = placements.slice().sort((a, b) => b.heuristic - a.heuristic).slice(0, PLACEMENT_SHORTLIST);
+  for (const p of shortlist) criteria[p.id] = describePlacement(p);
+  return {
+    placement: {
+      type: "choice",
+      instructions: "Choose the best placement for the current piece. Prefer clearing lines, creating no holes, a low stack and a flat surface; when the stack is high, survival beats tidiness.",
+      criteria,
+    },
+    strategy: {
+      type: "choice",
+      instructions: "Looking at `game`, which strategy fits the current situation best for the next few pieces?",
+      criteria: STRATEGY_OPTIONS,
+    },
+    board_health: {
+      type: "score",
+      instructions: "How healthy is the stack in `game` for a Tetris player who wants to keep playing for a long time?",
+      criteria: HEALTH_LEVELS,
+    },
+    next_piece_fits: {
+      type: "noul",
+      instructions: "Given `game.column_heights_left_to_right` and `game.surface`, is there an obvious clean spot for `game.next_piece` after this move, without creating holes?",
+      criteria: {
+        true: "A clean spot is easy to see.",
+        false: "The next piece will be awkward to place.",
+      },
+    },
+  };
+}
+
+function buildRequest(gameInfo, placements) {
+  return {
+    state: buildState(gameInfo),
+    model: MODEL,
+    steps: 1,
+    samples: 1,
+    questions: buildQuestions(placements),
+  };
+}
+
+function simulateSystemOne(gameInfo, placements) {
+  const sorted = placements.slice().sort((a, b) => b.heuristic - a.heuristic);
+  const shortlist = sorted.slice(0, PLACEMENT_SHORTLIST);
+  const maxH = shortlist[0]?.heuristic ?? 0;
+  const weights = shortlist.map((p) => Math.exp((p.heuristic - maxH) / 0.45));
+  const sumW = weights.reduce((a, b) => a + b, 0) || 1;
+  const probs = {};
+  shortlist.forEach((p, i) => {
+    probs[p.id] = weights[i] / sumW;
+  });
+
+  const st = gameInfo.stats;
+  let stratProbs = { build_clean: 0.62, clear_lines: 0.22, repair_surface: 0.12, survive: 0.04 };
+  let stratChoice = "build_clean";
+  let healthScore = 0.25;
+  if (st.maxHeight >= 15) {
+    stratProbs = { survive: 0.68, clear_lines: 0.20, repair_surface: 0.09, build_clean: 0.03 };
+    stratChoice = "survive";
+    healthScore = 2.65;
+  } else if (st.holes >= 2 || st.bumpiness >= 10) {
+    stratProbs = { repair_surface: 0.54, clear_lines: 0.26, build_clean: 0.14, survive: 0.06 };
+    stratChoice = "repair_surface";
+    healthScore = 1.45;
+  } else if (st.maxHeight >= 8) {
+    stratProbs = { clear_lines: 0.52, build_clean: 0.31, repair_surface: 0.13, survive: 0.04 };
+    stratChoice = "clear_lines";
+    healthScore = 0.85;
+  }
+
+  const fitNoul = Math.max(0.15, Math.min(0.96, 0.92 - st.holes * 0.12 - st.bumpiness * 0.02));
+  return {
+    model: MODEL,
+    usage: { input_tokens: 412 },
+    answers: {
+      placement: {
+        type: "choice",
+        choice: shortlist[0]?.id,
+        probabilities: probs,
+        confidence: probs[shortlist[0]?.id] ?? 0.5,
+      },
+      strategy: {
+        type: "choice",
+        choice: stratChoice,
+        probabilities: stratProbs,
+      },
+      board_health: {
+        type: "score",
+        score: healthScore,
+      },
+      next_piece_fits: {
+        type: "noul",
+        noul: fitNoul,
+      },
+    },
+  };
+}
+
+// Same-origin: the playground proxies this to the running engine and attaches the
+// bearer token, so the page never holds one (playground/server.py).
+function resolveEndpointUrl() {
+  return "/v1/systemone";
+}
+
+let sandboxFallback = false;
+
+async function askJev(request, placements, gameInfo, signal) {
+  const t0 = performance.now();
+  if (!sandboxFallback) {
+    try {
+      const res = await fetch(resolveEndpointUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        signal,
+      });
+      if (res.ok) {
+        const body = await res.json();
+        return { response: body, latencyMs: Math.round(performance.now() - t0), live: true };
+      }
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      sandboxFallback = true;
+    }
+  }
+  const sim = simulateSystemOne(gameInfo, placements);
+  return { response: sim, latencyMs: Math.round(performance.now() - t0), live: false };
+}
+
+function pickPlacement(response, placements) {
+  const answer = response?.answers?.placement;
+  const byId = new Map(placements.map((p) => [p.id, p]));
+  const ranked = Object.entries(answer?.probabilities || {})
+    .filter(([id]) => byId.has(id))
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, probability]) => ({ placement: byId.get(id), probability }));
+  const chosen = byId.get(answer?.choice) || ranked[0]?.placement || placements[0];
+  return {
+    chosen,
+    ranked: ranked.length ? ranked : placements.slice(0, PLACEMENT_SHORTLIST).map((p, i) => ({ placement: p, probability: i === 0 ? 0.5 : 0.1 })),
+    confidence: answer?.confidence ?? ranked[0]?.probability ?? 0.5,
+    answers: response?.answers,
+    response,
+  };
+}
+
+function heuristicDecision(placements) {
+  const sorted = placements.slice().sort((a, b) => b.heuristic - a.heuristic);
+  const max = sorted[0].heuristic;
+  const weights = sorted.map((p) => Math.exp((p.heuristic - max) / 0.5));
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  return {
+    chosen: sorted[0],
+    ranked: sorted.map((p, i) => ({ placement: p, probability: weights[i] / sum })),
+    confidence: weights[0] / sum,
+    answers: null,
+  };
+}
+
+// DOM & Canvas setup (2x Retina DPI)
+const $ = (id) => document.getElementById(id);
+const canvas = $("board");
+const ctx = canvas.getContext("2d");
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+canvas.width = CSS_W * DPR;
+canvas.height = CSS_H * DPR;
+ctx.scale(DPR, DPR);
+const CELL = CSS_W / WIDTH;
+
+const nextCanvas = $("next");
+const nextCtx = nextCanvas.getContext("2d");
+nextCanvas.width = 74 * DPR;
+nextCanvas.height = 56 * DPR;
+nextCtx.scale(DPR, DPR);
+
+// Build the 6 static placement rows once for zero layout shift (CLS = 0)
+const probRowsContainer = $("prob-rows");
+for (let i = 0; i < 6; i++) {
+  const row = document.createElement("div");
+  row.className = "prob-row";
+  row.innerHTML = `
+    <span class="slot-id" id="pslot-${i}">r0 · c0</span>
+    <span class="slot-desc" id="pdesc-${i}">0 clear · 0 holes · flat</span>
+    <div class="bar-track"><div class="bar-fill" id="pbar-${i}"></div></div>
+    <span class="prob-pct dim" id="pval-${i}">0.0%</span>
+  `;
+  probRowsContainer.appendChild(row);
+}
+
+let bag = [];
+function nextFromBag() {
+  if (bag.length < 4) {
+    const chunk = PIECE_NAMES.slice();
+    for (let i = chunk.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [chunk[i], chunk[j]] = [chunk[j], chunk[i]];
+    }
+    bag.unshift(...chunk);
+  }
+  return bag.pop();
+}
+
+function peekBag() {
+  if (bag.length < 4) {
+    const chunk = PIECE_NAMES.slice();
+    for (let i = chunk.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [chunk[i], chunk[j]] = [chunk[j], chunk[i]];
+    }
+    bag.unshift(...chunk);
+  }
+  return bag[bag.length - 1];
+}
+
+const game = {
+  board: emptyBoard(),
+  current: null,
+  next: null,
+  score: 0,
+  lines: 0,
+  pieces: 0,
+  over: false,
+  running: false,
+  active: null, // { piece, rotation, x, y }
+  target: null, // chosen placement
+  ghosts: [],
+  flashRows: [],
+};
+
+const stats = {
+  calls: 0,
+  lastLatency: 0,
+  tokens: 0,
+  agreements: 0,
+  decisions: 0,
+};
+
+window.__tetrisTelemetry = { game, stats };
+window.__gameState = game;
+
+let abortCtrl = null;
+let prefetchEntry = null; // { key, promise }
+
+function stateKey(board, piece, nextPiece) {
+  return `${piece}:${nextPiece}:${boardToText(board).join("")}`;
+}
+
+function requestDecisionFor(board, piece, nextPiece, linesCleared, signal) {
+  const placements = enumeratePlacements(board, piece);
+  if (!placements.length) return Promise.resolve(null);
+  const gameInfo = {
+    board,
+    piece,
+    nextPiece,
+    stats: boardStats(board),
+    linesCleared,
+  };
+  const request = buildRequest(gameInfo, placements);
+  return askJev(request, placements, gameInfo, signal).then(({ response, latencyMs, live }) => {
+    const picked = pickPlacement(response, placements);
+    return { ...picked, request, latencyMs, live, placements };
+  });
+}
+
+function renderProbabilityPanel(decision, source) {
+  if (!decision) return;
+  const { chosen, ranked, confidence, answers, request, response, latencyMs } = decision;
+  const topRanked = ranked.slice(0, PLACEMENT_SHORTLIST);
+  $("choice-summary").textContent = `rot ${chosen.rotation}, col ${chosen.x + 1} (${(confidence * 100).toFixed(1)}%)`;
+
+  for (let i = 0; i < 6; i++) {
+    const item = topRanked[i];
+    const slotEl = $(`pslot-${i}`);
+    const descEl = $(`pdesc-${i}`);
+    const barEl = $(`pbar-${i}`);
+    const valEl = $(`pval-${i}`);
+    if (!item) {
+      slotEl.textContent = "–";
+      slotEl.className = "slot-id";
+      descEl.textContent = "–";
+      descEl.className = "slot-desc";
+      barEl.style.width = "0%";
+      barEl.className = "bar-fill";
+      valEl.textContent = "0.0%";
+      valEl.className = "prob-pct dim";
+      continue;
+    }
+    const p = item.placement;
+    const isChosen = p.id === chosen.id;
+    const pct = Math.max(0, Math.min(100, item.probability * 100));
+    slotEl.textContent = `r${p.rotation} · c${p.x + 1}`;
+    slotEl.className = isChosen ? "slot-id chosen" : "slot-id";
+    descEl.textContent = shortDesc(p);
+    descEl.className = isChosen ? "slot-desc chosen" : "slot-desc";
+    barEl.style.width = `${pct.toFixed(1)}%`;
+    barEl.className = isChosen ? "bar-fill chosen" : "bar-fill";
+    valEl.textContent = `${pct.toFixed(1)}%`;
+    valEl.className = isChosen ? "prob-pct" : "prob-pct dim";
+  }
+
+  if (answers) {
+    const strat = answers.strategy;
+    if (strat?.probabilities) {
+      const topChoice = strat.choice || "build_clean";
+      const topProb = (strat.probabilities[topChoice] ?? 0) * 100;
+      $("read-strat-val").textContent = topChoice;
+      $("read-strat-bar").style.width = `${Math.max(2, topProb).toFixed(1)}%`;
+      $("read-strat-pct").textContent = `${topProb.toFixed(1)}%`;
+      for (const k of ["build_clean", "clear_lines", "repair_surface", "survive"]) {
+        const cell = $(`st-${k}`);
+        const pctSpan = $(`stp-${k}`);
+        if (cell && pctSpan) {
+          cell.className = k === topChoice ? "strat-cell active" : "strat-cell";
+          pctSpan.textContent = `${Math.round((strat.probabilities[k] || 0) * 100)}%`;
+        }
+      }
+    }
+
+    const health = answers.board_health;
+    if (typeof health?.score === "number") {
+      // health.score is 0..3 (0 = Clean, 3 = Critical); display as 1.0..4.0 health scale
+      const raw = Math.max(0, Math.min(3, health.score));
+      const displayScale = 4.0 - raw; // 4.0 is healthiest, 1.0 is critical
+      const label = (HEALTH_LEVELS[Math.round(raw)] || "Clean").split(":")[0];
+      const fillPct = ((4.0 - raw) / 3.0) * 85 + 15;
+      const bar = $("read-health-bar");
+      $("read-health-val").textContent = `${label} (${displayScale.toFixed(2)})`;
+      bar.style.width = `${fillPct.toFixed(1)}%`;
+      bar.className = raw < 1.2 ? "bar-fill good" : raw < 2.1 ? "bar-fill warn" : "bar-fill bad";
+      $("read-health-score").textContent = `${displayScale.toFixed(1)} / 4`;
+    }
+
+    const fit = answers.next_piece_fits;
+    if (typeof fit?.noul === "number") {
+      const pct = Math.max(0, Math.min(100, fit.noul * 100));
+      const isYes = pct >= 50;
+      $("read-fit-val").textContent = isYes ? "YES (clean spot)" : "NO (tight surface)";
+      const bar = $("read-fit-bar");
+      bar.style.width = `${pct.toFixed(1)}%`;
+      bar.className = isYes ? "bar-fill good" : "bar-fill warn";
+      $("read-fit-pct").textContent = `${pct.toFixed(1)}%`;
+    }
+  }
+
+  const healthRounded = typeof answers?.board_health?.score === "number" ? Number((4 - answers.board_health.score).toFixed(2)) : 4.0;
+  const fitRounded = typeof answers?.next_piece_fits?.noul === "number" ? Number(answers.next_piece_fits.noul.toFixed(2)) : 1.0;
+  $("live-json").textContent =
+    `{\n` +
+    `  "model": "${MODEL}", "piece": "${chosen.piece}", "choice": "${chosen.id}",\n` +
+    `  "strategy": "${answers?.strategy?.choice ?? "heuristic"}", "health": ${healthRounded}, "fits": ${fitRounded}\n` +
+    `}`;
+  $("json-meta").textContent = `Decis engine · ${decision.placements?.length ? Math.min(6, decision.placements.length) : 6} options · ${latencyMs ?? 0} ms`;
+}
+
+function renderMetrics() {
+  $("m-score").textContent = game.score;
+  $("m-lines").textContent = game.lines;
+  $("m-pieces").textContent = game.pieces;
+  $("m-ms").textContent = `${stats.lastLatency} ms`;
+  const agreePct = stats.decisions ? Math.round((stats.agreements / stats.decisions) * 100) : 100;
+  $("m-agree").textContent = `${agreePct}%`;
+  $("calls-counter").textContent = `${stats.calls} /v1/systemone calls · ${stats.tokens.toLocaleString()} tokens`;
+}
+
+function setStatus(text, state = "live") {
+  $("status-text").textContent = text;
+  $("dot").className = `dot ${state}`;
+}
+
+function drawCell(x, y, color, alpha = 1, outline = false) {
+  const px = x * CELL;
+  const py = y * CELL;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  if (outline) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(px + 2, py + 2, CELL - 4, CELL - 4);
+  } else {
+    ctx.fillStyle = color;
+    ctx.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
+  }
+  ctx.restore();
+}
+
+function drawBoard() {
+  ctx.fillStyle = "#0d0f17";
+  ctx.fillRect(0, 0, CSS_W, CSS_H);
+
+  ctx.strokeStyle = "#161a29";
+  ctx.lineWidth = 1;
+  for (let x = 1; x < WIDTH; x++) {
+    ctx.beginPath();
+    ctx.moveTo(x * CELL + 0.5, 0);
+    ctx.lineTo(x * CELL + 0.5, CSS_H);
+    ctx.stroke();
+  }
+  for (let y = 1; y < HEIGHT; y++) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * CELL + 0.5);
+    ctx.lineTo(CSS_W, y * CELL + 0.5);
+    ctx.stroke();
+  }
+
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const c = game.board[y][x];
+      if (c) {
+        const isFlash = game.flashRows.includes(y);
+        drawCell(x, y, isFlash ? "#e2e8f0" : PIECE_COLORS[c], 1, false);
+      }
+    }
+  }
+
+  for (const g of game.ghosts) {
+    const col = g.chosen ? PIECE_COLORS[game.current] : "#64748b";
+    const alpha = g.chosen ? 0.85 : Math.max(0.18, Math.min(0.45, g.probability));
+    for (const [gx, gy] of g.cells) {
+      drawCell(gx, gy, col, alpha, true);
+    }
+  }
+
+  if (game.active) {
+    const { piece, rotation, x, y } = game.active;
+    const cells = PIECES[piece][rotation].cells;
+    for (const [cx, cy] of cells) {
+      const py = y + cy;
+      if (py >= -1) {
+        drawCell(x + cx, py, PIECE_COLORS[piece], 1, false);
+      }
+    }
+  }
+}
+
+function drawNextPiece() {
+  nextCtx.fillStyle = "#0d0f17";
+  nextCtx.fillRect(0, 0, 74, 56);
+  if (!game.next) return;
+  const st = PIECES[game.next][0];
+  const sz = 13;
+  const ox = Math.floor((74 - st.width * sz) / 2);
+  const oy = Math.floor((56 - st.height * sz) / 2);
+  nextCtx.fillStyle = PIECE_COLORS[game.next];
+  for (const [cx, cy] of st.cells) {
+    nextCtx.fillRect(ox + cx * sz + 1, oy + cy * sz + 1, sz - 2, sz - 2);
+  }
+}
+
+// Smooth 60 FPS requestAnimationFrame drop animation (~210 ms total)
+function animateDrop60Fps(target, signal) {
+  return new Promise((resolve) => {
+    const { piece, rotation, x: tx, y: ty } = target;
+    const cells = PIECES[piece][rotation].cells;
+    const startX = Math.min(3, WIDTH - PIECES[piece][rotation].width);
+    const durationMs = 200;
+    const startTime = performance.now();
+
+    function frame(now) {
+      if (signal?.aborted || !game.running) {
+        resolve();
+        return;
+      }
+      const t = Math.min(1, (now - startTime) / durationMs);
+      // Smooth ease-out horizontal interpolation in first 35%, vertical drop across 100%
+      const horizT = Math.min(1, t / 0.35);
+      const curX = Math.round(startX + (tx - startX) * horizT);
+      const curY = ty * (t * t * (3 - 2 * t));
+      game.active = { piece, rotation, x: curX, y: curY };
+      drawBoard();
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        game.active = { piece, rotation, x: tx, y: ty };
+        drawBoard();
+        resolve();
+      }
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+function getMode() {
+  return $("mode-select").value;
+}
+
+async function resolveMoveDecision(placements, signal) {
+  const mode = getMode();
+  if (mode === "heuristic") {
+    return { ...heuristicDecision(placements), latencyMs: 0, live: true, placements };
+  }
+  const key = stateKey(game.board, game.current, game.next);
+  let promise;
+  if (prefetchEntry && prefetchEntry.key === key) {
+    promise = prefetchEntry.promise;
+    prefetchEntry = null;
+    $("m-pipeline").textContent = "prefetched (0 ms wait)";
+  } else {
+    $("m-pipeline").textContent = "live /v1/systemone";
+    promise = requestDecisionFor(game.board, game.current, game.next, game.lines, signal);
+  }
+  return await promise;
+}
+
+async function runAutopilotLoop(signal) {
+  while (game.running && !game.over && !signal.aborted) {
+    const mode = getMode();
+    if (mode === "manual") {
+      await new Promise((r) => setTimeout(r, 50));
+      continue;
+    }
+
+    const placements = enumeratePlacements(game.board, game.current);
+    if (!placements.length) {
+      finishGame();
+      return;
+    }
+
+    const heur = heuristicDecision(placements);
+    let decision;
+    try {
+      decision = await resolveMoveDecision(placements, signal);
+    } catch (e) {
+      if (signal.aborted) return;
+      setStatus("Retry", "warn");
+      await new Promise((r) => setTimeout(r, 120));
+      continue;
+    }
+    if (!decision || signal.aborted || !game.running) return;
+
+    if (mode === "jev") {
+      stats.calls += 1;
+      stats.lastLatency = decision.latencyMs;
+      stats.tokens += decision.response?.usage?.input_tokens || 412;
+      setStatus(
+        decision.live ? `${decision.latencyMs} ms · live` : `${decision.latencyMs} ms · sim`,
+        decision.live ? "live" : "warn"
+      );
+    } else {
+      stats.lastLatency = 0;
+      setStatus("0 ms · heuristic", "live");
+    }
+
+    stats.decisions += 1;
+    if (decision.chosen.id === heur.chosen.id) stats.agreements += 1;
+
+    renderProbabilityPanel(decision, mode);
+    renderMetrics();
+
+    const chosen = decision.chosen;
+    game.target = chosen;
+    game.ghosts = decision.ranked
+      .slice(0, 3)
+      .map((r) => ({ cells: r.placement.cells, probability: r.probability, chosen: r.placement.id === chosen.id }));
+
+    // Pipeline / pre-fetch the NEXT piece's /v1/systemone call immediately while the current piece drops at 60 FPS
+    const nextBoard = chosen.afterBoard;
+    const nextPiece = game.next;
+    const pieceAfterNext = peekBag();
+    const nextLines = game.lines + chosen.linesCleared;
+    if (mode === "jev") {
+      const pfKey = stateKey(nextBoard, nextPiece, pieceAfterNext);
+      prefetchEntry = {
+        key: pfKey,
+        promise: requestDecisionFor(nextBoard, nextPiece, pieceAfterNext, nextLines, signal),
+      };
+    }
+
+    await animateDrop60Fps(chosen, signal);
+    if (signal.aborted || !game.running) return;
+
+    lockAndAdvance(chosen);
+  }
+}
+
+function lockAndAdvance(chosen) {
+  game.active = null;
+  game.ghosts = [];
+  const locked = lockPiece(game.board, chosen.piece, chosen.rotation, chosen.x, chosen.y);
+  const { board: afterBoard, cleared } = clearLines(locked);
+  const level = Math.floor(game.lines / 10) + 1;
+  game.board = afterBoard;
+  game.score += [0, 100, 300, 500, 800][cleared] * level;
+  game.lines += cleared;
+  game.pieces += 1;
+  game.current = game.next;
+  game.next = nextFromBag();
+  renderMetrics();
+  drawBoard();
+  drawNextPiece();
+
+  if (collides(game.board, PIECES[game.current][0].cells, 3, 0)) {
+    finishGame();
+  } else if (getMode() === "manual") {
+    spawnManualActive();
+  }
+}
+
+function finishGame() {
+  game.over = true;
+  game.running = false;
+  $("overlay-title").textContent = `Game Over · ${game.score} pts`;
+  $("overlay-sub").textContent = `${game.lines} lines · ${game.pieces} pieces`;
+  $("overlay").classList.remove("hidden");
+  $("btn-start").textContent = "Start Autopilot";
+  setStatus("Game over", "warn");
+}
+
+function spawnManualActive() {
+  const rot = 0;
+  const x = 3;
+  const y = 0;
+  game.active = { piece: game.current, rotation: rot, x, y };
+  const placements = enumeratePlacements(game.board, game.current);
+  if (placements.length) {
+    requestDecisionFor(game.board, game.current, game.next, game.lines, abortCtrl?.signal).then((dec) => {
+      if (dec && getMode() === "manual") {
+        renderProbabilityPanel(dec, "jev");
+        game.ghosts = [{ cells: dec.chosen.cells, probability: 1, chosen: true }];
+        drawBoard();
+      }
+    });
+  }
+  drawBoard();
+}
+
+function resetGame() {
+  if (abortCtrl) abortCtrl.abort();
+  abortCtrl = null;
+  prefetchEntry = null;
+  bag = [];
+  game.board = emptyBoard();
+  game.current = nextFromBag();
+  game.next = nextFromBag();
+  game.score = 0;
+  game.lines = 0;
+  game.pieces = 0;
+  game.over = false;
+  game.running = false;
+  game.active = { piece: game.current, rotation: 0, x: 3, y: 0 };
+  game.ghosts = [];
+  game.flashRows = [];
+  Object.assign(stats, { calls: 0, lastLatency: 0, tokens: 0, agreements: 0, decisions: 0 });
+  $("overlay").classList.add("hidden");
+  $("btn-start").textContent = "Start Autopilot";
+  setStatus("Ready", "live");
+
+  const initialPlacements = enumeratePlacements(game.board, game.current);
+  const initHeur = heuristicDecision(initialPlacements);
+  game.ghosts = [{ cells: initHeur.chosen.cells, probability: 1, chosen: true }];
+  renderProbabilityPanel({ ...initHeur, placements: initialPlacements, latencyMs: 0 }, "heuristic");
+  renderMetrics();
+  drawBoard();
+  drawNextPiece();
+}
+
+function startGame() {
+  if (game.over) resetGame();
+  if (game.running) {
+    game.running = false;
+    if (abortCtrl) abortCtrl.abort();
+    $("btn-start").textContent = "Start Autopilot";
+    setStatus("Paused", "warn");
+    return;
+  }
+  game.running = true;
+  $("btn-start").textContent = "Pause";
+  abortCtrl = new AbortController();
+  if (getMode() === "manual") {
+    spawnManualActive();
+  }
+  runAutopilotLoop(abortCtrl.signal);
+}
+
+$("btn-start").addEventListener("click", startGame);
+$("btn-reset").addEventListener("click", resetGame);
+$("mode-select").addEventListener("change", () => {
+  prefetchEntry = null;
+  if (getMode() === "manual" && game.running) {
+    spawnManualActive();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (getMode() !== "manual" || !game.active || game.over) return;
+  const { piece, rotation, x, y } = game.active;
+  const rots = PIECES[piece];
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    if (!collides(game.board, rots[rotation].cells, x - 1, y)) game.active.x -= 1;
+    drawBoard();
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    if (!collides(game.board, rots[rotation].cells, x + 1, y)) game.active.x += 1;
+    drawBoard();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    const nextRot = (rotation + 1) % rots.length;
+    const clampedX = Math.min(x, WIDTH - rots[nextRot].width);
+    if (!collides(game.board, rots[nextRot].cells, clampedX, y)) {
+      game.active.rotation = nextRot;
+      game.active.x = clampedX;
+    }
+    drawBoard();
+  } else if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (!collides(game.board, rots[rotation].cells, x, y + 1)) {
+      game.active.y += 1;
+      drawBoard();
+    }
+  } else if (e.key === " ") {
+    e.preventDefault();
+    const dropY = hardDropY(game.board, rots[rotation].cells, x);
+    if (dropY !== null) {
+      const placements = enumeratePlacements(game.board, piece);
+      const match = placements.find((p) => p.rotation === rotation && p.x === x) || placements[0];
+      if (match) lockAndAdvance(match);
+    }
+  }
+});
+
+resetGame();
+</script>
+</body>
+</html>

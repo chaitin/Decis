@@ -39,3 +39,13 @@ services:
         DECIS_EXTRAS: kev
         DECIS_ENGINE: kev-0.8b
         DECIS_PREDOWNLOAD: kev-0.8b
+
+  # A different Dockerfile, because the playground is not an engine image: it installs no
+  # engine extra and imports no `decis`. It is in this file for the same reason the engines
+  # are -- a checkout builds what it runs, so `docker compose up` does not depend on a
+  # playground image having been published yet.
+  playground:
+    image: decis-local:playground
+    build:
+      context: .
+      dockerfile: playground/Dockerfile

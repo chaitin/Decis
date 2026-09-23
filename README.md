@@ -8,7 +8,7 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 > **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
 > contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **445 tests passing** without weights — including the official
+> Dockerfile and CI are implemented, with **480 tests passing** without weights — including the official
 > `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
 > **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
 > real requests today; 27 further tests load the real weights. Adding kev required **no change to
@@ -270,6 +270,7 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 |---|---|---|
 | `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | the 647 MiB checkpoint, baked in — 4.4 GB to pull on amd64, 4.5 GB on arm64; ~2 min to `/readyz` and ~3 GiB resident on CPU |
 | `kev-0.8b` | kev 0.8B | the 1.7 GiB adapter and Qwen base, baked in — 6.0 GB / 6.2 GB; wants a GPU |
+| `playground` | the three browser games, not an engine | four HTML pages and a standard-library Python proxy; it answers the games and forwards their `/v1/systemone` calls to whichever engine is up |
 
 `laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis`
 gives you the default engine. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
@@ -325,6 +326,59 @@ The `-f docker-compose.yml` is not decoration: inside a checkout Compose also lo
 `docker-compose.override.yml`, which builds the same services from your working tree into
 `decis-local:*` instead. Leave it off to develop against your edit; a deployment copies
 `docker-compose.yml` alone.
+
+### The playground: the three games, in a browser
+
+The same `docker compose up` starts the playground on <http://localhost:8080>: snake, dino and
+tetris, each playing itself by calling `POST /v1/systemone` once per decision.
+
+| Game | What it asks |
+|---|---|
+| `/snake` | one `choice` over four moves, from a flood-fill safety analysis |
+| `/dino` | one `choice` over jump/duck/run, from a physics planner's safe/best marks |
+| `/tetris` | a `choice` over five placements, a `choice` strategy, a `score` stack health, and a `noul` fit |
+
+"How many placements?" is a capacity question, not a taste one. Laya charges a whole question
+against `head_max_len` and refuses an over-budget one instead of truncating it, so the page asks
+with the number that fits the *smallest* budget a checkpoint can fall back to. Measured through
+the engine's own `measure()`: the placement question is 178 tokens at five options and the whole
+request is 415 of a 512-token `state + question` budget, against a fallback of 512/192. Six
+options would be about 207 and get a 422. The page drops to its own heuristic if an engine still
+says no, which is what the `sim` badge means.
+
+To re-measure after changing a page's questions, you do not need a tokenizer: the engine refuses
+an over-budget question with the number in it — `Question 'placement' is about N tokens, over
+this model's limit of M per question` — and a successful response reports the same figures under
+`usage.input_tokens` and the `decis` namespace. Send the page's own payload and read it off.
+
+The service is a proxy, not a client: the browser calls `/v1/systemone` on the playground's own
+origin, and the playground attaches `DECIS_API_KEY` and forwards it. That is why the pages never
+hold a key — and why **anyone who can reach the playground's port can use the model**. It is the
+same decision as publishing the engine's port, without even the token prompt. The default
+publishes it on every interface, like the engines; `.env.example` shows the loopback form
+(`DECIS_PLAYGROUND_HOST_PORT=127.0.0.1:8080`).
+
+It needs no configuration to find the engine. It asks `/readyz` on
+`http://laya-multilingual:8000`, `http://kev-0.8b:8000` and `http://host.docker.internal:8000`
+in that order, and connects to the first that answers — so the same service works under
+`--profile kev-0.8b` and next to a `decis serve` running on the host. While the engine is still
+loading, the playground's own `/readyz` reports `searching` and the games say so instead of
+failing. Set `DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip the search.
+
+The proxy also rewrites `model` to the id the engine reported at `/readyz`, so the pages can ask
+for `jev-latest` and still work under either profile without `DECIS_ACCEPT_FOREIGN_DEFAULTS`.
+
+Building it is one Dockerfile and no Python dependencies:
+
+```bash
+docker build -f playground/Dockerfile -t decis-playground .
+docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
+  -e DECIS_PLAYGROUND_CANDIDATES=http://host.docker.internal:8000 decis-playground
+```
+
+On CPU the games are slower than the reference GPU deployment, and each one paces itself around
+the latency it measures. Dino and tetris show a `sim` badge when they fall back to their local
+heuristic — that means the API refused or could not be reached, not that the model moved.
 
 To build an image yourself:
 
@@ -386,12 +440,13 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 - **[kev](https://github.com/jaredpalmer/kev)** (Jared Palmer) — a Jev-style decision model built on Qwen3.5, and already a TypeSafe-compatible server for its own weights. Decis reuses kev's inference kernel (vendor-pinned, Apache-2.0, attributed in `NOTICE`) and generalises the serving layer to many engines.
 - **[Laya](https://huggingface.co/convaiinnovations/laya)** (Convai Innovations) — Apache-2.0, multilingual, non-autoregressive, one forward pass. Decis uses the official `laya` package as an engine.
 - **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)** — the multi-model container build pattern Decis follows (one Dockerfile with a build arg, GitHub Actions matrix pushing by digest, then `imagetools create`).
+- **[djev-run](https://github.com/taeold/djev-run)** (Daniel Lee) — the Snake, Dino and Tetris pages in `playground/web/` are adapted from it. Decis changed their endpoint to the playground's own origin (so the API key stays server-side), removed the borrowed latency baselines, and cut Tetris from sixteen verbose options to six terse ones so it fits the default engine's per-question token budget. Attribution is in `NOTICE`; the games' physics and planner code comes from the projects that repository credits.
 
 ## Development
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 445 tests, ~11 s, no weights, no network
+uv run pytest -q                        # 480 tests, ~22 s, no weights, no network
 uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token
