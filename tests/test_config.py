@@ -76,7 +76,7 @@ def test_defaults_are_sane(clean_env: None) -> None:
     settings = load_settings(env_file="")
     assert settings.host == "0.0.0.0"
     assert settings.port == 8000
-    assert settings.default_engine == "mock"
+    assert settings.default_engine == "laya-multilingual"
     assert settings.max_request_bytes == 2 * 1024 * 1024
     assert not settings.auth_enabled
     assert settings.accept_foreign_defaults

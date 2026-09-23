@@ -3,11 +3,15 @@
 One `curl` command per example, run against a server you started (see
 [`README.md`](README.md)). Each command ends with `-w '\n%{http_code}\n'` so the status
 code is visible; drop that flag for clean JSON. Every status shown below is asserted by
-`tests/test_examples.py`.
+`tests/test_examples.py`, which starts a real server and runs these commands verbatim.
 
-The examples use `mock` because it needs no weights and answers deterministically. Point
-them at a real engine by changing `"model"` — the request shape is identical for all
-engines, which is the point of Decis.
+The requests send `"model": "jev-latest"` — the official SDK's own default name, which
+Decis maps to whichever engine the server was started with (`DECIS_DEFAULT_ENGINE`,
+`laya-multilingual` by default). The response bodies below show the **shape** the contract
+guarantees, with `<…>` for values that depend on the engine and its weights — they are not
+captured output, and no number here is meant to be reproduced verbatim. The field-by-field
+contract, with evidence levels, is
+[`docs/api-compatibility.md`](../docs/api-compatibility.md).
 
 ```bash
 BASE=http://localhost:8000
@@ -26,8 +30,8 @@ curl -s -w '\n%{http_code}\n' "$BASE/healthz"
 # -> 200
 ```
 
-```json
-{"status":"ok","version":"0.1.0"}
+```jsonc
+{"status": "ok", "version": "<server version>"}
 ```
 
 ```bash
@@ -35,8 +39,8 @@ curl -s -w '\n%{http_code}\n' "$BASE/readyz"
 # -> 200
 ```
 
-```json
-{"status":"ready","engine":"mock"}
+```jsonc
+{"status": "ready", "engine": "<engine id>"}
 ```
 
 While loading, the same call returns 503 with `retry-after: 1` — a "not yet" that is worth
@@ -46,12 +50,12 @@ engine would retry forever (`src/decis/routes.py:76-88`):
 
 ```jsonc
 // still loading -- retry
-{"status":"loading","engine":"laya-multilingual"}
+{"status": "loading", "engine": "<engine id>"}
 // HTTP/1.1 503 Service Unavailable
 // retry-after: 1
 
 // terminal failure -- do not retry, alert instead
-{"status":"failed","engine":"laya-multilingual","error":"..."}
+{"status": "failed", "engine": "<engine id>", "error": "<why>"}
 // HTTP/1.1 503 Service Unavailable
 ```
 
@@ -68,21 +72,19 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/models" -H "authorization: Bearer $TOKEN
 ```
 
 ```jsonc
-{"models":[
-  {"name":"decis/mock@0.1.0","description":"Deterministic mock engine. ...","release_date":"2026-09-22",
-   "decis":{"engine":"mock","version":"0.1.0","primitives":["choice","noul","score"],
-            "max_sequence_tokens":32000,"device":"cpu","dtype":"none"}},
-  {"name":"decis/laya-multilingual@not-installed","description":"Laya (multilingual) ...",
-   "decis":{"engine":"laya-multilingual","version":"not-installed",
-            "max_sequence_tokens":512,"max_question_tokens":192,"device":"unloaded"}},
-  {"name":"decis/kev-0.8b@vendored-90990a5","description":"kev: Qwen3.5 + LoRA ...",
-   "decis":{"engine":"kev-0.8b","max_state_tokens":384,"languages":"English ..."}}
+{"models": [
+  {"name": "decis/<engine>@<version>", "description": "…", "release_date": "…",
+   "decis": {"engine": "<engine>", "version": "<version>",
+             "primitives": ["choice", "noul", "score"],
+             "max_sequence_tokens": "<n>", "device": "<cpu|cuda|mps|unloaded>",
+             "dtype": "<fp32|fp16|bf16|none>"}}
 ]}
 ```
 
-> Note the difference between `device`/`dtype` for a loaded engine (`cpu`/`none`) and an
-> unloaded one (`unloaded`). A `/v1/models` entry saying `unloaded` is installed but idle;
-> `not-installed` in the version means the weights are missing.
+> Note the difference between `device`/`dtype` for a loaded engine and an unloaded one
+> (`"unloaded"`). A `/v1/models` entry saying `unloaded` is installed but idle;
+> `not-installed` in the version means the weights are missing. The numeric capacities are
+> engine-specific; `uv run decis models` prints them for the machine you are on.
 
 ## 3. The smallest possible call
 
@@ -99,12 +101,13 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
 # -> 200
 ```
 
-```json
-{"model":"decis/mock@0.1.0",
- "answers":{"is_bug":{"type":"noul","noul":0.4725}},
- "usage":{"input_tokens":13,"output_tokens":10},
- "decis":{"engine":"mock","engine_version":"0.1.0","device":"cpu","dtype":"none",
-          "latency_ms":0.08,"batch_size":1,"requested_model":"jev-latest"}}
+```jsonc
+{"model": "decis/<engine>@<version>",
+ "answers": {"is_bug": {"type": "noul", "noul": "<P(true), a number in [0, 1]>"}},
+ "usage": {"input_tokens": "<n>", "output_tokens": "<n>"},
+ "decis": {"engine": "<engine>", "engine_version": "<version>", "device": "cpu",
+           "dtype": "<dtype>", "latency_ms": "<n>", "batch_size": 1,
+           "requested_model": "jev-latest"}}
 ```
 
 Two things worth noticing:
@@ -126,7 +129,7 @@ pass. `criteria` is what the model chooses between: a map of `name -> descriptio
 curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{
   "state": "We were billed twice for March. Please refund the duplicate today or we will cancel our plan.",
-  "model": "mock",
+  "model": "jev-latest",
   "questions": {
     "department": {"type": "choice", "instructions": "Which team should handle this?",
                    "criteria": {"billing": "invoices, payments, refunds",
@@ -140,17 +143,19 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
 ```
 
 ```jsonc
-{"model":"decis/mock@0.1.0",
- "answers":{
-   "department":{"type":"choice","choice":"technical","confidence":0.6083,
-                 "probabilities":{"billing":0.1879,"technical":0.7389,"sales":0.0732}},
-   "churn_risk":{"type":"noul","noul":0.9711},
-   "urgency":{"type":"score","score":1.9608,"confidence":0.6254,
-              "legend":{"0":"Can wait","1":"Soon","2":"Today","3":"Immediately"},
-              "probabilities":{"0":0.0109,"1":0.0709,"2":0.8647,"3":0.0535}}},
- "usage":{"input_tokens":118,"output_tokens":94},
- "decis":{"engine":"mock","engine_version":"0.1.0","device":"cpu","dtype":"none",
-          "latency_ms":0.25,"batch_size":3}}
+{"model": "decis/<engine>@<version>",
+ "answers": {
+   "department": {"type": "choice", "choice": "<one of your criteria keys>",
+                  "confidence": "<0..1>",
+                  "probabilities": {"billing": "<p>", "technical": "<p>", "sales": "<p>"}},
+   "churn_risk": {"type": "noul", "noul": "<P(true)>"},
+   "urgency": {"type": "score", "score": "<expected level, 0..L-1>",
+               "confidence": "<0..1>",
+               "legend": {"0": "Can wait", "1": "Soon", "2": "Today", "3": "Immediately"},
+               "probabilities": {"0": "<p>", "1": "<p>", "2": "<p>", "3": "<p>"}}},
+ "usage": {"input_tokens": "<n>", "output_tokens": "<n>"},
+ "decis": {"engine": "<engine>", "engine_version": "<version>", "device": "cpu",
+           "dtype": "<dtype>", "latency_ms": "<n>", "batch_size": 3}}
 ```
 
 How to read the three answers:
@@ -158,7 +163,7 @@ How to read the three answers:
 | Primitive | The decision | The uncertainty |
 |---|---|---|
 | `choice` | `choice` — always the highest-probability criterion | `probabilities` over your `criteria` keys, plus `confidence` |
-| `score` | `score` — the expected level, `Σ k·p(k)`, so it can land between levels (`1.96` here) | `probabilities` over `"0"`, `"1"`, … and `confidence` |
+| `score` | `score` — the expected level, `Σ k·p(k)`, so it can land between levels (e.g. `1.96`) | `probabilities` over `"0"`, `"1"`, … and `confidence` |
 | `noul` | `noul` — `P(true)` as a plain number | that number *is* the uncertainty; there is no `confidence` |
 
 `confidence` is normalised so that a coin flip is 0 and certainty is 1: for `choice` it is
@@ -181,9 +186,9 @@ the model sees it. A `noul` question can also define what counts as yes and no:
 ```bash
 curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{
+  "model": "jev-latest",
   "state": [{"ticket": "App crashes on launch", "notes": "happens every time, Android 14"},
             {"ticket": "Feature request: dark mode", "notes": "would be nice"}],
-  "model": "mock",
   "questions": {
     "needs_engineer": {"type": "noul",
                        "instructions": "Does this ticket need an engineer rather than a product manager?",
@@ -193,12 +198,12 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
 # -> 200
 ```
 
-```json
-{"model":"decis/mock@0.1.0",
- "answers":{"needs_engineer":{"type":"noul","noul":0.9435}},
- "usage":{"input_tokens":65,"output_tokens":12},
- "decis":{"engine":"mock","engine_version":"0.1.0","device":"cpu","dtype":"none",
-          "latency_ms":0.1,"batch_size":1}}
+```jsonc
+{"model": "decis/<engine>@<version>",
+ "answers": {"needs_engineer": {"type": "noul", "noul": "<P(true)>"}},
+ "usage": {"input_tokens": "<n>", "output_tokens": "<n>"},
+ "decis": {"engine": "<engine>", "engine_version": "<version>", "device": "cpu",
+           "dtype": "<dtype>", "latency_ms": "<n>", "batch_size": 1}}
 ```
 
 The array became one block of text; the question is asked once about the whole thing, not
@@ -208,11 +213,9 @@ larger batch share the same forward pass (see [`python_sdk.py`](python_sdk.py)).
 > **A `noul` question's `criteria` keys are `"true"` and `"false"`** — not `"yes"` and
 > `"no"`, which is the natural thing to guess. The contract permits unknown properties, so
 > mistyping them currently changes the answer **without an error**: the rubric text is
-> dropped and the model answers the bare question. Measured — the request above with
-> `"yes"`/`"no"` returns `noul: 0.3694` and 47 input tokens instead of `0.9435` and 65,
-> with HTTP 200 either way. Recorded as D13 in
-> [`docs/design-review.md`](../docs/design-review.md); **the wire contract allows the
-> extras, so tightening it is a product decision, not a bug fix.**
+> dropped, the model answers the bare question, and the response is HTTP 200 either way.
+> Recorded as D13 in [`docs/design-review.md`](../docs/design-review.md); **the wire
+> contract allows the extras, so tightening it is a product decision, not a bug fix.**
 
 ## 6. The error contract
 
@@ -223,7 +226,7 @@ Four cases, and the distinction between the first two matters.
 ```bash
 curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
   -H 'content-type: application/json' -d '{
-  "state": "x", "model": "mock",
+  "state": "x", "model": "jev-latest",
   "questions": {"q": {"type": "noul", "instructions": "?"}}}'
 # -> 403
 ```
@@ -238,7 +241,7 @@ mistake to make by hand.
 ```bash
 curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
   -H "authorization: $TOKEN" -H 'content-type: application/json' -d '{
-  "state": "x", "model": "mock",
+  "state": "x", "model": "jev-latest",
   "questions": {"q": {"type": "noul", "instructions": "?"}}}'
 # -> 403
 ```
@@ -252,7 +255,7 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
 ```bash
 curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
   -H 'authorization: Bearer not-the-token' -H 'content-type: application/json' -d '{
-  "state": "x", "model": "mock",
+  "state": "x", "model": "jev-latest",
   "questions": {"q": {"type": "noul", "instructions": "?"}}}'
 # -> 401
 ```
@@ -272,7 +275,7 @@ problem:
 ```bash
 curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{
-  "state": "x", "model": "mock",
+  "state": "x", "model": "jev-latest",
   "questions": {"q": {"type": "choice", "instructions": "?", "criteria": {}}}}'
 # -> 422
 ```
@@ -293,8 +296,8 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/systemone" \
 ```
 
 ```jsonc
-{"detail":[{"loc":["body","model"],"type":"value_error",
-  "msg":"Unknown model 'gpt-9'. Available on this server: decis-kev, decis-laya, ..."}]}
+{"detail": [{"loc": ["body", "model"], "type": "value_error",
+  "msg": "Unknown model 'gpt-9'. Available on this server: <every registered name>"}]}
 ```
 
 ## 7. Every response carries a request id
@@ -305,14 +308,14 @@ report, and the official SDK raises if the header is missing.
 ```bash
 curl -s -D - -o /dev/null "$BASE/v1/systemone" \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{
-  "state": "x", "model": "mock",
+  "state": "x", "model": "jev-latest",
   "questions": {"q": {"type": "noul", "instructions": "?"}}}'
 # -> 200
 ```
 
 ```text
 HTTP/1.1 200 OK
-x-typesafe-request-id: req_83ef524b2c881d9f200760b3da33c501
+x-typesafe-request-id: req_<32 lowercase hex digits>
 ```
 
 ## 8. Overload: 429 with a retry instruction
@@ -326,8 +329,8 @@ See `docs/design.md §5.3`.
 // HTTP/1.1 429 Too Many Requests
 // retry-after-ms: 1000
 // retry-after: 1
-{"detail":{"error_type":"rate_limit_error",
-           "message":"The mock engine is still busy with earlier requests after 8.0s, so this request was not started. It is refused rather than left to outlive the client's timeout, which would make the client retry and load the engine further. Retry shortly."}}
+{"detail": {"error_type": "rate_limit_error",
+            "message": "The <engine> engine is still busy with earlier requests after 8.0s, so this request was not started. It is refused rather than left to outlive the client's timeout, which would make the client retry and load the engine further. Retry shortly."}}
 ```
 
 The message is generated by `InProcessScheduler` (`src/decis/scheduler.py:236`) and names

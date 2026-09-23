@@ -11,13 +11,15 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**427 通过 / 31 跳过**，约 10 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**449 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**428 通过 / 31 跳过**，约 10 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**450 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
-> **已注册引擎**：`mock`（无权重）、`laya`、`laya-multilingual`、`laya-typed-decisions`、
+> **已注册引擎**：`laya`、`laya-multilingual`、`laya-typed-decisions`、
 > `kev-0.8b`（kev 的适配器 + Qwen3.5-0.8B 基座，见 `paths.BaseModel`）。
+> **注册表里没有假引擎**：无权重的确定性测试替身住在 `tests/fixture_engine.py`，
+> 由 `tests/conftest.py` 以 id `stub` 临时注册，出厂镜像永远不会用它作答。
 > **已实测的关键负结论**：`docs/design-review.md §4-M5` 已关闭，答案是**否定**——
 > 跨请求批处理在本机 CPU 上不提升吞吐（真实长度下最高 1.09x，长度倾斜时慢 3–5 倍），加进程也不提升。
 > **因此跨请求攒批器不应按 `design.md §6` 的原设计实现**，`/metrics` 与进程池的必要性也随之下降。
@@ -26,26 +28,25 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 >
 > **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 **Docker Hub**：
 > **所有引擎共用一个仓库 `kingfs/decis`，引擎就是 tag**（`kingfs/decis:laya-multilingual`、
-> `kingfs/decis:kev-0.8b`），master 推送时 `mock` 另外拿一个裸 `latest`，让 `docker pull kingfs/decis`
-> 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
+> `kingfs/decis:kev-0.8b`），master 推送时 `laya-multilingual` 另外拿一个裸 `latest`（它是默认引擎），
+> 让 `docker pull kingfs/decis` 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
 > "当前版本"不加 `-latest`，加了就等于同一个东西有两个名字，而其中一个是文档里没有的。
 > 多架构（amd64 + arm64 原生 runner，不用 QEMU），带 SBOM 与 provenance；
-> PR 只构建 amd64 的 `mock` 以验证 Dockerfile。
+> PR 只构建 amd64 的 **engine-free 基础镜像**（不装任何 extra）以验证 Dockerfile。
 > **矩阵、tag 方案、引擎 → pip extra 的映射全部在 `plan` 步骤里算，并由 `tests/test_docker_workflow.py`
 > 把那段脚本从 YAML 里抠出来真跑验证**（构建/合并步骤只做插值，用一个假的 `docker` 记录它被要求创建哪些 tag）。
 > **GHCR 已不再推送**（只有 Docker Hub 一个 registry）。
 > **已实测**（[run 35807645301](https://github.com/kingfs/Decis/actions/runs/35807645301)，commit `574c0ac`）
-> 6 个构建腿 + 3 个 merge 全绿，`kingfs/decis` 公开。**并且真的拉下来跑过**：
-> `docker pull kingfs/decis:mock` → 起容器 → 打 `/v1/systemone`，契约响应完整
-> （`noul` 标量、`score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、`usage`、
-> `x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401** 也都实测。
+> 6 个构建腿 + 3 个 merge 全绿，`kingfs/decis` 公开。当时还发布了一个无权重的假引擎镜像
+> （**现已从代码、工作流和文档中移除**），并真的拉下来跑过：起容器 → 打 `/v1/systemone`，
+> 契约响应完整（`noul` 标量、`score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、
+> `usage`、`x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401** 也都实测。
 > 容器里没配 `DECIS_API_KEY` 而监听 `0.0.0.0` 时**拒绝启动**（§3-19 在容器里同样生效）。
 > 体积用 registry API **逐层求和**量出（压缩后的下载量，不是 Docker Hub 页面那个数，
-> 也不是本地解压后的大小）：`mock` **72 MB**、`laya-multilingual` 3203 MB、`kev-0.8b` 3206 MB
-> （三者 amd64；arm64 分别 71 / 3346 / 3349 MB）。本地解压后 `mock` 是 208 MB。
-> `mock` 容器冷启动到 `/readyz` 报 ready：**2.5 s**（3 次：2.57 / 2.52 / 2.51）。
-> **`mock` 曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`）**，
-> 修好后构建时间从 9m16s 降到 59s，这里的数字都是修好之后量的。
+> 也不是本地解压后的大小）：`laya-multilingual` **3203 MB**、`kev-0.8b` **3206 MB**
+> （amd64；arm64 分别 3346 / 3349 MB）。**engine-free 基础镜像尚未量过体积与冷启动。**
+> 那个假引擎镜像曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），
+> 修好后构建时间从 9m16s 降到 59s——那个镜像已删除，但这条教训（§9 的三元表达式禁用）仍然有效。
 > **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、`laya-multilingual` / `kev-0.8b`
 > 在容器里的冷启动（需要拉权重，未测）。
 > 报镜像相关的结论时不要超出这个范围。
@@ -212,11 +213,11 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：427 通过 / 31 跳过，约 10 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：428 通过 / 31 跳过，约 10 秒）
 uv run ruff check && uv run ruff format --check
 
-uv run decis serve --host 0.0.0.0 --port 8000
-uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token
+uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
+uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token；同样需要引擎就绪
 uv run decis models                  # 列出已注册引擎及其在本机是否可用
 uv run decis doctor                  # 环境自检：依赖、配置安全性、设备
 ```
@@ -250,15 +251,13 @@ uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45
 镜像（已发布，CI 构建）：
 
 ```bash
-docker run --rm -p 8000:8000 kingfs/decis:mock          # 72 MB，无权重，立刻可跑
-docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 需要机器上已有权重或联网下载
+docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 默认引擎；需要机器上已有权重或联网下载
 docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
 ```
 
-本地构建：
+本地构建（不传 `DECIS_EXTRAS` 得到的是 engine-free 的纯 API 镜像：能起、能列模型，但不会 ready）：
 
 ```bash
-docker build -f docker/Dockerfile -t decis:mock .
 docker build -f docker/Dockerfile \
   --build-arg DECIS_EXTRAS=laya \
   --build-arg DECIS_ENGINE=laya-multilingual \
@@ -348,17 +347,17 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 - ❌ 增加一个收益类机制却没有正对照或能证明它触发的指标（`§2-D1`）
 - ❌ 比较不同进程数时让总线程预算不一致（那测的是线程超配，不是进程扩展性）
 - ❌ 用 `A && B || C` 表达"可能为空的三元"（GitHub 表达式里没有三元运算符，而**空字符串是假值**，
-  所以"没有 extra"这种分支永远选不中：`mock` 镜像因此装上了 Laya + torch，多出 3.1 GB，
-  见 `design-review.md §2-D14`）。选一个可以合法为空的值时，用真正的分支，或把决定搬到脚本里
+  所以"没有 extra"这种分支永远选不中：当时那个无权重镜像因此装上了 Laya + torch，多出 3.1 GB，
+  见 `design-review.md §2-D14`；那个镜像已随假引擎一起移除）。选一个可以合法为空的值时，
+  用真正的分支，或把决定搬到脚本里
 - ❌ 让测试里的映射表是**手抄的常量**而不是从被执行的那份东西读出来的
   （`design-review.md §2-D14`：表达式错了、抄本对了，于是测试恒绿地放过了一个 3.1 GB 的缺陷）
 - ❌ 在**共享仓库**里让多个构建/合并腿写同一个 tag（`design-review.md §2-D16`：
   per-arch 中间 tag 少了 artifact 名，六个腿互相覆盖，三个 tag 发出同一个 manifest）。
   检查"我这条腿的 tag 对不对"是不够的，必须有一条测试断言**任意两条腿的 tag 集合不相交**
 - ❌ 在文档里写出一个**没被任何测试对照过**的镜像 tag / URL / 文件名
-  （`design-review.md §2-D15`：README 写 `kingfs/decis:mock`，工作流产出的是 `mock-latest`，
-  照着文档拉的第一条命令就失败）。凡是文档里出现的、由 CI 产出的名字，都要有一条测试从
-  **真正产出它的那段脚本**里读出来比对
+  （`design-review.md §2-D15`：README 曾写一个实际不存在的镜像 tag，照着文档拉的第一条命令就失败）。
+  凡是文档里出现的、由 CI 产出的名字，都要有一条测试从**真正产出它的那段脚本**里读出来比对
 
 ---
 

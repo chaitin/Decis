@@ -7,9 +7,14 @@ executes the examples:
 * **every** `curl` command in `examples/curl.md` runs against a real server, and the
   status code printed next to it is asserted against the code actually returned;
 * a command added without a documented status is a failure, so the two cannot drift;
-* the mock's answer *values* printed in the doc are asserted too -- they are stable, so a
-  doc that shows numbers the server no longer produces is caught rather than trusted;
+* the response bodies in the doc show the contract's **shape**, not captured numbers
+  (engine outputs depend on the weights), so a test asserts the fields it names are the
+  ones the wire format defines;
 * `examples/python_sdk.py` runs end to end with the unmodified official SDK.
+
+The server the HTTP examples run against is the weight-free test double registered by
+`tests/conftest.py` (`tests/fixture_engine.py`): the examples do not name a model, so
+whatever engine the server was started with answers them.
 
 `curl` is not a Python dependency, so the HTTP examples skip (with a reason) where it is
 missing. The SDK script is Python and is always run when `typesafe-sdk` is importable.
@@ -17,7 +22,6 @@ missing. The SDK script is Python and is always run when `typesafe-sdk` is impor
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -52,7 +56,7 @@ def server_url():
         port = probe.getsockname()[1]
 
     app = create_app(
-        Settings(api_keys=(TOKEN,), host="127.0.0.1", default_engine="mock", env_file="", request_timeout_ms=8000)
+        Settings(api_keys=(TOKEN,), host="127.0.0.1", default_engine="stub", env_file="", request_timeout_ms=8000)
     )
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
@@ -175,71 +179,35 @@ def test_documented_curl_command_returns_the_documented_status(command: str, exp
     assert actual == expected, f"documented {expected}, got {actual}\ncommand: {command}\noutput: {output[:400]}"
 
 
-@pytest.mark.skipif(shutil.which("curl") is None, reason="curl is not installed; the HTTP examples need it")
-def test_the_documented_values_are_the_ones_the_server_produces(server_url: str) -> None:
-    """The doc prints concrete answers. They must still be the answers.
+def test_the_documented_response_shapes_name_the_contract_fields() -> None:
+    """The doc shows response *shapes*, not captured numbers.
 
-    The mock derives its output from a hash of the request, so these numbers are
-    stable. If the mock changes, the doc is wrong and this says so, instead of leaving
-    a plausible-looking number that no longer corresponds to anything.
+    Engine outputs depend on the weights, so printing a stable value here would either
+    pin the doc to one checkpoint's answer or invent a number. What must not rot is the
+    set of fields the doc promises: if the wire contract drops or renames one, this says
+    so instead of leaving the cookbook describing a response nobody sends.
     """
-    payload = json.dumps(
-        {
-            "state": "We were billed twice for March. Please refund the duplicate today or we will cancel our plan.",
-            "model": "mock",
-            "questions": {
-                "department": {
-                    "type": "choice",
-                    "instructions": "Which team should handle this?",
-                    "criteria": {
-                        "billing": "invoices, payments, refunds",
-                        "technical": "bugs, outages, system errors",
-                        "sales": "pricing, new contracts",
-                    },
-                },
-                "churn_risk": {"type": "noul", "instructions": "Does the user threaten to cancel or leave?"},
-                "urgency": {
-                    "type": "score",
-                    "instructions": "How urgent is this?",
-                    "criteria": ["Can wait", "Soon", "Today", "Immediately"],
-                },
-            },
-        }
-    )
-    completed = subprocess.run(
-        [
-            "curl",
-            "-s",
-            f"{server_url}/v1/systemone",
-            "-H",
-            f"authorization: Bearer {TOKEN}",
-            "-H",
-            "content-type: application/json",
-            "-d",
-            payload,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-    body = json.loads(completed.stdout)
-    answers = body["answers"]
-
     doc = CURL_MD.read_text(encoding="utf-8")
-    assert answers["department"]["choice"] == "technical"
-    assert f'"choice":"{answers["department"]["choice"]}"' in doc
-    # The exact floats shown in the "all three primitives" example.
-    for rendered in (
-        f'"confidence":{answers["department"]["confidence"]}',
-        f'"noul":{answers["churn_risk"]["noul"]}',
-        f'"score":{answers["urgency"]["score"]}',
+    for field in (
+        '"model"',
+        '"answers"',
+        '"usage"',
+        '"decis"',
+        '"choice"',
+        '"noul"',
+        '"score"',
+        '"confidence"',
+        '"probabilities"',
+        '"legend"',
+        '"batch_size"',
+        '"requested_model"',
     ):
-        assert rendered in doc, f"{rendered} is no longer what the doc shows"
-    # Batching is visible, which is why the doc tells readers to look at it.
-    assert body["decis"]["batch_size"] == 3
-    assert '"batch_size":3' in doc
+        assert field in doc, f"{field} is no longer documented in curl.md"
+
+
+def test_the_cookbook_does_not_document_a_fake_engine() -> None:
+    """A test double belongs in `tests/`, not in the examples a user copies."""
+    assert "mock" not in CURL_MD.read_text(encoding="utf-8").lower()
 
 
 @pytest.mark.skipif(shutil.which("curl") is None, reason="curl is not installed; the HTTP examples need it")
@@ -282,7 +250,7 @@ def test_the_sdk_example_runs_against_a_real_server(server_url: str) -> None:
 
     # It parsed typed objects, not raw dicts: these lines only exist if `response.choices`,
     # `response.nouls` and `response.scores` did their job.
-    assert "model: decis/mock@0.1.0" in out
+    assert "model: decis/stub@0.1.0" in out
     assert "request id: req_" in out
     assert "choice  department = 'technical'" in out
     assert "noul    churn_risk = " in out
@@ -364,7 +332,7 @@ def test_the_parser_reads_a_payload_that_wraps_across_lines(tmp_path: Path) -> N
         "curl -s -w '\\n%{http_code}\\n' \"$BASE/v1/systemone\" \\\n"
         "  -H 'content-type: application/json' -d '{\n"
         '  "state": "x",\n'
-        '  "model": "mock"\n'
+        '  "model": "kev-0.8b"\n'
         "  }}'\n"
         "# -> 422\n"
         "```\n",
@@ -375,7 +343,7 @@ def test_the_parser_reads_a_payload_that_wraps_across_lines(tmp_path: Path) -> N
     command, status = examples[0]
     assert status == 422
     # The whole payload was captured, not just the first line of it.
-    assert '"model": "mock"' in command
+    assert '"model": "kev-0.8b"' in command
     assert "-H 'content-type: application/json'" in command
 
 

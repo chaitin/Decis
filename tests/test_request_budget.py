@@ -23,12 +23,12 @@ from fastapi.testclient import TestClient
 from decis.app import create_app
 from decis.config import Settings
 from decis.engines.base import Prediction, WorkItem
-from decis.engines.mock import MockEngine
 from decis.errors import EngineOverloadedError
 from decis.scheduler import InProcessScheduler
+from fixture_engine import StubEngine
 
 
-class BlockingEngine(MockEngine):
+class BlockingEngine(StubEngine):
     """A loaded engine whose `predict` parks until the test releases it.
 
     Stands in for a forward pass that takes longer than a caller is willing to wait,
@@ -43,7 +43,7 @@ class BlockingEngine(MockEngine):
         self._count_lock = threading.Lock()
 
     def load(self) -> None:
-        # Skip MockEngine's work; `loaded` is what the scheduler checks.
+        # Skip StubEngine's work; `loaded` is what the scheduler checks.
         self._loaded = True
 
     def predict(self, items: list[WorkItem]) -> Prediction:
@@ -71,7 +71,7 @@ def _item() -> WorkItem:
     )
 
 
-def _loaded(engine: MockEngine, **kwargs) -> InProcessScheduler:
+def _loaded(engine: StubEngine, **kwargs) -> InProcessScheduler:
     scheduler = InProcessScheduler(engine, **kwargs)
     scheduler.load()
     return scheduler
@@ -154,7 +154,7 @@ def budget_settings(settings: Settings) -> Settings:
 def _post(client: TestClient, headers: dict[str, str]) -> object:
     return client.post(
         "/v1/systemone",
-        json={"state": "x", "model": "mock", "questions": {"q": {"type": "noul"}}},
+        json={"state": "x", "model": "stub", "questions": {"q": {"type": "noul"}}},
         headers=headers,
     )
 

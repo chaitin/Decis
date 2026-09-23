@@ -292,7 +292,7 @@ def _download(args: argparse.Namespace) -> int:
     spec = _weight_spec(engine_id)
     if spec is None:
         # Not a success: the requested action did not happen. A script doing
-        # `decis download --engine mock && serve` here would be acting on a false
+        # `decis download --engine <typo> && serve` here would be acting on a false
         # premise (it probably meant a different engine id), so exit non-zero with
         # the same code as any other configuration mistake.
         print(

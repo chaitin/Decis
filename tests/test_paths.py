@@ -195,7 +195,7 @@ def test_an_engine_without_a_repository_refuses_to_download() -> None:
     import pytest
 
     with pytest.raises(ValueError, match="no published weights"):
-        download_arguments(WeightSpec(engine_id="mock"))
+        download_arguments(WeightSpec(engine_id="stub"))
 
 
 def test_human_bytes_reads_sensibly() -> None:

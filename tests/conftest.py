@@ -25,12 +25,27 @@ for _var in ("NO_PROXY", "no_proxy"):
 
 from decis.app import create_app  # noqa: E402 - must follow the proxy normalisation
 from decis.config import Settings  # noqa: E402
+from decis.engines import registry  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACT_DIR = REPO_ROOT / "docs" / "contract"
 OPENAPI_SNAPSHOT = CONTRACT_DIR / "typesafe-openapi-0.2.0.json"
 
 TEST_KEY = "test-token-do-not-use-in-production"
+
+#: The weight-free engine the contract suite runs on. It lives in `tests/`, and the
+#: shipped registry does not know about it: Decis registers real checkpoints, and a
+#: test double is not one of them. Registering it here is what keeps "no weights in
+#: CI" true without putting a fake engine in the product (see `tests/fixture_engine.py`).
+#: The target is a string path like any engine's, so `load_class` stays lazy -- pytest
+#: puts this directory on `sys.path`, which is what makes `fixture_engine` importable.
+registry.SPECS["stub"] = registry.EngineSpec(
+    id="stub",
+    target="fixture_engine:StubEngine",
+    extra="",
+    aliases=("decis-stub", "stub-engine"),
+)
+registry.load_class.cache_clear()
 
 
 def wait_until_ready(client: TestClient, timeout: float = 15.0) -> dict:
@@ -55,11 +70,11 @@ def wait_until_ready(client: TestClient, timeout: float = 15.0) -> dict:
 
 @pytest.fixture
 def settings() -> Settings:
-    """Authenticated, loopback, mock engine."""
+    """Authenticated, loopback, weight-free stub engine."""
     return Settings(
         api_keys=(TEST_KEY,),
         host="127.0.0.1",
-        default_engine="mock",
+        default_engine="stub",
         env_file="",
     )
 
@@ -67,7 +82,7 @@ def settings() -> Settings:
 @pytest.fixture
 def open_settings() -> Settings:
     """No auth, but explicitly allowed so the safety check is satisfied."""
-    return Settings(api_keys=(), allow_no_auth=True, host="127.0.0.1", default_engine="mock", env_file="")
+    return Settings(api_keys=(), allow_no_auth=True, host="127.0.0.1", default_engine="stub", env_file="")
 
 
 @pytest.fixture
@@ -111,7 +126,7 @@ def openapi_snapshot() -> dict:
 def noul_request() -> dict:
     return {
         "state": "I was charged twice for the same order and nobody has replied.",
-        "model": "mock",
+        "model": "stub",
         "questions": {"billing": {"type": "noul", "instructions": "Is this about billing?"}},
     }
 
@@ -121,7 +136,7 @@ def mixed_request() -> dict:
     """One of each primitive, which is what exercises the whole normalisation path."""
     return {
         "state": {"subject": "Refund request", "body": "The item arrived damaged.", "order_id": "A-1"},
-        "model": "mock",
+        "model": "stub",
         "questions": {
             "complaint": {
                 "type": "noul",

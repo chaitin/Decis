@@ -69,9 +69,9 @@ def test_every_weighted_engine_declares_what_it_needs() -> None:
 # --- the classifier ------------------------------------------------------------
 
 
-def test_mock_is_usable_because_it_has_no_weights() -> None:
+def test_stub_is_usable_because_it_has_no_weights() -> None:
     """The one engine that is genuinely ready in a bare install."""
-    state = status("mock")
+    state = status("stub")
     assert state.usable
     assert state.summary == "ready"
 
@@ -214,10 +214,10 @@ def cli(monkeypatch):
 def test_models_marks_unusable_engines(cli) -> None:
     code, output = cli("models", "--env-file", "")
     assert code == 0
-    # `mock` is installed and weight-free, so it is the only one that can say "ready"
+    # `stub` is installed and weight-free, so it is the only one that can say "ready"
     # in the no-weights test environment.
     assert "ready" in output
-    assert "usable: mock" in output
+    assert "usable: stub" in output
     # And the engines that cannot run here are marked, not silently called ready.
     assert "*" in output
 
@@ -258,8 +258,8 @@ def test_doctor_reports_the_same_distinction(cli) -> None:
 
 
 def test_download_of_a_weightless_engine_is_not_reported_as_success(cli) -> None:
-    """`decis download --engine mock` asked for something that cannot happen."""
-    code, output = cli("download", "--engine", "mock", "--env-file", "")
+    """`decis download --engine stub` asked for something that cannot happen."""
+    code, output = cli("download", "--engine", "stub", "--env-file", "")
     assert code != 0
     assert "no weights" in output
 
@@ -302,7 +302,7 @@ def test_download_accepts_an_alias(cli, tmp_path: Path, monkeypatch) -> None:
     # 2. The downloader ran, but wrote nothing, so `decis download` must exit non-zero
     #    rather than report success. This is the "do not trust the HTTP calls, check the
     #    loader's own question" rule paying off, and it is the reason this test is worth
-    #    stubbing rather than mocking away entirely.
+    #    asserted rather than stubbed away entirely.
     assert code != 0, f"claimed success with no checkpoint on disk: {output}"
     assert "no usable checkpoint" in output, output
 

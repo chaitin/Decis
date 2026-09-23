@@ -52,7 +52,7 @@ class PreparedQuestion:
     def text(self) -> str:
         """Everything the model reads for this question, options included.
 
-        Used for token accounting and by the mock engine. One definition, so a
+        Used for token accounting and by every engine's `measure`. One definition, so a
         capacity check and a token count cannot drift apart.
         """
         parts = [self.instructions] if self.instructions else []

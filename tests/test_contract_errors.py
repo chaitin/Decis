@@ -20,7 +20,7 @@ import pytest
 
 REQUEST_ID = re.compile(r"^req_[0-9a-f]{32}$")
 
-VALID_BODY = {"state": "text", "model": "mock", "questions": {"q": {"type": "noul"}}}
+VALID_BODY = {"state": "text", "model": "stub", "questions": {"q": {"type": "noul"}}}
 
 
 # --- AGENTS.md §3-14 / §3-15: the 401-403 split ------------------------------

@@ -8,10 +8,10 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 > **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
 > contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **354 tests passing** without weights — including the official
-> `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered alongside `mock`,
-> and both **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
-> real requests today; 24 further tests load the real weights. Adding kev required **no change to
+> Dockerfile and CI are implemented, with **428 tests passing** without weights — including the official
+> `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
+> **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
+> real requests today; 27 further tests load the real weights. Adding kev required **no change to
 > `render.py`, `answers.py` or the routes** — that is what Stage 2 was for (`docs/design-review.md §2`).
 >
 > The contract in [`docs/api-compatibility.md`](docs/api-compatibility.md) rests on the [official OpenAPI snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API actually returns](docs/contract/observations-2026-09-22.md) — not on inference. [`docs/design-review.md`](docs/design-review.md) is an adversarial audit of the design, including what is still unproven.
@@ -20,14 +20,17 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 ## Quickstart
 
-No weights, no GPU, no model download. The `mock` engine answers deterministically.
-
 ```bash
 git clone https://github.com/kingfs/Decis && cd Decis
-uv sync --extra dev
-cp .env.example .env          # then set DECIS_API_KEY to anything
-uv run decis serve --host 127.0.0.1 --port 8000
+uv sync --extra dev --extra laya
+cp .env.example .env                               # then set DECIS_API_KEY to anything
+uv run decis download --engine laya-multilingual   # 647 MiB, one time
+uv run decis serve --host 127.0.0.1 --port 8000    # serves laya-multilingual by default
 ```
+
+`laya-multilingual` is the default engine. On CPU it takes about **80 s** to load, so poll
+`/readyz` before sending traffic — `/healthz` answers immediately, `/readyz` reports `loading`
+until the model is usable.
 
 ```python
 from typesafe_sdk import Choice, Noul, TypeSafeClient
@@ -54,7 +57,7 @@ response = client.system_one(
     },
 )
 
-print(response.model)  # decis/mock@0.1.0
+print(response.model)  # decis/laya-multilingual@<laya version>
 print(response.choices["department"].choice)  # whichever the engine picked
 print(response.choices["department"].confidence)  # 0..1
 print(response.nouls["churn_risk"].noul)  # P(true), 0..1
@@ -66,7 +69,7 @@ The same request by hand:
 curl -s localhost:8000/v1/systemone \
   -H 'authorization: Bearer local' -H 'content-type: application/json' -d '{
   "state": "We were billed twice for March. Please refund the duplicate today.",
-  "model": "mock",
+  "model": "jev-latest",
   "questions": {
     "department": {"type": "choice", "instructions": "Which team should handle this?",
                    "criteria": {"billing": "invoices, payments, refunds",
@@ -77,19 +80,22 @@ curl -s localhost:8000/v1/systemone \
 
 ```jsonc
 {
-  "model": "decis/mock@0.1.0",
+  "model": "decis/laya-multilingual@<laya version>",
   "answers": {
-    "department": { "type": "choice", "choice": "billing", "confidence": 0.763,
-                    "probabilities": { "billing": 0.8815, "technical": 0.1185 } },
-    "churn_risk": { "type": "noul", "noul": 0.89 }
+    "department": { "type": "choice", "choice": "<one of your criteria keys>", "confidence": "<0..1>",
+                    "probabilities": { "billing": "<p>", "technical": "<p>" } },
+    "churn_risk": { "type": "noul", "noul": "<P(true), 0..1>" }
   },
-  "usage": { "input_tokens": 67, "output_tokens": 40 },
+  "usage": { "input_tokens": "<n>", "output_tokens": "<n>" },
   // Everything Decis adds beyond the contract lives under one key, and the
   // official SDK ignores it. `batch_size` is how you can see batching happen.
-  "decis": { "engine": "mock", "engine_version": "0.1.0", "device": "cpu", "dtype": "none",
-             "latency_ms": 0.2, "batch_size": 2 }
+  "decis": { "engine": "laya-multilingual", "engine_version": "<laya version>", "device": "cpu",
+             "dtype": "float32", "latency_ms": "<n>", "batch_size": 2 }
 }
 ```
+
+The values depend on the engine and its weights, so they are shown as `<…>` rather than
+invented; [`examples/curl.md`](examples/curl.md) explains every field.
 
 Other things that work today:
 
@@ -98,15 +104,7 @@ uv run decis models     # which engines are registered and usable here
 uv run decis doctor     # environment and configuration self-check
 ```
 
-### A real model
-
-Swap `mock` for Laya. The request above does not change — only which engine answers it.
-
-```bash
-uv sync --extra laya
-uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB, one time
-uv run decis serve --engine laya-multilingual --host 127.0.0.1
-```
+### Loading, readiness, and offline images
 
 Cold start is about **80 s on CPU**, and the server is usable for probes the whole time: the engine
 loads on a worker thread, so `/healthz` answers immediately and `/readyz` reports what is going on
@@ -170,13 +168,16 @@ Decis is that uniform way: one stable API, many engines, packaged as one contain
 
 | Engine | Backbone | Params | Weights | Status | Notes |
 |---|---|---|---|---|---|
-| `mock` | — | — | none | **shipped** | Deterministic, weight-free. Contract tests and demos |
-| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **shipped** | 100+ languages, ~2.2× faster — the intended default |
+| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **shipped** | 100+ languages, ~2.2× faster — the default engine |
 | `laya` | ModernBERT-large | 421M | 807 MiB | **shipped** | English, strongest on English benchmarks |
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | **shipped** | The typed-decisions checkpoint from the same repo |
 | `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | available | Different architecture (prefill-only, no text generation), different error profile |
 | `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | not registered | Higher accuracy, no longer "light-weight" |
 | `remote` | — | — | — | planned | Forwards to the real `api.typesafe.ai`; A/B and test oracle |
+
+Every registered engine is a real checkpoint with real weights. The wire-contract suite runs on a
+weight-free test double that lives in [`tests/`](tests/fixture_engine.py) and is deliberately **not**
+registered by the server, so `decis serve` can never answer from a fake model.
 
 Adding an engine is one module plus one registry line, and **no change to the normalisation layer** —
 if an engine needs `render.py` or `answers.py` changed, the abstraction is wrong. See [`AGENTS.md §5`](AGENTS.md).
@@ -259,17 +260,17 @@ One image per engine, because engine dependencies conflict and are large. They s
 Docker Hub repository, with the engine in the tag:
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:mock
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
 ```
 
 | Tag | Engine | What it needs |
 |---|---|---|
-| `mock`, `latest` | `mock` — a fixture engine | nothing, no torch; it starts immediately |
-| `laya-multilingual` | Laya multilingual (322M) | 647 MiB of weights, ~75 s cold start, ~5 GB RSS |
+| `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | 647 MiB of weights, ~80 s cold start, ~5 GB RSS |
+| `laya` | Laya English (421M) | 807 MiB of weights |
 | `kev-0.8b` | kev 0.8B | 1.7 GiB of weights; wants a GPU |
 
-`mock` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis` gives you
-something runnable. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
+`laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis`
+gives you the default engine. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
 
 Mounted weights beat downloaded weights when you want to update a model without rebuilding:
 
@@ -283,8 +284,15 @@ baked in (`kingfs/decis:laya-multilingual-offline-v1.2.0`).
 To build an image yourself instead:
 
 ```bash
-docker build -f docker/Dockerfile -t decis:mock .
+docker build -f docker/Dockerfile \
+  --build-arg DECIS_EXTRAS=laya \
+  --build-arg DECIS_ENGINE=laya-multilingual \
+  -t decis:laya-multilingual .
 ```
+
+The image installs no engine extra unless you ask for one, so a bare `docker build` produces an
+API-only image: it starts and answers `/healthz` and `/v1/models`, but `/readyz` stays 503 until an
+engine's dependencies and weights are present.
 
 The container runs as a non-root user, needs no external services — no Redis, no Postgres, no Celery —
 and refuses to start on a public address with no token configured.
@@ -327,8 +335,8 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 274 tests, ~7 s, no weights, no network
-uv run pytest -m weights                # 14 tests that load the real Laya weights
+uv run pytest -q                        # 428 tests, ~10 s, no weights, no network
+uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token
 ```

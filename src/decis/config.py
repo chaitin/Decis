@@ -92,7 +92,7 @@ class Settings:
     accept_foreign_defaults: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
-    default_engine: str = "mock"
+    default_engine: str = "laya-multilingual"
     model_dir: Path | None = None
     #: Per-engine overrides from DECIS_MODEL_PATH_*. Beats `model_dir`.
     model_paths: dict[str, Path] = field(default_factory=dict)
@@ -159,7 +159,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         accept_foreign_defaults=_bool("DECIS_ACCEPT_FOREIGN_DEFAULTS", True),
         host=_str("DECIS_HOST", "0.0.0.0"),
         port=_int("DECIS_PORT", 8000),
-        default_engine=_str("DECIS_DEFAULT_ENGINE", "mock"),
+        default_engine=_str("DECIS_DEFAULT_ENGINE", "laya-multilingual"),
         model_dir=Path(model_dir) if model_dir else None,
         model_paths=_model_paths(),
         max_request_bytes=_int("DECIS_MAX_REQUEST_BYTES", 2 * 1024 * 1024),

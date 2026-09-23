@@ -2,12 +2,13 @@
 #
 # One image per engine, because engine dependencies conflict and are large:
 #
-#   docker build -f docker/Dockerfile -t decis:mock .
-#   docker build -f docker/Dockerfile --build-arg DECIS_EXTRAS=laya -t decis:laya .
+#   docker build -f docker/Dockerfile --build-arg DECIS_EXTRAS=laya \
+#     --build-arg DECIS_ENGINE=laya-multilingual -t decis:laya-multilingual .
 #
-# The default image carries NO model weights and no engine dependencies. It serves the
-# mock engine, which is what CI and the contract tests use, and starts in about a
-# second. An engine image that works with no network at run time adds:
+# The image installs no engine extra unless you ask for one, so the bare build is an
+# API-only image: it starts and answers `/healthz` and `/v1/models`, but it cannot serve
+# a request until an engine's dependencies are present. An engine image that also works
+# with no network at run time bakes the weights in:
 #
 #   --build-arg DECIS_EXTRAS=laya \
 #   --build-arg DECIS_ENGINE=laya-multilingual \
@@ -31,8 +32,9 @@ LABEL org.opencontainers.image.title="Decis" \
 
 # Which engine's dependencies to install. Empty means none: an API-only image.
 ARG DECIS_EXTRAS=""
-# The engine this image serves by default.
-ARG DECIS_ENGINE="mock"
+# The engine this image serves by default. It must be an id the registry knows, even
+# when no extra is installed: `/v1/models` lists it without importing its framework.
+ARG DECIS_ENGINE="laya-multilingual"
 # An engine id whose weights to bake in. Empty means "mount them instead".
 ARG DECIS_PREDOWNLOAD=""
 

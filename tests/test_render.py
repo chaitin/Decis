@@ -116,7 +116,7 @@ def test_state_is_rendered_once_for_the_whole_request() -> None:
     is possible without re-rendering per question."""
     request = SystemOneRequest(
         state={"body": "text"},
-        model="mock",
+        model="stub",
         questions={f"q{i}": {"type": "noul"} for i in range(3)},
     )
     prepared = prepare_request(request)

@@ -251,7 +251,7 @@ Decis 必须照此实现。只返回 401（很多 API 的做法）会让依赖�
 
 | 字段 | 含义 | 为什么在这里而不是契约里 |
 |---|---|---|
-| `engine` | 引擎 id，如 `mock` | 契约只有 `model`（版本化 id）。定位"是谁答的"时 id 比版本化字符串好读 |
+| `engine` | 引擎 id，如 `laya-multilingual` | 契约只有 `model`（版本化 id）。定位"是谁答的"时 id 比版本化字符串好读 |
 | `engine_version` | 引擎版本 | 便于把一条答案追溯回具体的构建 |
 | `device` / `dtype` | 如 `cpu` / `float32` | 复现性能与数值差异的必要信息 |
 | `latency_ms` | 本次推理耗时（毫秒） | 服务端自己测的，比客户端往返更干净 |
@@ -296,7 +296,7 @@ Decis 必须照此实现。只返回 401（很多 API 的做法）会让依赖�
 | 层级 | 测试 | 是否需要权重 |
 |---|---|---|
 | L0 schema 同源 | 断言 `src/decis/schema.py` 的键集合、`required`、`const`、`minItems`/`minProperties` 能从 `docs/contract/typesafe-openapi-0.2.0.json` 推导出来；OpenAPI 文件一改，测试即失败 | 否 |
-| L1 形状 | §3–§6 的所有 JSON 示例往返（含 `score` 字符串键、`noul` 标量无 confidence） | 否（MockEngine） |
+| L1 形状 | §3–§6 的所有 JSON 示例往返（含 `score` 字符串键、`noul` 标量无 confidence） | 否（无权重的测试替身，`tests/fixture_engine.py`） |
 | L2 语义 | 概率和为 1（容差 0.03）、`choice == argmax(probabilities)`、`score == Σ k·p_k`、`legend` 键恰为 `"0".."n-1"` | 否 |
 | L3 官方客户端 | 官方 `typesafe_sdk` 的 `TypeSafeClient` / `AsyncTypeSafeClient` 跑通文档示例（含 `NoulCriteria`、结构化 `instructions`/`criteria`） | 否 |
 | **L3b 错误契约** | 无 `Authorization` → **403**；`Bearer garbage` → **401**；两者 body 均为 `{"detail":{"error_type":"authentication_error","message":…}}`；**认证先于校验**（非法 body + 无 key 仍返回 403）；422 为 `{detail:[…]}`；404/405 为 `{detail:"…"}`；**所有**响应含 `x-typesafe-request-id` 且匹配 `req_[0-9a-f]{32}`；429 带 `retry-after-ms` | 否 |

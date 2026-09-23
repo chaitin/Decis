@@ -73,10 +73,10 @@ def test_request_required_fields_match(openapi_snapshot: dict) -> None:
 def test_we_accept_every_documented_state_form() -> None:
     """`state` is string | object | array, with no null variant."""
     for state in ("text", {"a": 1}, [1, "two", {"three": 3}]):
-        SystemOneRequest(state=state, model="mock", questions={"q": {"type": "noul"}})
+        SystemOneRequest(state=state, model="stub", questions={"q": {"type": "noul"}})
     for rejected in (None, 42, True):
         with pytest.raises(Exception):  # noqa: B017 - pydantic's error type is incidental
-            SystemOneRequest(state=rejected, model="mock", questions={"q": {"type": "noul"}})
+            SystemOneRequest(state=rejected, model="stub", questions={"q": {"type": "noul"}})
 
 
 def test_questions_must_be_non_empty(openapi_snapshot: dict) -> None:
@@ -84,7 +84,7 @@ def test_questions_must_be_non_empty(openapi_snapshot: dict) -> None:
     schema = _component(openapi_snapshot, REQUEST_SCHEMA)["properties"]["questions"]
     assert schema["minProperties"] == 1
     with pytest.raises(Exception):  # noqa: B017
-        SystemOneRequest(state="x", model="mock", questions={})
+        SystemOneRequest(state="x", model="stub", questions={})
 
 
 def test_choice_criteria_is_required_but_may_be_empty(openapi_snapshot: dict) -> None:
@@ -128,11 +128,11 @@ def test_unknown_fields_are_ignored_not_rejected() -> None:
     """Forward compatibility: a client sending a newer field must still be served."""
     request = SystemOneRequest(
         state="x",
-        model="mock",
+        model="stub",
         questions={"q": {"type": "noul"}},
         something_from_the_future=True,
     )
-    assert request.model == "mock"
+    assert request.model == "stub"
 
 
 # --- response ----------------------------------------------------------------

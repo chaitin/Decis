@@ -16,7 +16,7 @@
 | G2 | **多引擎**，同一 API 背后可换模型 | 新增一个引擎 = 新增一个实现 `DecisionEngine` 的模块 + 一行注册，不改动 HTTP 层 |
 | G3 | **高性能**，面向高频小请求 | 支持跨请求动态批处理；给出可复现的 latency/throughput 基准，数字由脚本生成而非手写 |
 | G4 | **开箱即用**，权重默认打进镜像，也支持挂载 | `docker run` 一条命令起服务；`DECIS_MODEL_DIR` 指向挂载卷即可用外部权重 |
-| G5 | **工程化质量** | 契约测试进 CI；无权重也能跑完整测试（MockEngine + tiny-fixture）；README 面向人类、AGENTS.md 面向 AI |
+| G5 | **工程化质量** | 契约测试进 CI；无权重也能跑完整测试（`tests/fixture_engine.py` 的测试替身 + tiny-fixture）；README 面向人类、AGENTS.md 面向 AI |
 
 ### 非目标（明确不做）
 
@@ -80,7 +80,7 @@ ProbDist = list[float]
  引擎层             │ base.py     DecisionEngine / EngineInfo       │
  (可插拔)           │ registry.py id → 引擎类 · 别名表 · 能力声明     │
                    │ engines/kev.py    engines/laya.py             │
-                   │ engines/remote.py（转发真 jev） engines/mock.py│
+                   │ engines/remote.py（转发真 jev） _kev_vendor/  │
                    └───────────────────────┬──────────────────────┘
                                            │
                    ┌───────────────────────▼──────────────────────┐
@@ -347,9 +347,10 @@ def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) 
 - 价值有三：用户可以同一套 API 在本地/托管之间切换；**它是差分测试的 oracle**（见 §9）；成本极低（一个 httpx 客户端）。
 - 需要 `TYPESAFE_API_KEY`；`EngineInfo` 的能力来自配置或 `GET /v1/models`。
 
-**`engines/mock.py`** —— 确定性假引擎。
-
-- 输入哈希 → 固定概率分布。用于 CI 中跑完整契约测试而**不下载任何权重**，也用于压测 HTTP 层而不受模型速度干扰。
+**测试替身不在 `engines/` 里。** "跑完整契约测试而不下载任何权重"靠的是
+`tests/fixture_engine.py` 里一个确定性的引擎（输入哈希 → 固定概率分布），由
+`tests/conftest.py` 临时注册成 id `stub`。它**不注册进 `decis.engines.registry`**：
+出厂镜像里没有任何假引擎，`decis serve` 不可能用它作答。
 
 ### 5.3 引擎的加载必须是惰性的
 
@@ -360,7 +361,6 @@ ENGINES: dict[str, tuple[str, str]] = {
     "laya-multilingual": ("decis.engines.laya:LayaEngine", "laya"),
     "kev-0.8b": ("decis.engines.kev:KevEngine", "kev"),
     "remote": ("decis.engines.remote:RemoteEngine", None),
-    "mock": ("decis.engines.mock:MockEngine", None),
 }
 ```
 
@@ -658,7 +658,7 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 
 ## 9. 测试策略
 
-**核心原则：CI 不下载权重。** 完整契约测试跑在 `MockEngine` 上；真实权重只在夜间/发布前任务里跑。
+**核心原则：CI 不下载权重。** 完整契约测试跑在 `tests/fixture_engine.py` 那个无权重的测试替身上（由 conftest 临时注册为 `stub`；出厂注册表里没有假引擎）；真实权重只在夜间/发布前任务里跑。
 
 | 层 | 内容 | 权重 | CI |
 |---|---|---|---|
@@ -776,11 +776,10 @@ Decis/
 │   │   ├── laya.py               # ✅
 │   │   ├── kev.py                # ✅
 │   │   ├── remote.py             # ⬜ 把请求转发给另一个 Decis/jev
-│   │   ├── mock.py               # ✅
 │   │   └── _kev_vendor/          # ✅ pinned subset + NOTICE
 │   └── observability.py          # ✅
 ├── tests/
-│   ├── conftest.py               # ✅ MockEngine + tiny fixtures
+│   ├── conftest.py               # ✅ 无权重测试替身（fixture_engine.py）+ tiny fixtures
 │   ├── test_contract_openapi.py  # ✅ L0：schema 与官方 OpenAPI 快照同源
 │   ├── test_contract_shape.py    # ✅ L1/L2
 │   ├── test_contract_errors.py   # ✅ L3b：403/401/422/404/405 + request-id
@@ -809,7 +808,7 @@ Decis/
 
 **Stage 0 — 契约冻结（2–3 天）— ✅ 已完成**
 
-交付 `docs/api-compatibility.md`（含 L 级证据）与 `schema.py`、`auth.py`、`errors.py`；不接任何模型，用 `MockEngine` 跑通官方 SDK。结束标志与实际结果：
+交付 `docs/api-compatibility.md`（含 L 级证据）与 `schema.py`、`auth.py`、`errors.py`；不接任何模型，用无权重的测试替身跑通官方 SDK。结束标志与实际结果：
 
 1. ✅ `typesafe_sdk` 的 `TypeSafeClient` 对着 Decis 跑通三种原语（`tests/test_contract_sdk.py`，走真实 uvicorn socket）。
 2. ✅ **L3b 错误契约测试全绿**（403/401 分工、认证先于校验、request-id 格式、422 形状；`tests/test_contract_errors.py`）。
@@ -933,26 +932,27 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
 **Stage 4 — 发布工程（3–5 天）** — 🟡 已开始
 
 - ✅ 三段式多引擎镜像工作流 `.github/workflows/docker-build.yml`：`test → plan → build(matrix) → merge`，
-  按引擎分镜像（`decis-mock` / `decis-laya-multilingual` / `decis-kev-0.8b`，
-  以及带权重的 `-offline` 变体），多架构用**原生** `ubuntu-24.04-arm` 而不是 QEMU（QEMU 装 torch 太慢），
-  合并成多架构 manifest，push 时带 SBOM 与 provenance；PR 只构建 amd64 的 `mock` 验证 Dockerfile。
+  按引擎分镜像（`decis-laya-multilingual` / `decis-kev-0.8b`，以及带权重的 `-offline` 变体），
+  多架构用**原生** `ubuntu-24.04-arm` 而不是 QEMU（QEMU 装 torch 太慢），
+  合并成多架构 manifest，push 时带 SBOM 与 provenance；PR 只构建 amd64 的 **engine-free 基础镜像**验证 Dockerfile。
   矩阵生成逻辑是纯 bash，因此可以**离线执行测试**：`tests/test_docker_workflow.py` 把 `plan` 步骤的脚本
   从 YAML 里抠出来，按每种触发事件真跑一遍。
 - ✅ **在真实 runner 上跑通一次**：2026-09-22 push 到 master 触发
   [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)，6 个构建腿 + 3 个 merge 全绿，
-  彼时镜像在 GHCR（`ghcr.io/kingfs/decis-{mock,laya-multilingual,kev-0.8b}:latest`）。
-- ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`mock` 另外拿裸 `latest`。
+  彼时镜像在 GHCR（`ghcr.io/kingfs/decis-{laya-multilingual,kev-0.8b}:latest`，另有一个后来被移除的无权重假引擎 tag）。
+- ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`laya-multilingual` 另外拿裸 `latest`。
   理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
 - ✅ **2026-09-23 推 Docker Hub 成功**（run 35807645301，commit `574c0ac`），仓库公开。
 - ✅ **tag 方案定型**：引擎名即 tag（`kingfs/decis:laya-multilingual`），只有 release tag 追加版本
-  （`laya-multilingual-v1.2.0`）；`mock` 在 master 推送时另拿裸 `latest`。方案在 `plan` 步骤里算，有测试真跑。
-- ✅ **体积已量**（registry API 逐层求和，压缩后下载量）：`mock` 72 MB、`laya-multilingual` 3203 MB、
-  `kev-0.8b` 3206 MB。`mock` 原来是 3203 MB —— 被一行三元表达式装上了 torch（`design-review.md §2-D14`）。
-- ✅ **端到端验证过**：`docker pull kingfs/decis:mock` 后起容器打 `/v1/systemone`，契约响应完整；
-  无凭证 403、错 key 401；容器冷启动到 `/readyz` ready 为 2.5 s（3 次）。
-  这一条顺带证明了 §3-19（公网地址 + 无 key 拒绝启动）在容器里同样生效。
+  （`laya-multilingual-v1.2.0`）；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
+  方案在 `plan` 步骤里算，有测试真跑。
+- ✅ **体积已量**（registry API 逐层求和，压缩后下载量）：`laya-multilingual` 3203 MB、
+  `kev-0.8b` 3206 MB。当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
+  装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，
+  那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
+  容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
 - ⬜ 推一个 `v*` tag 验证 release 路径与 `-offline` 变体；`laya-multilingual` / `kev-0.8b` 的容器内冷启动
-  （需要拉权重，未测）；`docker-compose.yml`；README 定稿；首个 release。
+  （需要拉权重，未测）；engine-free 基础镜像的体积与冷启动；`docker-compose.yml`；README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
@@ -985,13 +985,13 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | `decis bench` 采集 | 已能用，但目前只能测**请求内**批处理；跨请求那部分由 `benchmarks/batch_gain.py` 单独测 |
 | 镜像可在两个架构上构建并推送 | **实测一次**：2026-09-22，commit `17a084e`，push 到 master 触发
   [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)。6 个构建腿全部成功
-  （`mock` / `laya-multilingual` / `kev-0.8b` × amd64 / arm64，单腿 7m51s–15m52s），3 个 merge 任务成功，
+  （三个引擎 tag × amd64 / arm64，单腿 7m51s–15m52s），3 个 merge 任务成功，
   合成多架构 manifest，例如 `ghcr.io/kingfs/decis-laya-multilingual:latest@sha256:e6651499f7ba355155af16f5d52cdc1393f44afc08c0981b48d9c2d046f0d6f5`
   （amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了"能构建、能推送、能合并"** |
 | 镜像体积与容器内冷启动 | **仍未测**。上面那次运行没有记录体积，也没有在容器里起过服务量冷启动 |
 | `-offline` 变体（烘焙权重）与 release 路径 | **仍未验证**。那次是分支推送，只构建了非 offline 变体；`v*` tag 从未推过，所以 tag 触发的那条分支只在 `tests/test_docker_workflow.py` 里被模拟过 |
 | Docker Hub 仓库的可见性 | 未核实。首次推送会自动创建 `kingfs/decis`，新仓库默认是**公开**的（与 GHCR 相反），
-  所以 `docker pull kingfs/decis:mock` 应当无需登录——但这一点要等推送成功后再确认 |
+  所以 `docker pull kingfs/decis:laya-multilingual` 应当无需登录——但这一点要等推送成功后再确认 |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 
@@ -1028,8 +1028,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 4. **用 `run.py` 重采 Laya**（端到端，而不是引擎本身）——把 B 档的延迟升到 A 档。
 5. **`docker-compose.yml` + `docker-build.yml`（多架构矩阵 + GHCR + SBOM）**（Stage 4）。
 6. ~~`examples/`（`curl.md`、`python_sdk.py`）~~ ✅ 已完成：三个文件，且**由
-   `tests/test_examples.py` 逐条执行**（`curl.md` 里 12 条命令的状态码、文档里印出的
-   mock 取值、官方 SDK 脚本的端到端运行都进 CI）。写它的过程发现 D13。
+   `tests/test_examples.py` 逐条执行**（`curl.md` 里 12 条命令的状态码、文档写出的响应字段形状、
+   官方 SDK 脚本的端到端运行都进 CI）。写它的过程发现 D13。
 7. `remote.py`——把请求转发给另一个 Decis/真 jev；需要先确认用户自有 key 的 ToS。
 8. `kev` 的 prefix 缓存路径——同一 state 多问题时的重复 prefill 优化（kev 是 prefill-only 架构，收益可能不小）。
 9. D11（挂载的 kev **基座**不被尊重）——只能靠上游 PR + re-vendor，不是本地补丁。

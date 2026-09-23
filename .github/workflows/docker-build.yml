@@ -30,7 +30,7 @@ on:
     inputs:
       engines:
         description: Space-separated engine ids to build
-        default: "mock laya-multilingual kev-0.8b"
+        default: "laya-multilingual kev-0.8b"
       bake_weights:
         description: Also build the offline variants with weights baked in
         type: boolean
@@ -106,21 +106,28 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Every engine with an image. `mock` carries no dependencies and no weights and
-          # is what the contract tests use; the other two are the real models.
-          all_engines=(mock laya-multilingual kev-0.8b)
-          # Engines whose weights can be baked in. `mock` has none: `decis download
-          # --engine mock` exits 2 *by design* (it suspects a typo), which would fail the
-          # build rather than produce a smaller image.
+          # Every engine with an image. Both are real checkpoints; there is no
+          # weight-free image any more (the test double lives in `tests/`, not in the
+          # registry), so a base image with no extras is a build-time check, not a
+          # thing to publish.
+          all_engines=(laya-multilingual kev-0.8b)
+          # Engines whose weights can be baked in.
           bakeable=(laya-multilingual kev-0.8b)
+
+          # Set by the PR branch below: build the Dockerfile with no engine extra at all.
+          # An engine-free image is the cheapest way to prove the install path still
+          # works, and it is why a PR does not have to pull torch.
+          base_only=false
 
           case "$EVENT" in
             pull_request)
               # A PR validates that the Dockerfile still builds. One engine, one
-              # platform: the point is the Dockerfile, not the artifact.
-              engines=(mock)
+              # platform, and no engine extra: the point is the Dockerfile, not the
+              # artifact. `DECIS_ENGINE` stays a real id so `/v1/models` still answers.
+              engines=(laya-multilingual)
               platforms=("linux/amd64 ubuntu-latest")
               push=false
+              base_only=true
               ;;
             workflow_dispatch)
               # shellcheck disable=SC2206
@@ -156,14 +163,14 @@ jobs:
 
           # Which pip extra provides an engine's dependencies. The matrix carries this
           # rather than the build step computing it from the engine name, because the
-          # obvious spelling -- `engine == 'mock' && '' || 'laya'` -- is wrong: an empty
-          # string is falsy in a GitHub expression, so the `||` branch wins and the mock
-          # image installs Laya and torch. It did, and shipped 3.1 GB of it. Deciding here
-          # also gives the mapping one home, and this script is executed by the tests, so
-          # an engine with no extra is a loud failure instead of a silent default.
+          # obvious spelling -- `engine == 'x' && '' || 'laya'` -- is wrong: an empty
+          # string is falsy in a GitHub expression, so the `||` branch wins and an
+          # engine-free image installs Laya and torch. It did, and shipped 3.1 GB of it
+          # (docs/design-review.md §2-D14). Deciding here also gives the mapping one
+          # home, and this script is executed by the tests, so an engine with no extra
+          # is a loud failure instead of a silent default.
           extra_for() {
             case "$1" in
-              mock) echo "" ;;
               laya-multilingual) echo "laya" ;;
               kev-0.8b) echo "kev" ;;
               *)
@@ -201,6 +208,9 @@ jobs:
           first_merge=1
           for engine in "${engines[@]}"; do
             extra="$(extra_for "$engine")" || exit 1
+            # On a PR the image is deliberately engine-free: no extra is installed, so
+            # the build validates the Dockerfile without pulling torch.
+            [ "$base_only" = "true" ] && extra=""
             variants=(runtime)
             if [ "$offline" = "true" ] && [[ " ${bakeable[*]} " == *" $engine "* ]]; then
               variants=(runtime offline)
@@ -384,10 +394,11 @@ jobs:
           docker buildx imagetools create --tag "${image}:${IMAGE_TAG}" "${sources[@]}"
           docker buildx imagetools inspect "${image}:${IMAGE_TAG}"
 
-          # `mock` is the image you can run with no weights and no GPU, so it is the right
-          # answer to a bare `docker pull kingfs/decis`. Nothing gets a bare `latest`
-          # unless it is that, and only when this run actually moved `latest`.
-          if [ "$ENGINE" = "mock" ] && [ "$VARIANT" = "runtime" ] && [ "$MOVING_TAG" = "latest" ]; then
+          # `laya-multilingual` is the server's default engine and the one whose install
+          # the README leads with, so it is the right answer to a bare
+          # `docker pull kingfs/decis`. Nothing else gets a bare `latest`, and only when
+          # this run actually moved `latest`.
+          if [ "$ENGINE" = "laya-multilingual" ] && [ "$VARIANT" = "runtime" ] && [ "$MOVING_TAG" = "latest" ]; then
             docker buildx imagetools create --tag "${image}:latest" "${sources[@]}"
             docker buildx imagetools inspect "${image}:latest"
           fi

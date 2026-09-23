@@ -44,8 +44,8 @@ jobs:
           uv run ruff format --check .
 
       - name: Tests
-        # No weights are downloaded and no network is used: the mock engine and
-        # the vendored OpenAPI snapshot are the whole fixture set.
+        # No weights are downloaded and no network is used: the weight-free test double
+        # in `tests/` and the vendored OpenAPI snapshot are the whole fixture set.
         run: uv run pytest -q
 
       - name: The docs' performance tables match the raw benchmark JSON
@@ -55,14 +55,19 @@ jobs:
         # checker itself, including that a hand-edited digit is detected.
         run: uv run python benchmarks/report.py --check
 
-      - name: The server starts and answers, with a real HTTP client
+      - name: The server starts with a real HTTP client
+        # No engine extra is installed here, so no decision request can be answered --
+        # `tests/test_examples.py` covers that over a real socket, on the weight-free
+        # test double. What this step adds is that the *process* starts outside pytest
+        # and that the lazy registry answers `/v1/models` with no engine framework
+        # installed (AGENTS.md §6).
         run: |
           uv run python - <<'PY'
-          import json, os, threading, time, urllib.request
+          import json, threading, time, urllib.request
           from decis.app import create_app
           from decis.config import Settings
 
-          settings = Settings(api_keys=("ci",), host="127.0.0.1", default_engine="mock", env_file="")
+          settings = Settings(api_keys=("ci",), host="127.0.0.1", default_engine="laya-multilingual", env_file="")
           app = create_app(settings)
 
           import uvicorn
@@ -73,25 +78,22 @@ jobs:
                   break
               time.sleep(0.05)
 
-          def call(path, payload=None):
+          def call(path):
               request = urllib.request.Request(
                   f"http://127.0.0.1:8123{path}",
-                  data=json.dumps(payload).encode() if payload else None,
                   headers={"Authorization": "Bearer ci", "Content-Type": "application/json"},
               )
               with urllib.request.urlopen(request) as response:
                   return response.status, dict(response.headers), json.loads(response.read())
 
-          status, headers, body = call("/v1/systemone", {
-              "state": "I was charged twice.",
-              "model": "jev-latest",
-              "questions": {"billing": {"type": "noul", "instructions": "Is this about billing?"}},
-          })
+          status, _, _ = call("/healthz")
           assert status == 200, status
-          assert body["model"] == "decis/mock@0.1.0", body
-          assert "noul" in body["answers"]["billing"], body
+          status, headers, body = call("/v1/models")
+          assert status == 200, status
           assert headers["x-typesafe-request-id"].startswith("req_"), headers
-          print("smoke test ok:", body["model"], body["answers"])
+          names = [model["name"] for model in body["models"]]
+          assert any(name.startswith("decis/laya-multilingual@") for name in names), names
+          print("smoke test ok:", names)
           PY
 
   upstream:
@@ -149,15 +151,17 @@ jobs:
           push: false
           load: true
           tags: decis:ci
-      - name: Serve one request from the built image
+      - name: Start the built image and check what it can serve
+        # The image installs no engine extra, so it is honestly *not ready*: `/readyz`
+        # must say so and `/v1/models` must still answer. A decision request would need
+        # weights, which this job deliberately does not download.
         run: |
           docker run --rm -d --name decis-ci -p 8000:8000 \
-            -e DECIS_API_KEY=ci -e DECIS_DEFAULT_ENGINE=mock decis:ci
+            -e DECIS_API_KEY=ci decis:ci
           for i in $(seq 1 60); do
-            curl -fsS http://127.0.0.1:8000/readyz && break || sleep 1
+            curl -fsS http://127.0.0.1:8000/healthz && break || sleep 1
           done
-          curl -fsS -X POST http://127.0.0.1:8000/v1/systemone \
-            -H 'Authorization: Bearer ci' -H 'Content-Type: application/json' \
-            -d '{"state":"charged twice","model":"mock","questions":{"q":{"type":"noul"}}}' | tee /dev/stderr | grep -q '"noul"'
-          curl -fsS http://127.0.0.1:8000/v1/models -H 'Authorization: Bearer ci' | grep -q 'decis/mock'
+          curl -fsS http://127.0.0.1:8000/v1/models -H 'Authorization: Bearer ci' | grep -q 'decis/laya-multilingual'
+          status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/readyz)
+          [ "$status" = "503" ] || { echo "an engine-free image reported ready ($status)"; exit 1; }
           docker stop decis-ci

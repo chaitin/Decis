@@ -370,7 +370,7 @@ def run(engine: str, threads_list: list[int], counts: list[int], iterations: int
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--engine", default="mock", help="engine id, e.g. laya-multilingual")
+    parser.add_argument("--engine", default="laya-multilingual", help="engine id, e.g. kev-0.8b")
     parser.add_argument("--threads", default="", help="comma-separated thread counts; default: one per vCPU")
     parser.add_argument("--batch", default="1,3,10,30", help="comma-separated questions per request")
     parser.add_argument("--iterations", type=int, default=8)

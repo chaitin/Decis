@@ -81,12 +81,6 @@ def degraded_reason(engine_id: str, device: str, dtype: str) -> str | None:
 
 
 SPECS: dict[str, EngineSpec] = {
-    "mock": EngineSpec(
-        id="mock",
-        target="decis.engines.mock:MockEngine",
-        extra="",  # no dependencies at all: usable in a bare install
-        aliases=("decis-mock", "mock-engine"),
-    ),
     # One entry per Laya checkpoint, because they are separate sets of weights with
     # separate capacities and must be describable independently by `GET /v1/models`.
     # `laya` is the English root checkpoint; the other two are subfolders of the same
@@ -124,8 +118,8 @@ def canonical(name: str) -> str | None:
     """Resolve a client-supplied model name to a registered engine id.
 
     Accepts the engine id, any alias, and the versioned form that responses
-    return (`decis/mock@0.1.0`), so that feeding a response's `model` field back
-    in as a request works.
+    return (`decis/laya-multilingual@0.3.5`), so that feeding a response's
+    `model` field back in as a request works.
     """
     candidate = name.strip()
     if not candidate:

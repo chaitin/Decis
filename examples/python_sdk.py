@@ -9,7 +9,7 @@ which is the point, and why `tests/test_examples.py` runs it in CI.
 Run it against a server you started (see `examples/README.md`)::
 
     uv sync --extra dev                 # dev includes typesafe-sdk
-    uv run decis serve --host 127.0.0.1 --port 8000 --engine mock
+    uv run decis serve --host 127.0.0.1 --port 8000 --engine laya-multilingual
     uv run python examples/python_sdk.py
 
 Against a real engine, nothing changes except the server's `--engine` flag. To point it
@@ -22,7 +22,7 @@ Environment variables, all optional:
 ===========================  =========================  ==========================
 ``DECIS_BASE_URL``           ``--base-url``             default ``http://127.0.0.1:8000``
 ``DECIS_API_KEY``            ``--api-key``              default ``local``
-``DECIS_MODEL``              ``--model``                default ``mock``
+``DECIS_MODEL``              ``--model``                default ``jev-latest``
 ===========================  =========================  ==========================
 """
 
@@ -74,7 +74,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base-url", default=os.environ.get("DECIS_BASE_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--api-key", default=os.environ.get("DECIS_API_KEY", "local"))
-    parser.add_argument("--model", default=os.environ.get("DECIS_MODEL", "mock"))
+    # `jev-latest` is the official SDK's own default model name, and Decis treats it as
+    # "whatever engine this server runs" -- so a client that only changes the base URL
+    # keeps working. `decis.requested_model` in the response records what was asked for.
+    parser.add_argument("--model", default=os.environ.get("DECIS_MODEL", "jev-latest"))
     return parser.parse_args(argv)
 
 

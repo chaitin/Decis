@@ -110,4 +110,7 @@ ignore = [
 "benchmarks/report.py" = ["RUF001"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["decis"]
+# `fixture_engine` is our own code too: the weight-free test double lives in `tests/`
+# (it is deliberately absent from the shipped registry), and it is imported as a
+# top-level module because `tests/` is not a package.
+known-first-party = ["decis", "fixture_engine"]

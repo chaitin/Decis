@@ -297,11 +297,11 @@ def test_decis_bench_runs_the_checked_in_harness(monkeypatch, tmp_path: Path) ->
         return Done()
 
     monkeypatch.setattr("subprocess.run", fake_run)
-    code = cli_module.main(["bench", "--engine", "mock", "--batch", "1,2", "--env-file", ""])
+    code = cli_module.main(["bench", "--engine", "stub", "--batch", "1,2", "--env-file", ""])
     assert code == 0
     command = seen["command"]
     assert command[1].endswith("benchmarks/run.py"), command
-    assert "--engine" in command and "mock" in command
+    assert "--engine" in command and "stub" in command
     assert "1,2" in command
 
 
@@ -326,7 +326,7 @@ def _captured_command(monkeypatch, argv: list[str]) -> list[str]:
 
 def test_cross_request_selects_the_batching_harness(monkeypatch) -> None:
     """Two harnesses answer two questions; the flag must reach the right one."""
-    command = _captured_command(monkeypatch, ["bench", "--engine", "mock", "--cross-request", "--threads", "8"])
+    command = _captured_command(monkeypatch, ["bench", "--engine", "stub", "--cross-request", "--threads", "8"])
     assert command[1].endswith("benchmarks/batch_gain.py"), command
     # `run.py` spells it `--batch`; `batch_gain.py` takes a list of sizes.
     assert "--batches" in command, command
@@ -342,7 +342,7 @@ def test_the_process_comparison_holds_the_thread_budget_constant(monkeypatch) ->
     """
     command = _captured_command(
         monkeypatch,
-        ["bench", "--engine", "mock", "--cross-request", "--threads", "24", "--processes", "4"],
+        ["bench", "--engine", "stub", "--cross-request", "--threads", "24", "--processes", "4"],
     )
     assert command[command.index("--threads") + 1] == "6", command
     assert command[command.index("--processes") + 1] == "4", command
@@ -350,7 +350,7 @@ def test_the_process_comparison_holds_the_thread_budget_constant(monkeypatch) ->
     # One process keeps the whole budget.
     command = _captured_command(
         monkeypatch,
-        ["bench", "--engine", "mock", "--cross-request", "--threads", "24", "--processes", "1"],
+        ["bench", "--engine", "stub", "--cross-request", "--threads", "24", "--processes", "1"],
     )
     assert command[command.index("--threads") + 1] == "24", command
 
@@ -360,7 +360,7 @@ def test_a_zero_process_count_is_refused(monkeypatch) -> None:
     from decis import cli as cli_module
 
     monkeypatch.setattr("subprocess.run", lambda command, check=False: None)
-    assert cli_module.main(["bench", "--engine", "mock", "--cross-request", "--processes", "0"]) == 2
+    assert cli_module.main(["bench", "--engine", "stub", "--cross-request", "--processes", "0"]) == 2
 
 
 def test_decis_bench_says_so_when_the_harness_is_absent(monkeypatch) -> None:
@@ -370,7 +370,7 @@ def test_decis_bench_says_so_when_the_harness_is_absent(monkeypatch) -> None:
     from decis import cli as cli_module
 
     monkeypatch.setattr(_Path, "is_file", lambda self: False)
-    code = cli_module.main(["bench", "--engine", "mock", "--env-file", ""])
+    code = cli_module.main(["bench", "--engine", "stub", "--env-file", ""])
     assert code == 2
 
 

@@ -1,8 +1,11 @@
-"""A deterministic engine with no weights.
+"""A deterministic engine with no weights, for the test suite only.
 
-Its job is to make the API testable and demonstrable without downloading 1.6 GB
-of anything: CI asserts the wire contract against it, and `decis serve` works on
-a laptop in a second.
+It is **not** part of the shipped package and **not** registered by
+`decis.engines.registry`: Decis ships real checkpoints, and a fake engine in the
+registry would be one more thing to document and to explain away. `conftest.py`
+registers this module under the id `stub`, which is what lets the whole contract
+suite -- the official SDK over a real socket, the OpenAPI snapshot, the error
+shapes -- run with no weights and no network.
 
 It is **not** a model. It scores each option by hashing the request -- plus a
 small bonus for options that share words with the content -- so that answers are
@@ -14,22 +17,22 @@ from __future__ import annotations
 
 import hashlib
 
-from .. import __version__
-from ..domain import ProbDist
-from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, softmax
+from decis import __version__
+from decis.domain import ProbDist
+from decis.engines.base import DecisionEngine, EngineInfo, Prediction, WorkItem, softmax
 
-#: Higher means more confident. Chosen so the mock produces decisive-but-not-
+#: Higher means more confident. Chosen so the stub produces decisive-but-not-
 #: degenerate distributions, which is what makes contract tests meaningful.
 SCORE_SCALE = 5.0
 OVERLAP_WEIGHT = 0.35
 
 
-class MockEngine(DecisionEngine):
+class StubEngine(DecisionEngine):
     """Deterministic, dependency-free, weight-free."""
 
     def info(self) -> EngineInfo:
         return EngineInfo(
-            id="mock",
+            id="stub",
             version=__version__,
             primitives=frozenset({"noul", "choice", "score"}),
             max_options=255,
@@ -39,11 +42,10 @@ class MockEngine(DecisionEngine):
             device="cpu",
             dtype="none",
             description=(
-                "Deterministic mock engine. No weights and no model: answers are "
-                "derived from a hash of the request. For contract tests and demos."
+                "Deterministic test double. No weights and no model: answers are derived from a hash of the request."
             ),
             release_date="2026-09-22",
-            aliases=("decis-mock", "mock-engine"),
+            aliases=("decis-stub", "stub-engine"),
         )
 
     def load(self) -> None:

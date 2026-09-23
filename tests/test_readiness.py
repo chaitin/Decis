@@ -23,9 +23,9 @@ from decis.app import create_app
 from decis.config import Settings
 from decis.domain import MeasuredTokens, PreparedRequest
 from decis.engines.base import EngineInfo, Prediction, WorkItem
-from decis.engines.mock import MockEngine
 from decis.errors import EngineUnavailableError
 from decis.scheduler import LoadPhase, LoadStatus, short_error
+from fixture_engine import StubEngine
 
 
 class FakeScheduler:
@@ -37,7 +37,7 @@ class FakeScheduler:
     """
 
     def __init__(self, *, gate: threading.Event | None = None, fails: str | None = None) -> None:
-        self._info = MockEngine().info()
+        self._info = StubEngine().info()
         self._gate = gate
         self._fails = fails
         self._lock = threading.Lock()
@@ -146,7 +146,7 @@ def test_readyz_says_loading_while_the_engine_loads(settings: Settings) -> None:
     with TestClient(app) as client:
         response = client.get("/readyz")
         assert response.status_code == 503
-        assert response.json() == {"status": "loading", "engine": "mock"}
+        assert response.json() == {"status": "loading", "engine": "stub"}
         assert response.headers.get("retry-after") == "1"
         gate.set()
 
@@ -158,7 +158,7 @@ def test_readyz_becomes_ready_once_the_load_finishes(settings: Settings, engine_
     with TestClient(app) as client:
         assert client.get("/readyz").json()["status"] == "loading"
         gate.set()
-        assert engine_ready(client) == {"status": "ready", "engine": "mock"}
+        assert engine_ready(client) == {"status": "ready", "engine": "stub"}
 
 
 def test_healthz_does_not_depend_on_the_engine_at_all(settings: Settings) -> None:
@@ -208,7 +208,7 @@ def test_a_failed_load_is_reported_as_failed_and_does_not_stop_the_server(settin
         assert response.status_code == 503
         body = response.json()
         assert body["status"] == "failed"
-        assert body["engine"] == "mock"
+        assert body["engine"] == "stub"
         assert "weights are corrupt" in body["error"]
         assert "RuntimeError" in body["error"]
 
@@ -246,7 +246,7 @@ def test_inference_on_a_failed_engine_says_it_failed_not_that_it_is_loading(
     with TestClient(app) as client:
         response = client.post(
             "/v1/systemone",
-            json={"state": "x", "model": "mock", "questions": {"q": {"type": "noul"}}},
+            json={"state": "x", "model": "stub", "questions": {"q": {"type": "noul"}}},
             headers=auth,
         )
         assert response.status_code == 503
@@ -273,7 +273,7 @@ def test_inference_during_a_cold_start_is_503_and_never_reaches_the_measurement(
     with TestClient(app) as client:
         response = client.post(
             "/v1/systemone",
-            json={"state": "x", "model": "mock", "questions": {"q": {"type": "noul"}}},
+            json={"state": "x", "model": "stub", "questions": {"q": {"type": "noul"}}},
             headers=auth,
         )
         assert response.status_code == 503
@@ -291,7 +291,7 @@ def test_a_request_during_a_cold_start_still_carries_the_request_id(settings: Se
     with TestClient(app) as client:
         response = client.post(
             "/v1/systemone",
-            json={"state": "x", "model": "mock", "questions": {"q": {"type": "noul"}}},
+            json={"state": "x", "model": "stub", "questions": {"q": {"type": "noul"}}},
             headers=auth,
         )
         assert response.status_code == 503
@@ -305,7 +305,7 @@ def test_models_is_available_without_weights(settings: Settings, auth: dict[str,
     with TestClient(app) as client:
         response = client.get("/v1/models", headers=auth)
         assert response.status_code == 200
-        assert any(model["name"] == "decis/mock@0.1.0" for model in response.json()["models"])
+        assert any(model["name"] == "decis/stub@0.1.0" for model in response.json()["models"])
 
 
 # --- shutdown ---------------------------------------------------------------
@@ -364,7 +364,7 @@ def test_the_engine_is_not_loaded_twice(settings: Settings) -> None:
     assert scheduler.load_calls == 0
 
 
-@pytest.mark.parametrize("engine_id", ["mock", "laya-multilingual"])
+@pytest.mark.parametrize("engine_id", ["stub", "laya-multilingual"])
 def test_every_engine_reports_a_phase_rather_than_a_bare_boolean(engine_id: str) -> None:
     """`ready` alone cannot distinguish "starting" from "broken", so both must exist."""
     from decis.engines.registry import create
@@ -386,7 +386,7 @@ def test_an_idle_engine_is_not_reported_as_failed() -> None:
     """`failed` must mean "we tried and it broke", never "we have not tried yet"."""
     from decis.scheduler import InProcessScheduler
 
-    scheduler = InProcessScheduler(MockEngine())
+    scheduler = InProcessScheduler(StubEngine())
     assert scheduler.load_status.phase is LoadPhase.IDLE
     scheduler.load()
     assert scheduler.load_status.phase is LoadPhase.READY
@@ -397,7 +397,7 @@ def test_a_real_failed_load_records_the_error_and_reraises() -> None:
     """The synchronous path is still used by tests and `decis` helpers, so it must
     keep raising while also recording the phase for the refusal path."""
 
-    class Broken(MockEngine):
+    class Broken(StubEngine):
         def load(self) -> None:
             raise RuntimeError("weights are corrupt")
 
@@ -416,7 +416,7 @@ def test_loading_is_idempotent() -> None:
     """A second `load()` on a ready engine must be a no-op, not a second 80 s."""
     from decis.scheduler import InProcessScheduler
 
-    scheduler = InProcessScheduler(MockEngine())
+    scheduler = InProcessScheduler(StubEngine())
     scheduler.load()
     scheduler.load()
     assert scheduler.load_status.phase is LoadPhase.READY
@@ -426,7 +426,7 @@ def test_the_error_text_is_bounded() -> None:
     """It goes in an unauthenticated response body, so an engine that raises a novel
     long enough to hold a filesystem path must not have it relayed verbatim."""
 
-    class Verbose(MockEngine):
+    class Verbose(StubEngine):
         def load(self) -> None:
             raise RuntimeError("x" * 5000)
 

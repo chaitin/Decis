@@ -12,8 +12,10 @@ release:
 
 * a version tag builds both variants, a branch push does not, and a PR builds neither;
 * the moving tag is `latest` only from the default branch, never from a pull request;
-* `DECIS_PREDOWNLOAD` is never set to an engine that has no weights -- `decis download
-  --engine mock` exits 2 *by design*, so that would fail the build;
+* `DECIS_PREDOWNLOAD` is only ever set to an engine that has weights — `decis download
+  --engine <weightless id>` exits 2 *by design*, so that would fail the build;
+* a pull request builds the Dockerfile with no engine extra at all, which is the cheap
+  check now that no weight-free engine ships;
 * every engine in the matrix is a registered engine, so a rename cannot leave a stale
   matrix behind;
 * the Dockerfile's `DECIS_EXTRAS` mapping matches what the registry declares.
@@ -100,7 +102,7 @@ def push_to_master(tmp_path: Path, plan_script: str) -> dict:
 
 def test_a_branch_push_builds_every_engine_for_both_architectures(push_to_master: dict) -> None:
     engines = {build["engine"] for build in push_to_master["builds"]}
-    assert engines == {"mock", "laya-multilingual", "kev-0.8b"}, engines
+    assert engines == {"laya-multilingual", "kev-0.8b"}, engines
     arches = {build["arch"] for build in push_to_master["builds"]}
     assert arches == {"amd64", "arm64"}, arches
     assert push_to_master["push"] == "true"
@@ -121,27 +123,35 @@ def test_a_version_tag_also_builds_the_offline_variants(tmp_path: Path, plan_scr
 
 
 def test_weights_are_never_baked_for_an_engine_that_has_none(tmp_path: Path, plan_script: str) -> None:
-    """`DECIS_PREDOWNLOAD=mock` would fail the build: `decis download --engine mock` exits 2.
+    """`DECIS_PREDOWNLOAD` must name an engine that actually has weights.
 
-    That exit code is deliberate (a download request for a weightless engine probably
-    means a mistyped engine id), which turns an "offline mock" image from pointless into
-    broken.
+    `decis download --engine <weightless id>` exits 2 (a download request for a
+    weight-free engine probably means a mistyped engine id), so baking one would fail
+    the build rather than produce a smaller image.
     """
     plan = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/tags/v9.9.9", REF_NAME="v9.9.9")
     for build in plan["builds"]:
-        if build["engine"] == "mock":
-            assert build["bake"] == "", "the workflow would ask the Dockerfile to download mock's weights"
+        assert build["bake"] in ("", build["engine"]), build
     baked = {build["engine"] for build in plan["builds"] if build["bake"]}
     assert baked == {"laya-multilingual", "kev-0.8b"}, baked
 
 
-def test_a_pull_request_builds_but_never_publishes(tmp_path: Path, plan_script: str) -> None:
+def test_a_pull_request_builds_an_engine_free_image(tmp_path: Path, plan_script: str) -> None:
+    """The cheap check: build the Dockerfile without installing an engine runtime.
+
+    There is no weight-free engine to publish any more, so a PR spends its time on the
+    install path rather than on torch. `DECIS_ENGINE` still names a registered engine, so
+    the app builds and `/v1/models` has something to list.
+    """
     plan = run_plan(plan_script, tmp_path, EVENT="pull_request", REF="refs/pull/7/merge", REF_NAME="7/merge")
     assert plan["push"] == "false", "a pull request must not push to the registry"
     assert plan["builds"], "a PR must still build, or the Dockerfile is never checked"
     # The point is the Dockerfile, so one engine on one platform is enough.
     assert len(plan["builds"]) == 1, plan["builds"]
     assert plan["tag"].startswith("sha-"), plan["tag"]
+    build = plan["builds"][0]
+    assert build["extra"] == "", f"a PR would install engine dependencies: {build['extra']!r}"
+    assert build["engine"] == "laya-multilingual", build
 
 
 def test_the_moving_tag_is_never_set_from_a_pull_request(tmp_path: Path, plan_script: str) -> None:
@@ -158,15 +168,13 @@ def test_dispatch_inputs_are_honoured(tmp_path: Path, plan_script: str) -> None:
         EVENT="workflow_dispatch",
         REF="refs/heads/master",
         REF_NAME="master",
-        INPUT_ENGINES="mock kev-0.8b",
+        INPUT_ENGINES="laya-multilingual kev-0.8b",
         INPUT_BAKE="true",
         INPUT_PUSH="true",
     )
     engines = {build["engine"] for build in plan["builds"]}
-    assert engines == {"mock", "kev-0.8b"}, engines
-    # mock has no weights, so it stays runtime-only even with baking on.
+    assert engines == {"laya-multilingual", "kev-0.8b"}, engines
     assert {build["variant"] for build in plan["builds"]} == {"runtime", "offline"}
-    assert all(build["bake"] == "" for build in plan["builds"] if build["engine"] == "mock")
     assert plan["push"] == "true"
 
 
@@ -178,7 +186,7 @@ def test_a_dispatch_dry_run_does_not_push(tmp_path: Path, plan_script: str) -> N
         EVENT="workflow_dispatch",
         REF="refs/heads/master",
         REF_NAME="master",
-        INPUT_ENGINES="mock",
+        INPUT_ENGINES="laya-multilingual",
         INPUT_BAKE="false",
         INPUT_PUSH="false",
     )
@@ -202,27 +210,27 @@ def test_the_planned_extra_matches_the_registry(push_to_master: dict) -> None:
     """Each image must install exactly the dependencies its engine declares.
 
     Asserted against the *planned matrix*, not against the YAML text: the value used to
-    come from `engine == 'mock' && '' || 'laya'`, and an empty string is falsy in a GitHub
-    expression, so `mock` silently installed Laya and shipped 3.1 GB of torch. Only
-    executing the step catches that.
+    come from `engine == 'x' && '' || 'laya'`, and an empty string is falsy in a GitHub
+    expression, so the engine-free image silently installed Laya and shipped 3.1 GB of
+    torch. Only executing the step catches that.
     """
     sys.path.insert(0, str(ROOT / "src"))
     from decis.engines.registry import SPECS
 
+    # `tests/conftest.py` registers a weight-free test double in this process. It lives in
+    # `tests/` and is not a shipped engine, so it is not something to image.
+    shipped = {name for name, spec in SPECS.items() if not spec.target.startswith("fixture_engine")}
+
     planned = {build["engine"]: build["extra"] for build in push_to_master["builds"]}
-    assert set(planned) == {"mock", "laya-multilingual", "kev-0.8b"}, sorted(planned)
+    assert set(planned) == {"laya-multilingual", "kev-0.8b"}, sorted(planned)
     for engine, extra in planned.items():
-        assert engine in SPECS, f"{engine} is in the workflow but not the registry"
+        assert engine in shipped, f"{engine} is in the workflow but not the registry"
         assert SPECS[engine].extra == extra, (
             f"{engine}: the registry declares extra {SPECS[engine].extra!r}, the workflow would install {extra!r}"
         )
 
-    # `mock` is the one every user pulls first and the one the contract tests share; it
-    # must not drag in a model runtime. This is the regression that shipped.
-    assert planned["mock"] == "", f"the mock image would install {planned['mock']!r}"
-
     # And every engine the registry can serve is either imaged or deliberately not.
-    unimaged = set(SPECS) - set(planned)
+    unimaged = shipped - set(planned)
     assert unimaged == {"laya", "laya-typed-decisions"}, (
         f"{sorted(unimaged)} are registered but have no image. Either add them to the "
         f"workflow's engine list or say here why they share an image."
@@ -362,21 +370,21 @@ def test_the_published_registry_is_docker_hub(workflow: dict) -> None:
             "push",
             "refs/heads/master",
             "master",
-            {"mock": "mock", "laya-multilingual": "laya-multilingual"},
+            {"laya-multilingual": "laya-multilingual", "kev-0.8b": "kev-0.8b"},
         ),
         # A release tag pins, so it must say which release.
         (
             "push",
             "refs/tags/v1.2.0",
             "v1.2.0",
-            {"mock": "mock-v1.2.0", "laya-multilingual": "laya-multilingual-v1.2.0"},
+            {"laya-multilingual": "laya-multilingual-v1.2.0", "kev-0.8b": "kev-0.8b-v1.2.0"},
         ),
         # A feature branch never moves a name someone could have pinned to.
         (
             "push",
             "refs/heads/topic",
             "topic",
-            {"mock": "mock-sha-a1b2c3d", "laya-multilingual": "laya-multilingual-sha-a1b2c3d"},
+            {"laya-multilingual": "laya-multilingual-sha-a1b2c3d", "kev-0.8b": "kev-0.8b-sha-a1b2c3d"},
         ),
     ],
 )
@@ -409,7 +417,6 @@ def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, 
     docker_bin, _ = fake_docker(tmp_path)
     published: dict[str, set[str]] = {}
     for engine, variant in (
-        ("mock", "runtime"),
         ("laya-multilingual", "runtime"),
         ("laya-multilingual", "offline"),
         ("kev-0.8b", "runtime"),
@@ -469,10 +476,10 @@ def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta
         build_meta_script,
         tmp_path,
         docker_bin,
-        ENGINE="mock",
+        ENGINE="laya-multilingual",
         VARIANT="runtime",
         ARCH="amd64",
-        IMAGE_TAG="mock",
+        IMAGE_TAG="laya-multilingual",
         # A fork would see its own owner here; the image name must ignore it.
         GITHUB_REPOSITORY_OWNER="someone-else",
         DOCKERHUB_USERNAME="KingFS",  # registries require lowercase
@@ -495,18 +502,17 @@ def merged_tags(log: Path) -> list[str]:
 @pytest.mark.parametrize(
     ("engine", "variant", "image_tag", "moving_tag", "expected_latest"),
     [
-        # `mock` needs no weights and no GPU, so it is the right answer to a bare
-        # `docker pull kingfs/decis`.
-        ("mock", "runtime", "mock", "latest", True),
+        # `laya-multilingual` is the server's default engine and the one the README leads
+        # with, so it is the right answer to a bare `docker pull kingfs/decis`.
+        ("laya-multilingual", "runtime", "laya-multilingual", "latest", True),
         # ...but only the image that actually moved `latest`. A version tag must not
-        # silently repoint the bare tag, and an offline image is not the small default.
-        ("mock", "runtime", "mock-v1.2.0", "v1.2.0", False),
-        ("mock", "offline", "mock-offline", "latest", False),
-        ("laya-multilingual", "runtime", "laya-multilingual", "latest", False),
+        # silently repoint the bare tag, and an offline image is not the default image.
+        ("laya-multilingual", "runtime", "laya-multilingual-v1.2.0", "v1.2.0", False),
+        ("laya-multilingual", "offline", "laya-multilingual-offline", "latest", False),
         ("kev-0.8b", "runtime", "kev-0.8b", "latest", False),
     ],
 )
-def test_only_mock_claims_the_bare_latest_tag(
+def test_only_the_default_engine_claims_the_bare_latest_tag(
     merge_script: str,
     tmp_path: Path,
     engine: str,
@@ -534,13 +540,15 @@ def test_only_mock_claims_the_bare_latest_tag(
 def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tmp_path: Path) -> None:
     """Every source must be this commit's per-arch manifest, or a release mixes commits."""
     docker_bin, log = fake_docker(tmp_path)
+    # `kev-0.8b`, because the engine that owns the bare `latest` also gets a second
+    # `imagetools create` for it; this test is about the per-arch sources only.
     completed = run_step(
         merge_script,
         tmp_path,
         docker_bin,
-        ENGINE="laya-multilingual",
+        ENGINE="kev-0.8b",
         VARIANT="runtime",
-        IMAGE_TAG="laya-multilingual",
+        IMAGE_TAG="kev-0.8b",
         MOVING_TAG="latest",
     )
     assert completed.returncode == 0, completed.stderr
@@ -551,8 +559,8 @@ def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tm
     skip = {words.index("--tag") + 1} if "--tag" in words else set()
     sources = [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
     assert sources == [
-        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64",
-        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-arm64",
+        "docker.io/kingfs/decis:kev-0.8b-sha-a1b2c3d4e5f6-amd64",
+        "docker.io/kingfs/decis:kev-0.8b-sha-a1b2c3d4e5f6-arm64",
     ], sources
 
 
@@ -578,9 +586,9 @@ def test_a_missing_platform_leg_is_left_out_rather_than_faked(merge_script: str,
         merge_script,
         tmp_path,
         bin_dir,
-        ENGINE="mock",
+        ENGINE="laya-multilingual",
         VARIANT="runtime",
-        IMAGE_TAG="mock",
+        IMAGE_TAG="laya-multilingual",
         MOVING_TAG="latest",
     )
     assert completed.returncode == 0, completed.stderr
@@ -601,9 +609,9 @@ def test_merging_nothing_at_all_fails(merge_script: str, tmp_path: Path) -> None
         merge_script,
         tmp_path,
         bin_dir,
-        ENGINE="mock",
+        ENGINE="laya-multilingual",
         VARIANT="runtime",
-        IMAGE_TAG="mock",
+        IMAGE_TAG="laya-multilingual",
         MOVING_TAG="latest",
     )
     assert completed.returncode != 0
@@ -654,7 +662,7 @@ def test_a_dry_run_needs_no_credentials(plan_script: str, tmp_path: Path) -> Non
             "EVENT": "workflow_dispatch",
             "REF": "refs/heads/master",
             "REF_NAME": "master",
-            "INPUT_ENGINES": "mock",
+            "INPUT_ENGINES": "laya-multilingual",
             "INPUT_BAKE": "false",
             "INPUT_PUSH": "false",
         },

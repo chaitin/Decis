@@ -7,10 +7,10 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**354 个无权重测试通过**——
-> 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。除 `mock` 外已注册四个真实
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**428 个无权重测试通过**——
+> 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
-> 现在都能回答真实请求**；另有 24 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
+> 现在都能回答真实请求**；另有 27 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
 > `answers.py` 或路由层**——这正是 Stage 2 要验证的事（见
 > [`docs/design-review.md §2`](docs/design-review.md)）。
 >
@@ -20,14 +20,16 @@ Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 
 
 ## 快速开始
 
-不需要权重、不需要 GPU、不需要下载模型。`mock` 引擎的答案是确定性的。
-
 ```bash
 git clone https://github.com/kingfs/Decis && cd Decis
-uv sync --extra dev
-cp .env.example .env          # 然后把 DECIS_API_KEY 改成任意值
-uv run decis serve --host 127.0.0.1 --port 8000
+uv sync --extra dev --extra laya
+cp .env.example .env                               # 然后把 DECIS_API_KEY 改成任意值
+uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
+uv run decis serve --host 127.0.0.1 --port 8000    # 默认引擎就是 laya-multilingual
 ```
+
+`laya-multilingual` 是默认引擎。CPU 上加载约需 **80 秒**，所以在发流量之前先轮询 `/readyz`——
+`/healthz` 立刻可用，`/readyz` 在模型可用之前一直报 `loading`。
 
 ```python
 from typesafe_sdk import Choice, Noul, TypeSafeClient
@@ -54,7 +56,7 @@ response = client.system_one(
     },
 )
 
-print(response.model)  # decis/mock@0.1.0
+print(response.model)  # decis/laya-multilingual@<laya 版本>
 print(response.choices["department"].choice)  # 引擎选出的那一项
 print(response.choices["department"].confidence)  # 0..1
 print(response.nouls["churn_risk"].noul)  # P(true)，0..1
@@ -66,7 +68,7 @@ print(response.nouls["churn_risk"].noul)  # P(true)，0..1
 curl -s localhost:8000/v1/systemone \
   -H 'authorization: Bearer local' -H 'content-type: application/json' -d '{
   "state": "We were billed twice for March. Please refund the duplicate today.",
-  "model": "mock",
+  "model": "jev-latest",
   "questions": {
     "department": {"type": "choice", "instructions": "Which team should handle this?",
                    "criteria": {"billing": "invoices, payments, refunds",
@@ -77,19 +79,22 @@ curl -s localhost:8000/v1/systemone \
 
 ```jsonc
 {
-  "model": "decis/mock@0.1.0",
+  "model": "decis/laya-multilingual@<laya 版本>",
   "answers": {
-    "department": { "type": "choice", "choice": "billing", "confidence": 0.763,
-                    "probabilities": { "billing": 0.8815, "technical": 0.1185 } },
-    "churn_risk": { "type": "noul", "noul": 0.89 }
+    "department": { "type": "choice", "choice": "<你的某个 criteria 键>", "confidence": "<0..1>",
+                    "probabilities": { "billing": "<p>", "technical": "<p>" } },
+    "churn_risk": { "type": "noul", "noul": "<P(true)，0..1>" }
   },
-  "usage": { "input_tokens": 67, "output_tokens": 40 },
+  "usage": { "input_tokens": "<n>", "output_tokens": "<n>" },
   // Decis 在契约之外加的所有东西都在同一个键下面，官方 SDK 会忽略它。
   // batch_size 就是"批处理到底有没有发生"的证据。
-  "decis": { "engine": "mock", "engine_version": "0.1.0", "device": "cpu", "dtype": "none",
-             "latency_ms": 0.2, "batch_size": 2 }
+  "decis": { "engine": "laya-multilingual", "engine_version": "<laya 版本>", "device": "cpu",
+             "dtype": "float32", "latency_ms": "<n>", "batch_size": 2 }
 }
 ```
+
+具体数值取决于引擎和它的权重，所以这里写成 `<…>` 而不是编造数字；
+每个字段的含义见 [`examples/curl.md`](examples/curl.md)。
 
 现在就能用的其他命令：
 
@@ -98,15 +103,7 @@ uv run decis models     # 本机注册了哪些引擎、哪些可用
 uv run decis doctor     # 环境与配置自检
 ```
 
-### 换成真实模型
-
-把 `mock` 换成 Laya。上面的请求一个字都不用改——变的只是谁来回答。
-
-```bash
-uv sync --extra laya
-uv run decis download --engine laya-multilingual --dest ./models   # 647 MiB，只需一次
-uv run decis serve --engine laya-multilingual --host 127.0.0.1
-```
+### 加载、就绪与离线镜像
 
 CPU 上冷启动约 **80 秒**，整个过程里探针都可用：引擎在后台线程里加载，所以 `/healthz` 立刻就有响应，
 `/readyz` 会把当前状态说清楚，不用你去猜。
@@ -167,13 +164,16 @@ Decis 就是这种方式：一个稳定的 API，多个引擎，每个模型打�
 
 | 引擎 | 骨干模型 | 参数量 | 权重 | 状态 | 说明 |
 |---|---|---|---|---|---|
-| `mock` | — | — | 无 | **已实现** | 确定性、无权重。用于契约测试与演示 |
-| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **已可用** | 支持 100+ 种语言，快约 2.2 倍，预期的默认选择 |
+| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **已可用** | 支持 100+ 种语言，快约 2.2 倍，默认引擎 |
 | `laya` | ModernBERT-large | 421M | 807 MiB | **已可用** | 英语，在英语基准上最强 |
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | **已可用** | 同一个仓库里的 typed-decisions checkpoint |
 | `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | 可用 | 架构不同（只做 prefill，不生成文本），错误分布也不同 |
 | `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | 未注册 | 精度更高，但已经不算“轻量” |
 | `remote` | — | — | — | 计划中 | 转发到真正的 `api.typesafe.ai`，可用于 A/B 对比，也可当测试基准 |
+
+注册的每个引擎都是有真实权重的 checkpoint。线格式契约测试跑在一个无权重的测试替身上，
+它位于 [`tests/`](tests/fixture_engine.py)，并且**故意不注册到服务端**——`decis serve`
+永远不会用假模型作答。
 
 新增一个引擎就是一个模块加一行注册，**不需要改归一化层**——如果接一个引擎要改 `render.py` 或 `answers.py`，说明抽象错了。见 [`AGENTS.md §5`](AGENTS.md)。
 
@@ -241,16 +241,16 @@ Decis 就是这种方式：一个稳定的 API，多个引擎，每个模型打�
 一个引擎一个镜像，因为引擎依赖彼此冲突而且体积很大。它们在 Docker Hub 上共用一个仓库，**引擎放在 tag 里**：
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:mock
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
 ```
 
 | Tag | 引擎 | 需要什么 |
 |---|---|---|
-| `mock`、`latest` | `mock`——测试用假引擎 | 什么都不需要，没有 torch，起来就有 |
-| `laya-multilingual` | Laya 多语言（322M） | 647 MiB 权重，冷启动约 75 秒，峰值 RSS 约 5 GB |
+| `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 647 MiB 权重，冷启动约 80 秒，峰值 RSS 约 5 GB |
+| `laya` | Laya 英语（421M） | 807 MiB 权重 |
 | `kev-0.8b` | kev 0.8B | 1.7 GiB 权重；想要 GPU |
 
-只有 `mock` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的直接就能跑。
+只有 `laya-multilingual` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的是默认引擎。
 每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。
 
 想更新模型而不重建镜像时，挂卷比让容器去下载权重更好：
@@ -265,8 +265,14 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs
 想自己构建：
 
 ```bash
-docker build -f docker/Dockerfile -t decis:mock .
+docker build -f docker/Dockerfile \
+  --build-arg DECIS_EXTRAS=laya \
+  --build-arg DECIS_ENGINE=laya-multilingual \
+  -t decis:laya-multilingual .
 ```
+
+除非显式指定，镜像不会安装任何引擎 extra，所以裸 `docker build` 得到的是纯 API 镜像：
+它能启动并回答 `/healthz` 与 `/v1/models`，但在引擎依赖和权重就位之前 `/readyz` 一直是 503。
 
 容器以非 root 用户运行，不需要任何外部服务——没有 Redis、没有 Postgres、没有 Celery——并且在公网地址上没配 token 时会拒绝启动。
 
@@ -307,8 +313,8 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 354 个测试，约 9 秒，无权重、无网络
-uv run pytest -m weights                # 14 个加载真实 Laya 权重的测试
+uv run pytest -q                        # 428 个测试，约 10 秒，无权重、无网络
+uv run pytest -m weights                # 27 个加载真实权重（Laya + kev）的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token
 ```

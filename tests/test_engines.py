@@ -1,4 +1,4 @@
-"""Engine layer: the registry, lazy imports, and the mock engine's contract.
+"""Engine layer: the registry, lazy imports, and the stub engine's contract.
 
 No weights are downloaded here. `tests/test_engines_weights.py` (marked `weights`)
 covers the real engines.
@@ -25,8 +25,8 @@ from decis.engines.base import (
     uniform,
     validate_distribution,
 )
-from decis.engines.mock import MockEngine
 from decis.errors import InvalidRequestError
+from fixture_engine import StubEngine
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,6 +56,25 @@ def test_every_registered_engine_target_is_importable() -> None:
 def test_engine_classes_subclass_the_protocol() -> None:
     for engine_id in registry.SPECS:
         assert issubclass(registry.load_class(engine_id), DecisionEngine)
+
+
+def test_the_shipped_registry_registers_no_test_double() -> None:
+    """Every engine the package ships is a real checkpoint; the stub is tests-only.
+
+    Asked in a fresh interpreter on purpose: in-process, `conftest.py` has already
+    registered the weight-free test double, so the answer here would be "it does"
+    whichever way the shipped registry was written.
+    """
+    code = "from decis.engines.registry import SPECS; print(','.join(sorted(SPECS)))"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "kev-0.8b,laya,laya-multilingual,laya-typed-decisions"
 
 
 @pytest.mark.parametrize(
@@ -94,13 +113,13 @@ def test_core_modules_do_not_pull_in_torch(module: str) -> None:
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("mock", "mock"),
-        ("decis-mock", "mock"),
-        ("mock-engine", "mock"),
-        ("decis/mock@0.1.0", "mock"),
-        ("decis/mock", "mock"),
-        ("  mock  ", "mock"),
-        ("MOCK", None),  # case-sensitive on purpose: model names are identifiers
+        ("stub", "stub"),
+        ("decis-stub", "stub"),
+        ("stub-engine", "stub"),
+        ("decis/stub@0.1.0", "stub"),
+        ("decis/stub", "stub"),
+        ("  stub  ", "stub"),
+        ("STUB", None),  # case-sensitive on purpose: model names are identifiers
         ("gpt-4", None),
         ("", None),
     ],
@@ -114,7 +133,7 @@ def test_unknown_model_error_lists_the_alternatives() -> None:
         registry.resolve_or_raise("nope")
     message = caught.value.message
     assert "nope" in message
-    assert "mock" in message
+    assert "stub" in message
 
 
 @pytest.mark.parametrize("name", ["jev-latest", "jev", "system-one", "default", "jev-latest-8b"])
@@ -122,14 +141,14 @@ def test_foreign_defaults_are_recognised(name: str) -> None:
     assert registry.is_foreign_default(name)
 
 
-@pytest.mark.parametrize("name", ["mock", "laya", "gpt-4", "jev-not-a-thing"])
+@pytest.mark.parametrize("name", ["stub", "laya", "gpt-4", "jev-not-a-thing"])
 def test_non_defaults_are_not_treated_as_foreign_defaults(name: str) -> None:
     assert not registry.is_foreign_default(name)
 
 
 def test_describe_does_not_load_weights() -> None:
-    info = registry.describe("mock")
-    assert info.id == "mock"
+    info = registry.describe("stub")
+    assert info.id == "stub"
 
 
 def test_missing_dependency_is_reported_as_an_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,26 +172,26 @@ def test_missing_dependency_is_reported_as_an_install_hint(monkeypatch: pytest.M
 
 
 def test_model_id_is_versioned() -> None:
-    info = MockEngine().info()
-    assert info.model_id == f"decis/mock@{info.version}"
+    info = StubEngine().info()
+    assert info.model_id == f"decis/stub@{info.version}"
     assert "@" in info.model_id
 
 
 def test_capacities_are_json_friendly() -> None:
-    capacities = MockEngine().info().capacities()
+    capacities = StubEngine().info().capacities()
     assert capacities["primitives"] == ["choice", "noul", "score"]
     assert all(isinstance(value, (int, str, list)) for value in capacities.values())
 
 
-# --- the mock engine ---------------------------------------------------------
+# --- the stub engine ---------------------------------------------------------
 
 
-def test_mock_declares_all_three_primitives() -> None:
-    assert MockEngine().info().primitives == frozenset({"noul", "choice", "score"})
+def test_stub_declares_all_three_primitives() -> None:
+    assert StubEngine().info().primitives == frozenset({"noul", "choice", "score"})
 
 
 def test_engine_must_be_loaded_before_use() -> None:
-    engine = MockEngine()
+    engine = StubEngine()
     assert not engine.loaded
     with pytest.raises(RuntimeError, match="before load"):
         engine.predict([_item()])
@@ -182,14 +201,14 @@ def test_engine_must_be_loaded_before_use() -> None:
 
 
 def test_load_is_idempotent() -> None:
-    engine = MockEngine()
+    engine = StubEngine()
     engine.load()
     engine.load()
     assert engine.loaded
 
 
 def test_predictions_are_valid_distributions() -> None:
-    engine = MockEngine()
+    engine = StubEngine()
     engine.load()
     items = [_item(qid=f"q{i}", names=("a", "b", "c")) for i in range(5)]
     prediction = engine.predict(items)
@@ -202,7 +221,7 @@ def test_predictions_are_valid_distributions() -> None:
 
 def test_predictions_are_deterministic() -> None:
     """The official SDK retries POSTs; a retry must not change the answer."""
-    engine = MockEngine()
+    engine = StubEngine()
     engine.load()
     items = [_item(qid="q", names=("a", "b")) for _ in range(3)]
     first = engine.predict(items).probabilities
@@ -210,17 +229,17 @@ def test_predictions_are_deterministic() -> None:
     assert first == second
 
 
-def test_the_mock_is_not_a_constant() -> None:
-    """A mock that always answers the same thing would not test anything."""
-    engine = MockEngine()
+def test_the_stub_is_not_a_constant() -> None:
+    """A stub that always answers the same thing would not test anything."""
+    engine = StubEngine()
     engine.load()
     distributions = {tuple(engine.predict([_item(state=f"state {index}")]).probabilities[0]) for index in range(20)}
-    assert len(distributions) > 15, "the mock should vary with the input"
+    assert len(distributions) > 15, "the stub should vary with the input"
 
 
-def test_the_mock_reacts_to_the_option_text() -> None:
+def test_the_stub_reacts_to_the_option_text() -> None:
     """Lexical overlap makes demo answers look plausible; it is still not a model."""
-    engine = MockEngine()
+    engine = StubEngine()
     engine.load()
     item = WorkItem(
         request_id="r",
@@ -237,7 +256,7 @@ def test_the_mock_reacts_to_the_option_text() -> None:
 
 
 def test_token_counting_is_positive_and_grows_with_input() -> None:
-    engine = MockEngine()
+    engine = StubEngine()
     engine.load()
     short = engine.predict([_item(state="short")]).input_tokens
     long = engine.predict([_item(state="word " * 500)]).input_tokens
@@ -245,7 +264,7 @@ def test_token_counting_is_positive_and_grows_with_input() -> None:
 
 
 def test_predict_handles_an_empty_batch() -> None:
-    engine = MockEngine()
+    engine = StubEngine()
     engine.load()
     prediction = engine.predict([])
     assert prediction.probabilities == []
@@ -299,7 +318,7 @@ def test_scheduler_serialises_access_to_the_engine() -> None:
 
     from decis.scheduler import InProcessScheduler
 
-    class Counting(MockEngine):
+    class Counting(StubEngine):
         def __init__(self) -> None:
             super().__init__()
             self.inside = 0
@@ -333,7 +352,7 @@ def test_scheduler_serialises_access_to_the_engine() -> None:
 def test_scheduler_reports_not_ready_before_load() -> None:
     from decis.scheduler import InProcessScheduler
 
-    scheduler = InProcessScheduler(MockEngine())
+    scheduler = InProcessScheduler(StubEngine())
     assert not scheduler.ready
 
 
@@ -341,7 +360,7 @@ def test_scheduler_wraps_engine_failures() -> None:
     from decis.errors import EngineFailedError
     from decis.scheduler import InProcessScheduler
 
-    class Exploding(MockEngine):
+    class Exploding(StubEngine):
         def predict(self, items):
             raise ValueError("hardware on fire")
 
@@ -356,7 +375,7 @@ def test_scheduler_rejects_a_wrong_length_result() -> None:
     from decis.errors import EngineFailedError
     from decis.scheduler import InProcessScheduler
 
-    class Truncating(MockEngine):
+    class Truncating(StubEngine):
         def predict(self, items):
             return Prediction(probabilities=[])
 

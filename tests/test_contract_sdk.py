@@ -46,7 +46,7 @@ def live_server(settings):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
-    app = create_app(Settings(api_keys=(TEST_KEY,), host="127.0.0.1", default_engine="mock", env_file=""))
+    app = create_app(Settings(api_keys=(TEST_KEY,), host="127.0.0.1", default_engine="stub", env_file=""))
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
@@ -101,10 +101,10 @@ def test_sdk_answers_all_three_primitives(sdk) -> None:
             "tone": Choice(instructions="What is the tone?", criteria={"calm": None, "angry": None}),
             "urgency": Score(instructions="How urgent?", criteria=["later", "soon", "today", "now"]),
         },
-        model="mock",
+        model="stub",
     )
 
-    assert result.model == "decis/mock@0.1.0"
+    assert result.model == "decis/stub@0.1.0"
     assert result.usage.input_tokens >= 0
     assert result.usage.output_tokens >= 0
     assert set(result.answers) == {"complaint", "tone", "urgency"}
@@ -121,7 +121,7 @@ def test_sdk_parses_score_probability_keys_as_integers(sdk) -> None:
     result = sdk.system_one(
         state="text",
         questions={"u": Score(instructions="How urgent?", criteria=["a", "b", "c"])},
-        model="mock",
+        model="stub",
     )
     answer = result.scores["u"]
     assert set(answer.probabilities) == {0, 1, 2}
@@ -132,7 +132,7 @@ def test_sdk_parses_score_probability_keys_as_integers(sdk) -> None:
 def test_sdk_list_models(sdk) -> None:
     models = sdk.models.list()
     names = {model.name for model in models.models}
-    assert "decis/mock@0.1.0" in names
+    assert "decis/stub@0.1.0" in names
     for model in models.models:
         assert model.description
         assert model.release_date
@@ -144,7 +144,7 @@ def test_sdk_accepts_extra_top_level_fields(sdk) -> None:
     `extra="ignore"` is documented behaviour of the SDK's response models, and this
     is what lets us report engine, device and latency without breaking anyone.
     """
-    result = sdk.system_one(state="text", questions={"q": Noul(instructions="?")}, model="mock")
+    result = sdk.system_one(state="text", questions={"q": Noul(instructions="?")}, model="stub")
     assert not hasattr(result, "decis") or getattr(result, "decis", None) is None
 
 
@@ -155,14 +155,14 @@ def test_sdk_default_model_jev_latest_works(sdk) -> None:
     that is the SDK's default. It must be served.
     """
     result = sdk.system_one(state="text", questions={"q": Noul(instructions="Is this a test?")})
-    assert result.model == "decis/mock@0.1.0"
+    assert result.model == "decis/stub@0.1.0"
 
 
 def test_sdk_raises_permission_denied_without_a_key(live_server) -> None:
     """403 -- not 401. The SDK maps the two to different exception classes, so a
     wrong status code here would send callers down the wrong recovery path."""
     with _client_without_credentials(live_server) as client, pytest.raises(TypeSafePermissionDeniedError):
-        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="mock")
+        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="stub")
 
 
 def test_sdk_raises_authentication_error_with_a_bad_key(live_server) -> None:
@@ -170,7 +170,7 @@ def test_sdk_raises_authentication_error_with_a_bad_key(live_server) -> None:
         TypeSafeClient(api_key="not-the-key", base_url=live_server) as client,
         pytest.raises(TypeSafeAuthenticationError),
     ):
-        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="mock")
+        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="stub")
 
 
 def test_sdk_does_not_retry_auth_failures(live_server) -> None:
@@ -192,14 +192,14 @@ def test_sdk_does_not_retry_auth_failures(live_server) -> None:
         TypeSafeClient(api_key="bad", base_url=live_server, transport=Counter()) as client,
         pytest.raises(TypeSafeAuthenticationError),
     ):
-        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="mock")
+        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="stub")
     assert attempts == 1, f"the SDK retried an auth failure {attempts} times"
 
 
 def test_sdk_error_reports_a_readable_message(live_server) -> None:
     """The point of the error work: a caller can act on what we send back."""
     with _client_without_credentials(live_server) as client, pytest.raises(TypeSafeAPIError) as caught:
-        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="mock")
+        client.system_one(state="text", questions={"q": Noul(instructions="?")}, model="stub")
     assert "Authorization: Bearer" in str(caught.value)
 
 
