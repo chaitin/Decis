@@ -276,21 +276,19 @@ gives you the default engine. Each tag is a multi-arch manifest covering `amd64`
 The registered `laya` (English) and `laya-typed-decisions` checkpoints have **no image**: the build
 matrix covers exactly the two tags above. Run those from a source checkout.
 
-The weights are *inside* the image, so there is nothing to fetch on first start:
-
-```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
-```
-
-Mount a directory instead when you want to swap a checkpoint without pulling an image — but mount one
-that already holds `<engine-id>/`. A mount at `/models` **hides the baked weights** (a named volume is
-seeded from the image and then keeps its own copy; a bind mount replaces the directory outright), and
-the container quietly goes back to downloading:
+The weights are *inside* the image, so that container needs no network and no volume on first start.
+To swap in a different checkpoint without pulling an image, mount a directory that already holds
+`<engine-id>/`:
 
 ```bash
 # /srv/models/laya-multilingual/multilingual/... must already exist
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
 ```
+
+Do not mount an *empty* directory at `/models`: a mount there **hides the baked weights** (a named
+volume is seeded from the image and then keeps its own copy; a bind mount replaces the directory
+outright), and the container quietly goes back to downloading what you thought it already had. That is
+why `docker-compose.yml` mounts nothing there.
 
 Release tags also publish the weightless variant, `<engine>-runtime-<version>`, for a deployment that
 keeps one copy of the weights on a volume or must keep every node's image small. It is a release

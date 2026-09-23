@@ -256,20 +256,17 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 注册表里的 `laya`（英语）与 `laya-typed-decisions` **没有镜像**：构建矩阵只覆盖上面两个 tag，
 这两个 checkpoint 请从源码目录运行。
 
-权重就在镜像**里面**，所以首次启动没有任何东西要下载：
-
-```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
-```
-
-想在不重新拉镜像的前提下换 checkpoint，就挂一个目录——但那个目录里必须已经有 `<engine-id>/`。
-把卷挂在 `/models` 上会**盖住烤进镜像的权重**（命名卷会用镜像内容初始化一次然后自己留一份，
-bind mount 则直接替换掉整个目录），于是容器悄悄退回联网下载：
+权重就在镜像**里面**，所以那个容器首次启动既不需要网络也不需要卷。想在不重新拉镜像的前提下换
+checkpoint，就挂一个目录——但那个目录里必须已经有 `<engine-id>/`：
 
 ```bash
 # /srv/models/laya-multilingual/multilingual/... 必须已经存在
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
 ```
+
+**不要**把一个空目录挂在 `/models` 上：挂载会**盖住烤进镜像的权重**（命名卷会用镜像内容初始化
+一次然后自己留一份，bind mount 则直接替换掉整个目录），于是容器悄悄退回联网下载你以为已经有的
+东西。`docker-compose.yml` 因此什么都不往那里挂。
 
 release tag 还会发布不带权重的变体 `<engine>-runtime-<version>`，给"权重放共享卷"或"每个节点
 的镜像要尽量小"的部署用。它是 release 产物而不是滚动的 tag，所以下面的例子带版本号——用当前那个。
