@@ -99,9 +99,16 @@ EXPOSE 8000
 # settings is safe. The start period is kept generous anyway because the *first* response
 # still waits for the process to finish importing torch, which is slow on a cold page
 # cache. Measured cold start for laya-multilingual: 75-90 s on CPU
-# (docs/design-review.md §2-D7).
+# (docs/design-review.md §2-D7), 86.1 s inside this container (§2-D19).
+#
+# The proxy variables are unset for the probe: an image that needs a proxy to download
+# its weights also exports `HTTP_PROXY`, and `urllib` honours it -- so the probe asked the
+# proxy for `http://127.0.0.1:8000/healthz` and got a 502 back, marking a perfectly
+# healthy server unhealthy (`docs/design-review.md` §2-D19). `env -u` keeps that scoped
+# to the probe, so the engine's own downloads still use the proxy.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=180s --retries=6 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"
+    CMD env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy \
+    python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status==200 else 1)"
 
 # Exec form so the server is PID 1 and receives SIGTERM directly.
 CMD ["decis", "serve"]

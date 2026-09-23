@@ -1,0 +1,110 @@
+# Local integration testing against the published images.
+#
+#   cp .env.example .env        # COMPOSE_PROFILES picks the engine; set DECIS_API_KEY
+#   docker compose up -d --wait # starts exactly the profile named in .env
+#   docker compose logs -f laya-multilingual
+#   curl -s localhost:8000/healthz
+#
+# One profile per engine. A bare `docker compose up` starts only what `.env` names,
+# because both engines together hold several GB of weights in memory and a local smoke
+# test rarely wants both. The profile name is the engine id, so it is also the image tag,
+# the `--engine` argument and `DECIS_DEFAULT_ENGINE`: one name, one thing.
+#
+# `tests/test_compose.py` reads the image tags out of
+# `.github/workflows/docker-build.yml`'s `plan` step, so a tag that no event publishes
+# cannot survive here (`docs/design-review.md` §2-D15).
+name: decis
+
+x-service: &service
+  restart: unless-stopped
+  # The same file `decis serve` reads, so a uv run and a container run cannot disagree
+  # about the token, the device or the log level. It also passes the compose-only knobs
+  # (`COMPOSE_PROFILES`, `DECIS_HOST_PORT`) into the container, which ignores them --
+  # `env_file` is all-or-nothing, and one source for the real settings is worth more.
+  env_file:
+    - .env
+  volumes:
+    # Weights and the Hugging Face cache both live under /models in the image, so one
+    # volume covers `DECIS_MODEL_DIR` and `HF_HOME`. Without it the download below is
+    # thrown away every time the container is recreated.
+    - models:/models
+
+# Pinned for every service that touches weights, so a `DECIS_MODEL_DIR` or `HF_HOME` in
+# `.env` cannot point the download outside the volume while the server looks inside it.
+x-paths: &paths
+  DECIS_MODEL_DIR: /models
+  HF_HOME: /models/.hf
+
+x-server-env: &server-env
+  <<: *paths
+  DECIS_HOST: 0.0.0.0
+  # The container always listens on the image's own port; only the host side of
+  # `ports:` is configurable. A DECIS_PORT in `.env` therefore cannot desync the two.
+  DECIS_PORT: "8000"
+  # Fail before pulling a 3 GB image, and never fall back to a default token: an
+  # unauthenticated server on 0.0.0.0 is what §3-19 refuses to start.
+  DECIS_API_KEY: ${DECIS_API_KEY:?set DECIS_API_KEY in .env -- cp .env.example .env}
+
+# A one-shot prefetch: fills the volume, exits 0, and is a no-op once the weights are
+# there. The server waits for it (`service_completed_successfully`), so a 647 MiB download
+# is never racing the healthcheck's 180 s start-period. Note that `up --wait` waits for
+# /healthz -- liveness, which answers while the engine is still loading -- so poll /readyz
+# if you want to send a request right away.
+x-weights: &weights
+  <<: *service
+  restart: "no"
+  environment: *paths
+
+x-server: &server
+  <<: *service
+  environment: *server-env
+  ports:
+    - "${DECIS_HOST_PORT:-8000}:8000"
+
+services:
+  weights-laya-multilingual:
+    <<: *weights
+    image: kingfs/decis:laya-multilingual
+    profiles: ["laya-multilingual"]
+    command: ["decis", "download", "--engine", "laya-multilingual"]
+
+  laya-multilingual:
+    <<: *server
+    image: kingfs/decis:laya-multilingual
+    profiles: ["laya-multilingual"]
+    command: ["decis", "serve", "--engine", "laya-multilingual"]
+    environment:
+      <<: *server-env
+      DECIS_DEFAULT_ENGINE: laya-multilingual
+    depends_on:
+      weights-laya-multilingual:
+        condition: service_completed_successfully
+
+  weights-kev-0.8b:
+    <<: *weights
+    image: kingfs/decis:kev-0.8b
+    profiles: ["kev-0.8b"]
+    command: ["decis", "download", "--engine", "kev-0.8b"]
+
+  kev-0.8b:
+    <<: *server
+    image: kingfs/decis:kev-0.8b
+    profiles: ["kev-0.8b"]
+    command: ["decis", "serve", "--engine", "kev-0.8b"]
+    environment:
+      <<: *server-env
+      DECIS_DEFAULT_ENGINE: kev-0.8b
+      # kev on CPU works but is an order of magnitude slower than on a GPU. With the
+      # NVIDIA container toolkit installed, add to this service:
+      #   deploy:
+      #     resources:
+      #       reservations:
+      #         devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    ports:
+      - "${DECIS_KEV_HOST_PORT:-8001}:8000"
+    depends_on:
+      weights-kev-0.8b:
+        condition: service_completed_successfully
+
+volumes:
+  models:

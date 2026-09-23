@@ -143,6 +143,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Check the compose file still resolves
+        # No daemon work and no 3 GB pull: this only validates the schema, the
+        # interpolation and the profile selection. What the services are *made of* is
+        # checked without docker by `tests/test_compose.py`, against the same `plan`
+        # script that decides the published tags.
+        run: |
+          cp .env.example .env
+          docker compose config -q
+          docker compose --profile kev-0.8b config -q
+          services=$(docker compose config --services | sort | tr '\n' ' ')
+          [ "$services" = "laya-multilingual weights-laya-multilingual " ] || {
+            echo "the default profile started something else: $services"; exit 1; }
       - name: Build the engine-free image
         uses: docker/build-push-action@v6
         with:
