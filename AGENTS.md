@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**645 通过 / 33 跳过**，约 25 秒，不联网）；
-> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **669 通过 / 28 跳过**（多出来的 24 个用例
+> **测试**：`uv run pytest -q` 跑无权重的那套（**646 通过 / 33 跳过**，约 25 秒，不联网）；
+> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **670 通过 / 28 跳过**（多出来的 24 个用例
 > 是引擎可用后才参数化出来的依赖分支）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
@@ -312,7 +312,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：645 通过 / 33 跳过，约 25 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：646 通过 / 33 跳过，约 25 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
@@ -449,7 +449,11 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 所以提交前的最低要求是：`.venv`（无 extra）与 `.scratch/venv`（真实 `laya`）各跑一次全量。
 写测试时不要假设自己在哪个环境里——**不要断言 `laya` 没被安装、不要假设会走网络、
 不要假设别的测试没 import 过 torch**。需要"某个模块不存在"就挑一个真的不存在的名字，
-需要判断环境就 `pytest.skip` 并说清理由。
+需要判断环境就 `pytest.skip` 并说清理由。**给配方一个最小 `PATH` 的 fixture，要把配方可能
+exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕过 shell 直接 `exec`，`@echo` 这种
+空行正好落在这一档，而**走不走这条捷径取决于 make 版本**（Ubuntu 的 4.3 走 shell、macOS 的
+3.81 不走），于是同一个 fixture 在一条腿上是绿的、在另一条腿上是红的——`tests/test_makefile.py`
+里补的那个 `echo` 就是这么被 macOS 那条腿抓出来的。
 
 ---
 

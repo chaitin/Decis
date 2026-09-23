@@ -29,6 +29,7 @@ OVERRIDE = ROOT / "docker-compose.override.yml"
 ENV_EXAMPLE = ROOT / ".env.example"
 DOCKERFILE = ROOT / "docker" / "Dockerfile"
 PLAYGROUND_DOCKERFILE = ROOT / "playground" / "Dockerfile"
+CI = ROOT / ".github" / "workflows" / "ci.yml"
 READMES = (ROOT / "README.md", ROOT / "README.zh-CN.md")
 
 yaml = pytest.importorskip("yaml", reason="pyyaml is needed to read the compose file; it is not a runtime dependency")
@@ -389,6 +390,32 @@ def test_the_playground_is_in_every_engine_profile(compose: dict) -> None:
     """
     playground = compose["services"]["playground"]
     assert set(playground["profiles"]) == set(engines(compose)), playground["profiles"]
+
+
+def test_the_ci_compose_check_derives_what_a_profile_starts(compose: dict) -> None:
+    """The one place that runs the real Compose must not name a service itself.
+
+    It did: the step asserted that the default profile starts `laya-multilingual`, and it
+    kept asserting it after the playground joined both engine profiles, so the check that
+    exists to catch a Compose mistake was itself the stale thing. A hand-written copy of a
+    service list is the defect this repository names in `AGENTS.md` §9 (`design-review.md`
+    §2-D14: the copy can stay right while the thing it copies moves).
+    """
+    workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    body = next(
+        (
+            step["run"]
+            for step in workflow["jobs"]["docker"]["steps"]
+            if step.get("name") == "Check the compose files still resolve"
+        ),
+        None,
+    )
+    assert body is not None, "the docker job no longer checks that the compose files resolve"
+    for engine in engines(compose):
+        assert engine not in body, (
+            f"the CI compose check writes {engine} down itself; it has to read the selected "
+            "profile out of .env.example and the extra service out of what that profile starts"
+        )
 
 
 def test_the_playground_does_not_inherit_the_engine_env_file(compose: dict) -> None:

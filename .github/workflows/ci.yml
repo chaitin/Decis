@@ -161,15 +161,34 @@ jobs:
           # override must not change which services or profiles exist.
           docker compose -f docker-compose.yml config -q
           docker compose config -q
+          # What a profile starts is read out of the files, never written here: this step
+          # used to assert the default engine's name by hand and kept asserting it after
+          # the games page joined both engine profiles, so the check that exists to catch
+          # a Compose mistake was itself the stale thing (`AGENTS.md` §9).
+          engine=$(sed -n 's/^COMPOSE_PROFILES=//p' .env.example)
+          [ -n "$engine" ] || { echo ".env.example selects no engine"; exit 1; }
+          services_of() {
+            docker compose -f docker-compose.yml --profile "$1" config --services | sort | tr '\n' ' '
+          }
+          # A bare `docker compose up` must start exactly what `.env.example`'s profile
+          # names, and the build override must not add or remove a service.
           default_services=$(docker compose -f docker-compose.yml config --services | sort | tr '\n' ' ')
-          [ "$default_services" = "laya-multilingual " ] || {
-            echo "the default profile started something else: $default_services"; exit 1; }
+          engine_services=$(services_of "$engine")
+          [ "$default_services" = "$engine_services" ] || {
+            echo "the default profile starts [$default_services], but $engine's profile starts [$engine_services]"
+            exit 1; }
           override_services=$(docker compose config --services | sort | tr '\n' ' ')
           [ "$override_services" = "$default_services" ] || {
             echo "the build override changed the service set: $override_services"; exit 1; }
-          kev_services=$(docker compose -f docker-compose.yml --profile kev-0.8b config --services | sort | tr '\n' ' ')
-          [ "$kev_services" = "kev-0.8b " ] || {
-            echo "the kev profile started something else: $kev_services"; exit 1; }
+          # Every other engine profile must start that engine plus the same extra services
+          # (the games page rides on all of them), and no engine name is written down here.
+          extra=${default_services#"$engine "}
+          for profile in $(docker compose -f docker-compose.yml config --profiles); do
+            [ "$profile" = "$engine" ] && continue
+            services=$(services_of "$profile")
+            [ "$services" = "$profile $extra" ] || {
+              echo "the $profile profile started something else: $services"; exit 1; }
+          done
       - name: Build the engine-free image
         uses: docker/build-push-action@v6
         with:

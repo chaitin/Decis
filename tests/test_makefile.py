@@ -129,7 +129,13 @@ def test_help_works_with_no_docker_at_all(tmp_path: Path) -> None:
     """Asking what the targets are must not depend on the daemon being up."""
     bare = tmp_path / "bare-bin"
     bare.mkdir()
-    for tool in ("sh", "bash", "grep", "awk", "printf", "env", "make"):
+    # `echo` is on the list because GNU make runs a bare `echo` in a recipe directly, with no
+    # shell: the line has no metacharacter for make to spot, so the shell builtin is not what
+    # runs. Whether make takes that shortcut for a given line depends on its version (4.3 on
+    # Ubuntu routes ours through the shell; 3.81 on macOS does not), so a fixture that
+    # withholds the binary passes on one runner and fails on the other -- which is how this
+    # one was found.
+    for tool in ("sh", "bash", "echo", "grep", "awk", "printf", "env", "make"):
         found = shutil.which(tool)
         if found:
             (bare / tool).symlink_to(found)
