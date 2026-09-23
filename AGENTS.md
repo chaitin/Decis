@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**426 通过 / 31 跳过**，约 10 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**448 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**427 通过 / 31 跳过**，约 10 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**449 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -39,6 +39,10 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `mock` **72 MB**（amd64）/ 71 MB（arm64），`laya-multilingual` 3203 / 3346 MB，`kev-0.8b` 3206 / 3349 MB。
 > **`mock` 曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），此数字是修好之后量的**——
 > 顺带可见构建时间也从 9m16s 降到 59s。
+> **per-arch 的中间 tag 必须带 artifact 名**（`laya-multilingual-sha-<commit>-amd64`）：
+> 所有引擎共用一个仓库，六个构建腿若都写 `sha-<commit>-amd64` 就会互相覆盖，
+> 三个 tag 最终发出同一个 manifest（`design-review.md §2-D16`，已实测发生过）。
+> 有一条测试穷举所有腿并断言它们的 tag 两两不相交。
 > **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、容器内冷启动。
 > 报镜像相关的结论时不要超出这个范围。
 
@@ -204,7 +208,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：426 通过 / 31 跳过，约 10 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：427 通过 / 31 跳过，约 10 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -344,6 +348,9 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
   见 `design-review.md §2-D14`）。选一个可以合法为空的值时，用真正的分支，或把决定搬到脚本里
 - ❌ 让测试里的映射表是**手抄的常量**而不是从被执行的那份东西读出来的
   （`design-review.md §2-D14`：表达式错了、抄本对了，于是测试恒绿地放过了一个 3.1 GB 的缺陷）
+- ❌ 在**共享仓库**里让多个构建/合并腿写同一个 tag（`design-review.md §2-D16`：
+  per-arch 中间 tag 少了 artifact 名，六个腿互相覆盖，三个 tag 发出同一个 manifest）。
+  检查"我这条腿的 tag 对不对"是不够的，必须有一条测试断言**任意两条腿的 tag 集合不相交**
 - ❌ 在文档里写出一个**没被任何测试对照过**的镜像 tag / URL / 文件名
   （`design-review.md §2-D15`：README 写 `kingfs/decis:mock`，工作流产出的是 `mock-latest`，
   照着文档拉的第一条命令就失败）。凡是文档里出现的、由 CI 产出的名字，都要有一条测试从

@@ -478,6 +478,39 @@ Error response from daemon: manifest for kingfs/decis:mock not found
 offline → 引擎名 + `-offline`）。顺带把"两个步骤各自拼一遍 tag"这个第二处实现也消掉了。
 已按新方案删掉 Docker Hub 上 21 个旧 tag，避免留下再也不会更新、但看起来仍然有效的 `-latest` 别名。
 
+### D16（严重，已修正）三个引擎把 per-arch 中间 tag 互相覆盖，于是三个 tag 发出的是同一个 manifest
+
+修完 D15（tag 改名）之后照例用 registry API 核对，发现**三个 tag 指向同一个 amd64 manifest**：
+
+```
+mock               amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
+laya-multilingual  amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
+kev-0.8b           amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
+```
+
+**`docker pull kingfs/decis:mock` 会拿到一个 3.2 GB 的、`DECIS_DEFAULT_ENGINE` 是别的引擎的镜像。**
+
+根因：合并步骤要从 per-arch 镜像拼多架构 manifest，而 per-arch 的中间 tag 当时叫
+`sha-<commit>-<arch>`。**所有引擎共用同一个仓库**，于是六个构建腿同时往
+`sha-a0f2ee5c16b1-amd64` 这一个名字上推。后推的覆盖先推的；等三个 merge job 跑起来时
+（merge 必然在全部 build 之后），它们读到的是**最后完成的那个引擎**的镜像，
+于是三个 tag 都被合成了同一份 manifest。
+
+这正是 D14/D15 的同一个形状第三次出现：**一个名字被两份东西写，只有一份是"对的"**。
+D14 是"表达式 vs 抄本"，D15 是"文档 vs 工作流"，这里是"腿 A vs 腿 B"。
+一次真正的端到端核对（照着文档 `docker pull` + 比对 digest）才能发现它——
+所有 30 个 workflow 测试当时都是绿的，因为它们都在检查**一个**腿产出的字符串对不对，
+没有检查**两个腿会不会撞车**。
+
+**修法**：per-arch tag 里加上 artifact 名 —— `${IMAGE_TAG}-sha-${short}-${ARCH}`，
+即 `laya-multilingual-sha-a0f2ee5c16b1-amd64`。
+**并加了一条"不许撞车"的测试**：把所有 (引擎, variant, arch) 组合的构建腿都跑一遍，
+断言任意两个腿写出的 tag 集合两两不相交。这条测试在旧方案下会失败（已实测），
+所以它不是空文——它列出的正是上面那张表里的 20 组冲突。
+
+**教训**：在一个**共享仓库**里，任何由多个矩阵腿写入的 tag 都必须把腿的身份放进名字里。
+只检查"我这条腿的 tag 对不对"是不够的，必须检查"两条腿的 tag 会不会相同"。
+
 **同一批发现里更值得记住的一点**：这个缺陷是**镜像体积**这种维度暴露的，
 而它此前躲过了全部 422 个测试。体积不是被断言出来的，是推上去之后用 registry API 量出来的——
 `AGENTS.md §8` 那条"数字必须来自实测"在这里救了一次场。

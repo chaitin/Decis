@@ -284,10 +284,13 @@ jobs:
           {
             echo "tags<<EOF"
             # The human-readable tag, then the provenance tag. The merge job consumes the
-            # latter, which must stay platform-qualified or the two legs would overwrite
-            # each other.
+            # latter, and it must name the artifact as well as the platform: all engines
+            # share this repository, so a bare `sha-<commit>-<arch>` is written by every
+            # engine's leg at once. They overwrite each other, and each merge then reads
+            # whichever engine happened to finish last -- which is how three different
+            # images all ended up published as the same manifest.
             echo "${image}:${IMAGE_TAG}-${ARCH}"
-            echo "${image}:sha-${short}-${ARCH}"
+            echo "${image}:${IMAGE_TAG}-sha-${short}-${ARCH}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -369,7 +372,7 @@ jobs:
           # printed, so an amd64-only release cannot look like a multi-arch one.
           sources=()
           for arch in amd64 arm64; do
-            ref="${image}:sha-${short}-${arch}"
+            ref="${image}:${IMAGE_TAG}-sha-${short}-${arch}"
             if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
               sources+=("$ref")
             else

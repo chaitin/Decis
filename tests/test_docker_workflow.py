@@ -398,6 +398,47 @@ def test_the_offline_variant_is_a_distinct_tag(tmp_path: Path, plan_script: str)
     assert tags[("laya-multilingual", "offline")] == "laya-multilingual-offline-v1.2.0", tags
 
 
+def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, tmp_path: Path) -> None:
+    """Every tag a build leg writes must be written by that leg alone.
+
+    All engines share one repository, so a provenance tag of `sha-<commit>-<arch>` is
+    written by all six legs at once. They overwrite each other's images, and by the time
+    the merge jobs run they all read back whichever engine finished last -- so three
+    different tags got published as the same manifest.
+    """
+    docker_bin, _ = fake_docker(tmp_path)
+    published: dict[str, set[str]] = {}
+    for engine, variant in (
+        ("mock", "runtime"),
+        ("laya-multilingual", "runtime"),
+        ("laya-multilingual", "offline"),
+        ("kev-0.8b", "runtime"),
+        ("kev-0.8b", "offline"),
+    ):
+        for arch in ("amd64", "arm64"):
+            out = tmp_path / f"{engine}-{variant}-{arch}"
+            completed = run_step(
+                build_meta_script,
+                tmp_path,
+                docker_bin,
+                ENGINE=engine,
+                VARIANT=variant,
+                ARCH=arch,
+                IMAGE_TAG=f"{engine}-{variant}" if variant != "runtime" else engine,
+                GITHUB_OUTPUT=str(out),
+            )
+            assert completed.returncode == 0, completed.stderr
+            published[f"{engine}/{variant}/{arch}"] = set(parse_outputs(out)["tags"].splitlines())
+
+    collisions = {
+        (a, b): tags_a & tags_b
+        for a, tags_a in published.items()
+        for b, tags_b in published.items()
+        if a < b and tags_a & tags_b
+    }
+    assert not collisions, f"build legs would overwrite each other: {collisions}"
+
+
 def test_every_engine_shares_one_repository(build_meta_script: str, tmp_path: Path) -> None:
     """`kingfs/decis:laya-multilingual`, not `kingfs/decis-laya-multilingual`."""
     docker_bin, _ = fake_docker(tmp_path)
@@ -416,9 +457,9 @@ def test_every_engine_shares_one_repository(build_meta_script: str, tmp_path: Pa
     assert outputs["image"] == "docker.io/kingfs/decis", outputs
     tags = outputs["tags"].splitlines()
     assert "docker.io/kingfs/decis:laya-multilingual-amd64" in tags, tags
-    # The per-arch provenance tag the merge job consumes must stay platform-qualified, or
-    # the two legs would overwrite each other.
-    assert "docker.io/kingfs/decis:sha-a1b2c3d4e5f6-amd64" in tags, tags
+    # The per-arch provenance tag the merge job consumes must name the artifact as well as
+    # the platform.
+    assert "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64" in tags, tags
 
 
 def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta_script: str, tmp_path: Path) -> None:
@@ -510,8 +551,8 @@ def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tm
     skip = {words.index("--tag") + 1} if "--tag" in words else set()
     sources = [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
     assert sources == [
-        "docker.io/kingfs/decis:sha-a1b2c3d4e5f6-amd64",
-        "docker.io/kingfs/decis:sha-a1b2c3d4e5f6-arm64",
+        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64",
+        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-arm64",
     ], sources
 
 
