@@ -34,16 +34,20 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **矩阵、tag 方案、引擎 → pip extra 的映射全部在 `plan` 步骤里算，并由 `tests/test_docker_workflow.py`
 > 把那段脚本从 YAML 里抠出来真跑验证**（构建/合并步骤只做插值，用一个假的 `docker` 记录它被要求创建哪些 tag）。
 > **GHCR 已不再推送**（只有 Docker Hub 一个 registry）。
-> **已实测**（run 35805760838，commit `b25e0d0`）6 个构建腿 + 3 个 merge 全绿；
-> `kingfs/decis` 公开。体积用 registry API **逐层求和**量出（不是 Docker Hub 页面那个数）：
-> `mock` **72 MB**（amd64）/ 71 MB（arm64），`laya-multilingual` 3203 / 3346 MB，`kev-0.8b` 3206 / 3349 MB。
-> **`mock` 曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），此数字是修好之后量的**——
-> 顺带可见构建时间也从 9m16s 降到 59s。
-> **per-arch 的中间 tag 必须带 artifact 名**（`laya-multilingual-sha-<commit>-amd64`）：
-> 所有引擎共用一个仓库，六个构建腿若都写 `sha-<commit>-amd64` 就会互相覆盖，
-> 三个 tag 最终发出同一个 manifest（`design-review.md §2-D16`，已实测发生过）。
-> 有一条测试穷举所有腿并断言它们的 tag 两两不相交。
-> **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、容器内冷启动。
+> **已实测**（[run 35807645301](https://github.com/kingfs/Decis/actions/runs/35807645301)，commit `574c0ac`）
+> 6 个构建腿 + 3 个 merge 全绿，`kingfs/decis` 公开。**并且真的拉下来跑过**：
+> `docker pull kingfs/decis:mock` → 起容器 → 打 `/v1/systemone`，契约响应完整
+> （`noul` 标量、`score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、`usage`、
+> `x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401** 也都实测。
+> 容器里没配 `DECIS_API_KEY` 而监听 `0.0.0.0` 时**拒绝启动**（§3-19 在容器里同样生效）。
+> 体积用 registry API **逐层求和**量出（压缩后的下载量，不是 Docker Hub 页面那个数，
+> 也不是本地解压后的大小）：`mock` **72 MB**、`laya-multilingual` 3203 MB、`kev-0.8b` 3206 MB
+> （三者 amd64；arm64 分别 71 / 3346 / 3349 MB）。本地解压后 `mock` 是 208 MB。
+> `mock` 容器冷启动到 `/readyz` 报 ready：**2.5 s**（3 次：2.57 / 2.52 / 2.51）。
+> **`mock` 曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`）**，
+> 修好后构建时间从 9m16s 降到 59s，这里的数字都是修好之后量的。
+> **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、`laya-multilingual` / `kev-0.8b`
+> 在容器里的冷启动（需要拉权重，未测）。
 > 报镜像相关的结论时不要超出这个范围。
 
 ---

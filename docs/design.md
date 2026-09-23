@@ -943,12 +943,16 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   彼时镜像在 GHCR（`ghcr.io/kingfs/decis-{mock,laya-multilingual,kev-0.8b}:latest`）。
 - ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`mock` 另外拿裸 `latest`。
   理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
-- ✅ **2026-09-23 推 Docker Hub 成功**（run 35804685017），仓库公开。
+- ✅ **2026-09-23 推 Docker Hub 成功**（run 35807645301，commit `574c0ac`），仓库公开。
 - ✅ **tag 方案定型**：引擎名即 tag（`kingfs/decis:laya-multilingual`），只有 release tag 追加版本
   （`laya-multilingual-v1.2.0`）；`mock` 在 master 推送时另拿裸 `latest`。方案在 `plan` 步骤里算，有测试真跑。
-- ✅ **体积已量**（registry API 逐层求和，run 35805760838）：`mock` 72 MB、`laya-multilingual` 3203 MB、
+- ✅ **体积已量**（registry API 逐层求和，压缩后下载量）：`mock` 72 MB、`laya-multilingual` 3203 MB、
   `kev-0.8b` 3206 MB。`mock` 原来是 3203 MB —— 被一行三元表达式装上了 torch（`design-review.md §2-D14`）。
-- ⬜ 推一个 `v*` tag 验证 release 路径与 `-offline` 变体；容器内冷启动；`docker-compose.yml`；README 定稿；首个 release。
+- ✅ **端到端验证过**：`docker pull kingfs/decis:mock` 后起容器打 `/v1/systemone`，契约响应完整；
+  无凭证 403、错 key 401；容器冷启动到 `/readyz` ready 为 2.5 s（3 次）。
+  这一条顺带证明了 §3-19（公网地址 + 无 key 拒绝启动）在容器里同样生效。
+- ⬜ 推一个 `v*` tag 验证 release 路径与 `-offline` 变体；`laya-multilingual` / `kev-0.8b` 的容器内冷启动
+  （需要拉权重，未测）；`docker-compose.yml`；README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
