@@ -15,8 +15,9 @@
 #
 # The build args mirror what CI passes, weights included, so "it works locally" means the
 # same thing as "the published image works". Set `DECIS_PREDOWNLOAD` to an empty string to
-# build the weightless variant instead: ~650 MiB (Laya) or ~1.7 GiB (kev) smaller, and it
-# then needs the weights mounted or downloaded at run time.
+# build the weightless variant instead: 1.2 GB (Laya) or 2.8 GB (kev) less to pull on amd64,
+# measured on the v0.0.1 tags -- and it then needs the weights mounted or downloaded at run
+# time, which is what `<engine>-runtime-<version>` ships for.
 
 services:
   laya-multilingual:
