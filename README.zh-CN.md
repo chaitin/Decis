@@ -238,17 +238,34 @@ Decis 就是这种方式：一个稳定的 API，多个引擎，每个模型打�
 
 ## 部署
 
-一个引擎一个镜像，因为引擎依赖彼此冲突而且体积很大。带权重的镜像会随各引擎一起发布（Stage 4）；现在这个镜像就是 API 加 `mock` 引擎。
+一个引擎一个镜像，因为引擎依赖彼此冲突而且体积很大。它们在 Docker Hub 上共用一个仓库，**引擎放在 tag 里**：
+
+```bash
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:mock
+```
+
+| Tag | 引擎 | 需要什么 |
+|---|---|---|
+| `mock`、`latest` | `mock`——测试用假引擎 | 什么都不需要，没有 torch，起来就有 |
+| `laya-multilingual` | Laya 多语言（322M） | 647 MiB 权重，冷启动约 75 秒，峰值 RSS 约 5 GB |
+| `kev-0.8b` | kev 0.8B | 1.7 GiB 权重；想要 GPU |
+
+只有 `mock` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的直接就能跑。
+每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。
+
+想更新模型而不重建镜像时，挂卷比让容器去下载权重更好：
+
+```bash
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
+```
+
+给没有出口网络的环境，release tag 还会发布把权重打进去的 `-offline` 变体
+（`kingfs/decis:laya-multilingual-offline-v1.2.0`）。
+
+想自己构建：
 
 ```bash
 docker build -f docker/Dockerfile -t decis:mock .
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me decis:mock
-```
-
-想更新模型而不重建镜像时，挂卷比把权重打进镜像更好：
-
-```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models decis:laya
 ```
 
 容器以非 root 用户运行，不需要任何外部服务——没有 Redis、没有 Postgres、没有 Celery——并且在公网地址上没配 token 时会拒绝启动。

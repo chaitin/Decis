@@ -255,18 +255,35 @@ Raw per-sample output, the exact commands, and the host spec are in
 
 ## Deployment
 
-One image per engine, because engine dependencies conflict and are large. Images with weights baked in
-arrive with each engine (Stage 4); today's image is the API plus the mock engine.
+One image per engine, because engine dependencies conflict and are large. They share a single
+Docker Hub repository, with the engine in the tag:
+
+```bash
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:mock
+```
+
+| Tag | Engine | What it needs |
+|---|---|---|
+| `mock`, `latest` | `mock` — a fixture engine | nothing, no torch; it starts immediately |
+| `laya-multilingual` | Laya multilingual (322M) | 647 MiB of weights, ~75 s cold start, ~5 GB RSS |
+| `kev-0.8b` | kev 0.8B | 1.7 GiB of weights; wants a GPU |
+
+`mock` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis` gives you
+something runnable. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
+
+Mounted weights beat downloaded weights when you want to update a model without rebuilding:
+
+```bash
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
+```
+
+For a cluster with no egress, release tags also publish an `-offline` variant with the weights already
+baked in (`kingfs/decis:laya-multilingual-offline-v1.2.0`).
+
+To build an image yourself instead:
 
 ```bash
 docker build -f docker/Dockerfile -t decis:mock .
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me decis:mock
-```
-
-Mounted weights beat baked weights when you want to update a model without rebuilding:
-
-```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models decis:laya
 ```
 
 The container runs as a non-root user, needs no external services — no Redis, no Postgres, no Celery —

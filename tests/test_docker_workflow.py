@@ -49,6 +49,19 @@ def plan_script(workflow: dict) -> str:
     pytest.fail("the plan job has no step with id 'plan'")
 
 
+def run_shell(script: str, cwd: Path, environment: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run a workflow step's shell the way a runner would."""
+    return subprocess.run(
+        ["bash", "-c", script],
+        env=environment,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        timeout=60,
+        check=False,
+    )
+
+
 def run_plan(plan_script: str, tmp_path: Path, **env: str) -> dict:
     """Execute the plan step exactly as GitHub would, and parse its outputs."""
     output = tmp_path / "github_output"
@@ -60,17 +73,12 @@ def run_plan(plan_script: str, tmp_path: Path, **env: str) -> dict:
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
         "GITHUB_OUTPUT": str(output),
+        # Configured, as they are in the real repository. The guard's refusal path is
+        # tested separately by overriding this.
+        "HAVE_CREDENTIALS": "true",
         **env,
     }
-    completed = subprocess.run(
-        ["bash", "-c", plan_script],
-        env=environment,
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-        timeout=60,
-        check=False,
-    )
+    completed = run_shell(plan_script, tmp_path, environment)
     assert completed.returncode == 0, f"the plan step failed:\n{completed.stdout}\n{completed.stderr}"
     parsed: dict[str, str] = {}
     for line in output.read_text(encoding="utf-8").splitlines():
@@ -218,3 +226,323 @@ def test_the_workflow_passes_only_dockerfile_declared_build_args(push_to_master:
             declared.add(line.split()[1].split("=")[0])
     for name in ("DECIS_EXTRAS", "DECIS_ENGINE", "DECIS_PREDOWNLOAD"):
         assert name in declared, f"{name} is passed by the workflow but never declared in the Dockerfile"
+
+
+# --- where the images go, and under what names ---------------------------------
+#
+# The registry and the tag scheme are the published interface: a user types these, and a
+# rename is not something you can quietly undo. So they are tested by *running* the steps
+# that build them rather than by matching strings in the YAML. That needs `docker` to be
+# a stub -- these steps only ever ask it to copy manifests, which is what we want to
+# observe.
+
+
+@pytest.fixture(scope="module")
+def build_meta_script(workflow: dict) -> str:
+    for step in workflow["jobs"]["build"]["steps"]:
+        if step.get("id") == "meta":
+            return step["run"]
+    pytest.fail("the build job has no step with id 'meta'")
+
+
+@pytest.fixture(scope="module")
+def merge_script(workflow: dict) -> str:
+    for step in workflow["jobs"]["merge"]["steps"]:
+        if step.get("name") == "Create the multi-arch manifest":
+            return step["run"]
+    pytest.fail("the merge job has no 'Create the multi-arch manifest' step")
+
+
+def parse_outputs(path: Path) -> dict[str, str]:
+    """Parse a `$GITHUB_OUTPUT` file, heredocs included.
+
+    A multi-line output is written as `name<<EOF` ... `EOF`, so splitting every line on
+    `=` silently drops all but the first line of exactly the values worth testing.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    outputs: dict[str, str] = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if "<<" in line:
+            name, _, delimiter = line.partition("<<")
+            body: list[str] = []
+            index += 1
+            while index < len(lines) and lines[index] != delimiter:
+                body.append(lines[index])
+                index += 1
+            outputs[name] = "\n".join(body)
+        elif "=" in line:
+            name, _, value = line.partition("=")
+            outputs[name] = value
+        index += 1
+    return outputs
+
+
+def fake_docker(tmp_path: Path) -> tuple[Path, Path]:
+    """A `docker` that records what it was asked to do instead of contacting a registry."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log = tmp_path / "docker.log"
+    shim = bin_dir / "docker"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$@" >> "{log}"\n'
+        # `imagetools inspect` is used as an existence probe; every tag exists in a test.
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    return bin_dir, log
+
+
+def run_step(script: str, tmp_path: Path, docker_bin: Path, **env: str) -> subprocess.CompletedProcess:
+    environment = {
+        "PATH": f"{docker_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
+        "REGISTRY": "docker.io",
+        "IMAGE_REPO": "decis",
+        "DOCKERHUB_USERNAME": "kingfs",
+        **env,
+    }
+    return run_shell(script, tmp_path, environment)
+
+
+def test_the_published_registry_is_docker_hub(workflow: dict) -> None:
+    """The project publishes to exactly one registry, and it must be the documented one."""
+    assert workflow["env"]["REGISTRY"] == "docker.io"
+    assert workflow["env"]["IMAGE_REPO"] == "decis"
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "ghcr.io" not in text, "a GHCR reference survived the move to Docker Hub"
+
+
+def test_every_engine_shares_one_repository_with_the_engine_in_the_tag(build_meta_script: str, tmp_path: Path) -> None:
+    """`kingfs/decis:laya-multilingual-latest`, not `kingfs/decis-laya-multilingual`."""
+    docker_bin, _ = fake_docker(tmp_path)
+    completed = run_step(
+        build_meta_script,
+        tmp_path,
+        docker_bin,
+        ENGINE="laya-multilingual",
+        VARIANT="runtime",
+        ARCH="amd64",
+        MOVING_TAG="latest",
+        GITHUB_OUTPUT=str(tmp_path / "out"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    outputs = parse_outputs(tmp_path / "out")
+    assert outputs["image"] == "docker.io/kingfs/decis", outputs
+    tags = outputs["tags"].splitlines()
+    assert "docker.io/kingfs/decis:laya-multilingual-latest-amd64" in tags, tags
+    # The per-arch tag the merge job consumes must stay platform-qualified, or the two
+    # legs would overwrite each other.
+    assert "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64" in tags, tags
+
+
+def test_the_offline_variant_gets_its_own_prefix(build_meta_script: str, tmp_path: Path) -> None:
+    """Baked weights are a different artifact, so they must not be the same tag."""
+    docker_bin, _ = fake_docker(tmp_path)
+    completed = run_step(
+        build_meta_script,
+        tmp_path,
+        docker_bin,
+        ENGINE="kev-0.8b",
+        VARIANT="offline",
+        ARCH="arm64",
+        MOVING_TAG="v1.2.0",
+        GITHUB_OUTPUT=str(tmp_path / "out"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    outputs = parse_outputs(tmp_path / "out")
+    assert "docker.io/kingfs/decis:kev-0.8b-offline-v1.2.0-arm64" in outputs["tags"], outputs
+
+
+def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta_script: str, tmp_path: Path) -> None:
+    """A fork's owner is not a Docker Hub namespace, so it must not decide the image name."""
+    docker_bin, _ = fake_docker(tmp_path)
+    completed = run_step(
+        build_meta_script,
+        tmp_path,
+        docker_bin,
+        ENGINE="mock",
+        VARIANT="runtime",
+        ARCH="amd64",
+        MOVING_TAG="latest",
+        # A fork would see its own owner here; the image name must ignore it.
+        GITHUB_REPOSITORY_OWNER="someone-else",
+        DOCKERHUB_USERNAME="KingFS",  # registries require lowercase
+        GITHUB_OUTPUT=str(tmp_path / "out"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert parse_outputs(tmp_path / "out")["image"] == "docker.io/kingfs/decis"
+
+
+def merged_tags(log: Path) -> list[str]:
+    """Every tag the merge step asked `docker` to create from the per-arch images."""
+    tags = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[:3] == ["buildx", "imagetools", "create"]:
+            tags.append(parts[parts.index("--tag") + 1])
+    return tags
+
+
+@pytest.mark.parametrize(
+    ("engine", "variant", "moving_tag", "expected_latest"),
+    [
+        # `mock` needs no weights and no GPU, so it is the right answer to a bare
+        # `docker pull kingfs/decis`.
+        ("mock", "runtime", "latest", True),
+        # ...but only the image that actually moved `latest`. A version tag must not
+        # silently repoint the bare tag, and an offline image is not the small default.
+        ("mock", "runtime", "v1.2.0", False),
+        ("mock", "offline", "latest", False),
+        ("laya-multilingual", "runtime", "latest", False),
+        ("kev-0.8b", "runtime", "latest", False),
+    ],
+)
+def test_only_mock_claims_the_bare_latest_tag(
+    merge_script: str,
+    tmp_path: Path,
+    engine: str,
+    variant: str,
+    moving_tag: str,
+    expected_latest: bool,
+) -> None:
+    docker_bin, log = fake_docker(tmp_path)
+    completed = run_step(
+        merge_script,
+        tmp_path,
+        docker_bin,
+        ENGINE=engine,
+        VARIANT=variant,
+        MOVING_TAG=moving_tag,
+    )
+    assert completed.returncode == 0, completed.stderr
+    tags = merged_tags(log)
+    assert f"docker.io/kingfs/decis:{engine}-{moving_tag}" in tags or any(
+        tag.endswith(f":{engine}-offline-{moving_tag}") for tag in tags
+    ), tags
+    assert ("docker.io/kingfs/decis:latest" in tags) is expected_latest, tags
+
+
+def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tmp_path: Path) -> None:
+    """Every source must be this commit's per-arch manifest, or a release mixes commits."""
+    docker_bin, log = fake_docker(tmp_path)
+    completed = run_step(
+        merge_script,
+        tmp_path,
+        docker_bin,
+        ENGINE="laya-multilingual",
+        VARIANT="runtime",
+        MOVING_TAG="latest",
+    )
+    assert completed.returncode == 0, completed.stderr
+    create = [line for line in log.read_text(encoding="utf-8").splitlines() if "imagetools create" in line]
+    assert len(create) == 1, create
+    words = create[0].split()
+    # Drop the `--tag <ref>` pair: its value is a destination, not a source.
+    skip = {words.index("--tag") + 1} if "--tag" in words else set()
+    sources = [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
+    assert sources == [
+        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64",
+        "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-arm64",
+    ], sources
+
+
+def test_a_missing_platform_leg_is_left_out_rather_than_faked(merge_script: str, tmp_path: Path) -> None:
+    """An amd64-only release must not look multi-arch.
+
+    The existence probe is what decides this, so the test makes it fail for arm64.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log = tmp_path / "docker.log"
+    (bin_dir / "docker").write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$@" >> "{log}"\n'
+        # The arm64 probe fails, as it would if that leg had not run.
+        'if [ "$3" = "inspect" ] && [[ "$4" == *arm64* ]]; then exit 1; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "docker").chmod(0o755)
+
+    completed = run_step(
+        merge_script,
+        tmp_path,
+        bin_dir,
+        ENGINE="mock",
+        VARIANT="runtime",
+        MOVING_TAG="latest",
+    )
+    assert completed.returncode == 0, completed.stderr
+    create = [line for line in log.read_text(encoding="utf-8").splitlines() if "imagetools create" in line]
+    assert create, "the merge gave up instead of merging what was there"
+    assert "arm64" not in create[0], create
+    assert "not built" in completed.stderr, completed.stderr
+
+
+def test_merging_nothing_at_all_fails(merge_script: str, tmp_path: Path) -> None:
+    """Silently publishing no image is worse than failing the release."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / "docker").write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    (bin_dir / "docker").chmod(0o755)
+
+    completed = run_step(merge_script, tmp_path, bin_dir, ENGINE="mock", VARIANT="runtime", MOVING_TAG="latest")
+    assert completed.returncode != 0
+    assert "nothing to merge" in completed.stderr, completed.stderr
+
+
+# --- the credential guard -------------------------------------------------------
+
+
+def test_publishing_without_credentials_stops_before_anything_is_built(plan_script: str, tmp_path: Path) -> None:
+    """A publish that cannot authenticate must fail here, not after six builds.
+
+    Failing loudly is the point: a green run that quietly pushed nothing is the failure
+    nobody notices until a user cannot pull the image.
+    """
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    completed = run_shell(
+        plan_script,
+        tmp_path,
+        {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
+            "GITHUB_OUTPUT": str(output),
+            "HAVE_CREDENTIALS": "false",
+            "EVENT": "push",
+            "REF": "refs/heads/master",
+            "REF_NAME": "master",
+        },
+    )
+    assert completed.returncode != 0, "a publish without credentials was allowed"
+    assert "DOCKERHUB_USERNAME" in completed.stderr, completed.stderr
+    assert "nothing" not in output.read_text(encoding="utf-8"), "a matrix was emitted anyway"
+
+
+def test_a_dry_run_needs_no_credentials(plan_script: str, tmp_path: Path) -> None:
+    """The dispatch dry-run exists so a fork or a new repo can validate the workflow."""
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    completed = run_shell(
+        plan_script,
+        tmp_path,
+        {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
+            "GITHUB_OUTPUT": str(output),
+            "HAVE_CREDENTIALS": "false",
+            "EVENT": "workflow_dispatch",
+            "REF": "refs/heads/master",
+            "REF_NAME": "master",
+            "INPUT_ENGINES": "mock",
+            "INPUT_BAKE": "false",
+            "INPUT_PUSH": "false",
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "push=false" in output.read_text(encoding="utf-8")

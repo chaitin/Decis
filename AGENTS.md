@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**408 通过 / 31 跳过**，约 10 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**430 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**422 通过 / 31 跳过**，约 10 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**444 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -24,12 +24,19 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **未实现**：kev 的 prefix 缓存路径、`/metrics`、`docker-compose.yml`。
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 >
-> **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 GHCR，
+> **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 **Docker Hub**：
+> **所有引擎共用一个仓库 `kingfs/decis`，引擎进 tag**（`kingfs/decis:laya-multilingual-latest`、
+> `kingfs/decis:kev-0.8b-v1.2.0`、`kingfs/decis:laya-multilingual-offline-latest`），
+> 另外 `mock` 在 master 推送时同时打一个裸 `latest`，让 `docker pull kingfs/decis` 开箱可用。
 > 多架构（amd64 + arm64 原生 runner，不用 QEMU），带 SBOM 与 provenance；
-> PR 只构建 amd64 的 `mock` 以验证 Dockerfile。矩阵生成逻辑由 `tests/test_docker_workflow.py` 直接执行验证。
-> **已跑通一次**（2026-09-22，commit `17a084e`，
+> PR 只构建 amd64 的 `mock` 以验证 Dockerfile。矩阵与 tag 生成逻辑由 `tests/test_docker_workflow.py`
+> 把脚本从 YAML 里抠出来**真跑**验证（用一个假的 `docker` 记录它被要求创建哪些 tag）。
+> **GHCR 已不再推送**（只有 Docker Hub 一个 registry）。
+> **已跑通一次**（2026-09-22，commit `17a084e`，当时还推 GHCR，
 > [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)：6 个构建腿 + 3 个 merge 全绿）。
-> **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、镜像体积、容器内冷启动、GHCR 包可见性。
+> 那次证明了矩阵与多架构合并可用；**换成 Docker Hub 之后的路径见下面的"未验证"**。
+> **未验证**：Docker Hub 这条推送路径本身、`-offline` 变体、`v*` tag 触发的 release 路径、
+> 镜像体积、容器内冷启动、Docker Hub 仓库可见性。
 > 报镜像相关的结论时不要超出这个范围。
 
 ---
@@ -194,7 +201,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：408 通过 / 31 跳过，约 10 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：422 通过 / 31 跳过，约 10 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000
@@ -229,7 +236,15 @@ uv run decis download --engine kev-0.8b   # adapter 43 MiB + 基座 1.65 GiB
 uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45 秒
 ```
 
-镜像：
+镜像（已发布，CI 构建）：
+
+```bash
+docker run --rm -p 8000:8000 kingfs/decis:mock          # 无权重，立刻可跑
+docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 需要机器上已有权重或联网下载
+docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
+```
+
+本地构建：
 
 ```bash
 docker build -f docker/Dockerfile -t decis:mock .

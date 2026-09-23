@@ -639,7 +639,8 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 - build 阶段`outputs: type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true`，digest 存 artifact——**多架构并行时不抢 tag**。
 - merge 阶段 `docker buildx imagetools create` 合成 multi-arch manifest。
 - tag 规范：`<image>:<engine>-latest`（默认分支）、`<image>:<engine>-<semver>`（`v*` tag）、`<image>:<engine>-<sha7>`（永远打，回滚锚点）。
-- 相对 UniTS-Hub 的改进：打开 `provenance: true` + SBOM（供应链），digest artifact 保留 7 天而非 1 天，同时推 GHCR 与 Docker Hub。
+- 相对 UniTS-Hub 的改进：打开 `provenance: true` + SBOM（供应链），digest artifact 保留 7 天而非 1 天。
+  （原设计写"同时推 GHCR 与 Docker Hub"，实际只推 Docker Hub —— 见 §12.1。）
 
 ### 8.3 镜像清单
 
@@ -743,7 +744,7 @@ Decis/
 │   └── docker-compose.yml        # ⬜ profiles: laya / laya-multilingual / kev-0.8b
 ├── .github/workflows/
 │   ├── ci.yml                    # ✅ lint + 无权重测试 + report.py --check
-│   └── docker-build.yml          # ⬜ test → build(matrix) → merge → GHCR
+│   └── docker-build.yml          # 🟡 test → plan → build(matrix) → merge → Docker Hub
 ├── docs/
 │   ├── api-compatibility.md      # ✅ jev 契约（唯一事实来源）
 │   ├── design.md                 # ✅ 本文
@@ -939,9 +940,11 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   从 YAML 里抠出来，按每种触发事件真跑一遍。
 - ✅ **在真实 runner 上跑通一次**：2026-09-22 push 到 master 触发
   [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)，6 个构建腿 + 3 个 merge 全绿，
-  `ghcr.io/kingfs/decis-{mock,laya-multilingual,kev-0.8b}:latest` 已是多架构 manifest。
-- ⬜ 记录镜像体积与容器内冷启动；验证 `-offline` 变体（需要推一个 `v*` tag 或手动 dispatch）；
-  核实 GHCR 包可见性；`docker-compose.yml`；Docker Hub（目前只有 GHCR）；README 定稿；首个 release。
+  彼时镜像在 GHCR（`ghcr.io/kingfs/decis-{mock,laya-multilingual,kev-0.8b}:latest`）。
+- ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`mock` 另外拿裸 `latest`。
+  理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
+- ⬜ **验证 Docker Hub 这条路径**（下面的记录写的就是它）；推一个 `v*` tag 验证 release 路径与 `-offline` 变体；
+  记录镜像体积与容器内冷启动；核实 Docker Hub 仓库可见性；`docker-compose.yml`；README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
@@ -979,7 +982,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
   （amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了"能构建、能推送、能合并"** |
 | 镜像体积与容器内冷启动 | **仍未测**。上面那次运行没有记录体积，也没有在容器里起过服务量冷启动 |
 | `-offline` 变体（烘焙权重）与 release 路径 | **仍未验证**。那次是分支推送，只构建了非 offline 变体；`v*` tag 从未推过，所以 tag 触发的那条分支只在 `tests/test_docker_workflow.py` 里被模拟过 |
-| GHCR 包的可见性 | 未核实。GHCR 新建包默认私有，若为私有则 README 里的 `docker pull` 需要一个有权限的 token |
+| Docker Hub 仓库的可见性 | 未核实。首次推送会自动创建 `kingfs/decis`，新仓库默认是**公开**的（与 GHCR 相反），
+  所以 `docker pull kingfs/decis:mock` 应当无需登录——但这一点要等推送成功后再确认 |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 
@@ -990,7 +994,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 多进程 / 多 worker 的扩展性 | **已测且为负**：固定总线程预算下 1/2/4 进程吞吐差 1.18x，加进程不增加吞吐。见 §4-M5 |
 | 429 在真实限流下的行为 | 无 API key，无法触发 |
 | 生产可用性（SLO、内存上限、并发数） | 无压测，无长时间运行观测 |
-| 镜像可移植性 | 工作流已就位（多架构、GHCR、SBOM/provenance），但**从未在真实 GitHub runner 上跑过**，也没有任何一次成功的构建记录 |
+| 镜像可移植性 | 工作流已就位（多架构、Docker Hub、SBOM/provenance），并已在真实 runner 上跑通过一次多架构构建与合并（当时推 GHCR）；
+  改为 Docker Hub 单仓库后，tag 命名有测试守着，但那次推送本身**还没实际跑过** |
 
 **剩余工作，按"挡住对外承诺的程度"排序**
 
