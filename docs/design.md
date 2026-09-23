@@ -739,9 +739,10 @@ Decis/
 ├── NOTICE                        # ✅ 第三方署名（kev vendored 代码、Laya 等）
 ├── pyproject.toml                # ✅ uv / hatchling，extras: server,laya,kev,all
 ├── uv.lock                       # ✅
+├── docker-compose.yml            # ✅ profile = 引擎 id；一次性 init 把权重预取进命名卷（§12.1 第 3 条）
+├── docker-compose.build.yml      # ✅ 覆盖层：用本仓库源码构建 `decis-local:*`，不占用已发布的 tag
 ├── docker/
-│   ├── Dockerfile                # ✅ 单文件 + ARG DECIS_ENGINE / DECIS_EXTRAS / DECIS_PREDOWNLOAD
-│   └── docker-compose.yml        # ⬜ profiles: laya / laya-multilingual / kev-0.8b
+│   └── Dockerfile                # ✅ 单文件 + ARG DECIS_ENGINE / DECIS_EXTRAS / DECIS_PREDOWNLOAD
 ├── .github/workflows/
 │   ├── ci.yml                    # ✅ lint + 无权重测试 + report.py --check
 │   └── docker-build.yml          # 🟡 test → plan → build(matrix) → merge → Docker Hub
@@ -904,8 +905,13 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   在实现它之前先测**（详下）。
 - ✅ `benchmarks/report.py` 现在也生成 `README.zh-CN.md` 与 `docs/design-review.md` 的批处理段，
   并拒绝渲染**没有正对照**的攒批数据。
+- ✅ `docker-compose.yml`（+ `docker-compose.build.yml`）：**profile 名 == 引擎 id == image tag ==
+  `--engine` == `DECIS_DEFAULT_ENGINE`**，一次性 init 服务把权重预取进命名卷后退出，服务端
+  `depends_on: service_completed_successfully`。默认只起 `.env.example` 里 `COMPOSE_PROFILES` 指定的那一个引擎
+  （两个引擎同时驻留要好几 GB 内存）。`tests/test_compose.py` 不用 docker daemon，把 image tag、
+  profile、端口、卷、鉴权与工作流 `plan` 脚本对起来；CI 的 docker job 另跑 `docker compose config -q`。
 
-未做：攒批器（**很可能不该做**，见下）、进程池、`/metrics`、`docker-compose.yml`、
+未做：攒批器（**很可能不该做**，见下）、进程池、`/metrics`、
 各引擎 × 设备 × 批大小的完整表。**本阶段有三个必须先做的验证**：
 
 1. ✅ **跨请求批处理的真实收益**（§6.2）——**已测，结论为否定**，见 `design-review.md §4-M5`：
@@ -952,7 +958,7 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
   容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
 - ⬜ 推一个 `v*` tag 验证 release 路径与 `-offline` 变体；`laya-multilingual` / `kev-0.8b` 的容器内冷启动
-  （需要拉权重，未测）；engine-free 基础镜像的体积与冷启动；`docker-compose.yml`；README 定稿；首个 release。
+  （需要拉权重，未测）；engine-free 基础镜像的体积与冷启动；README 定稿；首个 release。
 
 **Stage 5（可选）— 扩展** — ⬜ 未开始
 ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
@@ -1012,7 +1018,10 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 2. **`/metrics`**——本来的理由是"让攒批器真的触发了在生产里可观测"。攒批器若不做，这条的理由要重新论证；
    仍然值得有的是**单进程饱和度的可观测性**（队列深度、排队时间、`decis.batch_size` 分布），因为
    M5 说明这台机器的瓶颈是算力本身，不是攒批。
-3. **`docker-compose.yml`**——把"挂载外部模型"的路径写成一个能跑的示例（`DECIS_MODEL_DIR` 已支持）。
+3. ✅ **`docker-compose.yml`**——已实现，并且**已在本机用发布镜像跑通**（`docker compose up -d --wait` →
+   容器内 `/v1/systemone` 真的作答；容器内冷启动 **77.7 s / 86.1 s**，常驻 **2.2 GiB**；见 `AGENTS.md`
+   的镜像段落与 `design-review.md` §2-D18/§2-D19）。这个数字来自本机 CPU 实测，**不来自
+   `benchmarks/results/` 的 checked-in JSON**，所以按 §8 它不进 README 的性能表，只在状态记录里出现。
 4. **镜像的实测记录**——在真实 runner 上跑一次工作流，把镜像体积与容器内冷启动记进 `benchmarks/`。
 5. **GPU 上的同一组测量**（M6）——本结论**不适用于 GPU**，而 GPU 是 kev 的目标场景。
    在 GPU 上重跑 `batch_gain.py` 之前，不得对 GPU 的吞吐做任何承诺。

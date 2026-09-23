@@ -7,7 +7,7 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**428 个无权重测试通过**——
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**441 个无权重测试通过**——
 > 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
 > 现在都能回答真实请求**；另有 27 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
@@ -247,20 +247,40 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 | Tag | 引擎 | 需要什么 |
 |---|---|---|
 | `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 647 MiB 权重，冷启动约 80 秒，峰值 RSS 约 5 GB |
-| `laya` | Laya 英语（421M） | 807 MiB 权重 |
 | `kev-0.8b` | kev 0.8B | 1.7 GiB 权重；想要 GPU |
 
 只有 `laya-multilingual` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的是默认引擎。
 每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。
+注册表里的 `laya`（英语）与 `laya-typed-decisions` **没有镜像**：构建矩阵只覆盖上面两个 tag，
+这两个 checkpoint 请从源码目录运行。
 
-想更新模型而不重建镜像时，挂卷比让容器去下载权重更好：
+默认镜像**不含权重**：容器首次启动时下载，进镜像里的 Hugging Face 缓存（`/models/.hf`，
+所以挂一个 `/models` 卷就能跨重建保留）。想更新模型而不重建镜像时，挂自己的权重更好：
 
 ```bash
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models kingfs/decis:laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
 ```
 
 给没有出口网络的环境，release tag 还会发布把权重打进去的 `-offline` 变体
 （`kingfs/decis:laya-multilingual-offline-v1.2.0`）。
+
+`docker compose` 把这一整套（包括首次下载）接好：
+
+```bash
+cp .env.example .env        # 至少改 DECIS_API_KEY；COMPOSE_PROFILES 决定起哪个引擎
+docker compose up -d --wait # 默认只起 laya-multilingual
+
+# `--wait` 只等到预取结束、`/healthz` 通过，此时引擎还没加载完——CPU 上 `/readyz`
+# 还会报约 80 秒的 "loading"。要等服务真的能作答：
+until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
+
+docker compose --profile kev-0.8b up -d     # 或者另一个引擎（宿主端口 8001）
+```
+
+权重落在 `decis_models` 卷里，所以这个下载只发生一次。一次性的 `weights-<engine>` 服务
+在服务端之前完成下载（`depends_on: service_completed_successfully`），它需要包含
+`docs/design-review.md` §2-D17 修复的镜像——该修复之后的每个镜像都有。
 
 想自己构建：
 
@@ -313,7 +333,7 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 428 个测试，约 10 秒，无权重、无网络
+uv run pytest -q                        # 441 个测试，约 10 秒，无权重、无网络
 uv run pytest -m weights                # 27 个加载真实权重（Laya + kev）的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token

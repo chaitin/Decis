@@ -8,7 +8,7 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 > **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
 > contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **428 tests passing** without weights — including the official
+> Dockerfile and CI are implemented, with **441 tests passing** without weights — including the official
 > `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
 > **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
 > real requests today; 27 further tests load the real weights. Adding kev required **no change to
@@ -266,20 +266,42 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 | Tag | Engine | What it needs |
 |---|---|---|
 | `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | 647 MiB of weights, ~80 s cold start, ~5 GB RSS |
-| `laya` | Laya English (421M) | 807 MiB of weights |
 | `kev-0.8b` | kev 0.8B | 1.7 GiB of weights; wants a GPU |
 
 `laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis`
 gives you the default engine. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
+The registered `laya` (English) and `laya-typed-decisions` checkpoints have **no image**: the build
+matrix covers exactly the two tags above. Run those from a source checkout.
 
-Mounted weights beat downloaded weights when you want to update a model without rebuilding:
+The default images carry no weights: a container fetches them on first start, into the Hugging Face
+cache (`/models/.hf` in the image, so a mounted `/models` keeps them across recreations). Mounting
+your own weights beats downloading when you want to update a model without rebuilding:
 
 ```bash
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models kingfs/decis:laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
 ```
 
 For a cluster with no egress, release tags also publish an `-offline` variant with the weights already
 baked in (`kingfs/decis:laya-multilingual-offline-v1.2.0`).
+
+`docker compose` wires the whole thing up, including that first-start download:
+
+```bash
+cp .env.example .env        # set DECIS_API_KEY; COMPOSE_PROFILES picks the engine
+docker compose up -d --wait # laya-multilingual only, by default
+
+# `--wait` returns when the prefetch has finished and /healthz answers, which is before
+# the engine is loaded -- /readyz reports "loading" for ~80 s more on CPU. Wait for it:
+until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
+
+docker compose --profile kev-0.8b up -d     # or the other engine (host port 8001)
+```
+
+The weights live in the `decis_models` volume, so this download happens once. The one-shot
+`weights-<engine>` service does it before the server starts (`depends_on:
+service_completed_successfully`), which needs an image newer than `docs/design-review.md`
+§2-D17 — every image built after that fix has it.
 
 To build an image yourself instead:
 
@@ -335,7 +357,7 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 428 tests, ~10 s, no weights, no network
+uv run pytest -q                        # 441 tests, ~10 s, no weights, no network
 uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token

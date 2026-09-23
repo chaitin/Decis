@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,15 +41,28 @@ yaml = pytest.importorskip("yaml", reason="pyyaml is needed to read the workflow
 
 @pytest.fixture(scope="module")
 def workflow() -> dict:
+    return load_workflow()
+
+
+def load_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def plan_script_of(workflow: dict) -> str:
+    """The `plan` step's shell: the single source of truth for the published tags.
+
+    Plain functions as well as fixtures, because `test_compose.py` needs the same tags.
+    A second copy of the tag scheme in that file is what §2 forbids.
+    """
+    for step in workflow["jobs"]["plan"]["steps"]:
+        if step.get("id") == "plan":
+            return step["run"]
+    raise AssertionError("the plan job has no step with id 'plan'")
 
 
 @pytest.fixture(scope="module")
 def plan_script(workflow: dict) -> str:
-    for step in workflow["jobs"]["plan"]["steps"]:
-        if step.get("id") == "plan":
-            return step["run"]
-    pytest.fail("the plan job has no step with id 'plan'")
+    return plan_script_of(workflow)
 
 
 def run_shell(script: str, cwd: Path, environment: dict[str, str]) -> subprocess.CompletedProcess:
@@ -669,3 +683,57 @@ def test_a_dry_run_needs_no_credentials(plan_script: str, tmp_path: Path) -> Non
     )
     assert completed.returncode == 0, completed.stderr
     assert "push=false" in output.read_text(encoding="utf-8")
+
+
+# --- what the docs tell a user to pull -----------------------------------------
+
+
+IMAGE_REFERENCE = re.compile(r"kingfs/decis:([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def documented_tags(path: Path) -> set[str]:
+    """Every image tag this file tells a user to pull.
+
+    Two places say so: a `kingfs/decis:<tag>` in a command, and the first column of the
+    deployment table. Both are read, because the D15 defect was a *table row* for a tag
+    the workflow never built -- a guard that only scanned commands would have missed it.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tags = set(IMAGE_REFERENCE.findall("\n".join(lines)))
+    for index, line in enumerate(lines):
+        if line.startswith("| Tag |"):
+            for row in lines[index + 2 :]:
+                if not row.startswith("|"):
+                    break
+                tags.update(re.findall(r"`([^`]+)`", row.split("|")[1]))
+    return tags
+
+
+def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path, plan_script: str) -> None:
+    """`design-review.md §2-D15`/D17: a documented name that nothing produces.
+
+    The expected set is read out of the plan script rather than written here: a second
+    copy of the tag scheme is the defect this guards against (§2). Release tags are
+    included because that is where the README's `-offline` example comes from; `latest`
+    is added by the merge job, not the matrix.
+    """
+    produced: set[str] = set()
+    for event, ref, name in (
+        ("push", "refs/heads/master", "master"),
+        ("push", "refs/tags/v1.2.0", "v1.2.0"),
+    ):
+        directory = tmp_path / name
+        directory.mkdir()
+        planned = run_plan(plan_script, directory, EVENT=event, REF=ref, REF_NAME=name)
+        produced |= {build["image_tag"] for build in planned["builds"]}
+        if planned["tag"] == "latest":
+            produced.add("latest")
+
+    for readme in (ROOT / "README.md", ROOT / "README.zh-CN.md"):
+        tags = documented_tags(readme)
+        assert tags, f"{readme.name} documents no image at all -- did the table change shape?"
+        for tag in sorted(tags):
+            assert tag in produced, (
+                f"{readme.name} tells the user to pull {tag!r}, which no event in the workflow creates "
+                f"(it creates {sorted(produced)})"
+            )

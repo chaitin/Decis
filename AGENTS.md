@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**428 通过 / 31 跳过**，约 10 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**450 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**441 通过 / 33 跳过**，约 10 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**465 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -23,7 +23,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **已实测的关键负结论**：`docs/design-review.md §4-M5` 已关闭，答案是**否定**——
 > 跨请求批处理在本机 CPU 上不提升吞吐（真实长度下最高 1.09x，长度倾斜时慢 3–5 倍），加进程也不提升。
 > **因此跨请求攒批器不应按 `design.md §6` 的原设计实现**，`/metrics` 与进程池的必要性也随之下降。
-> **未实现**：kev 的 prefix 缓存路径、`/metrics`、`docker-compose.yml`。
+> **未实现**：kev 的 prefix 缓存路径、`/metrics`。
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 >
 > **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 **Docker Hub**：
@@ -47,8 +47,25 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > （amd64；arm64 分别 3346 / 3349 MB）。**engine-free 基础镜像尚未量过体积与冷启动。**
 > 那个假引擎镜像曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），
 > 修好后构建时间从 9m16s 降到 59s——那个镜像已删除，但这条教训（§9 的三元表达式禁用）仍然有效。
-> **未验证**：`-offline` 变体、`v*` tag 触发的 release 路径、`laya-multilingual` / `kev-0.8b`
-> 在容器里的冷启动（需要拉权重，未测）。
+> **本地编排**：根目录 `docker-compose.yml` 用 profile 起服务，**profile 名 == 引擎 id == image tag ==
+> `--engine` == `DECIS_DEFAULT_ENGINE`**。`.env.example` 里 `COMPOSE_PROFILES=laya-multilingual`，
+> 所以裸 `docker compose up` 只起一个引擎（两个同时驻留要好几 GB 内存）。每个引擎有一个一次性
+> `weights-<engine>` 服务，把权重预取进命名卷后退出（`decis download` 写 `<DECIS_MODEL_DIR>/<engine id>/`，
+> 正是 `paths.resolve` 读的位置，§2-D17），服务端用 `depends_on: service_completed_successfully` 等它；
+> 权重已在卷里时它是 no-op。`tests/test_compose.py` 不需要 docker daemon：image tag、profile、端口、
+> 卷、鉴权全部**从工作流 `plan` 脚本和 compose 文件本身读出来**比对，不抄常量。
+> **本地编排已实测**（2026-09-23，本机，`kingfs/decis:laya-multilingual`，权重已在卷里）：
+> `docker compose up -d --wait` 起单引擎成功，容器里的 `/v1/systemone` 真的作答（`noul` 标量、
+> `score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、`usage`、
+> `x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401**、
+> 加载期间 `/readyz` 报 503 都复现；容器内冷启动 **77.7 s**（另一次 86.1 s，CPU），
+> 常驻 **2.2 GiB**。**`--wait` 等的是 `/healthz` 不是 `/readyz`**：它返回时引擎可能还在加载，
+> 要等服务真能作答得自己轮询 `/readyz`。
+> **未验证**：`-offline` 变体（§2-D17 修好前它在 `RUN decis download` 处必然构建失败，
+> 修好后还没重建过）、`v*` tag 触发的 release 路径、kev 的 compose 路径（只跑了 laya）。
+> **当前已发布的那版镜像早于 §2-D17 的修复**，它自带的 `decis download` 仍写到错目录，
+> 所以拿它跑预取会失败；修复后的代码已在真容器里验证（`decis download` 写出
+> `<dir>/<engine id>/` 并通过 `paths.resolve`），下一次 master 构建起这个坑消失。
 > 报镜像相关的结论时不要超出这个范围。
 
 ---
@@ -213,7 +230,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：428 通过 / 31 跳过，约 10 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：441 通过 / 33 跳过，约 10 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
@@ -238,8 +255,9 @@ DECIS_DTYPE=bf16                     # 强制精度；不设则查 registry.DTYP
 
 ```bash
 uv sync --extra laya
-uv run decis download --engine laya-multilingual --dest ./models   # 约 647 MiB
+uv run decis download --engine laya-multilingual                    # 约 647 MiB，进 Hub 缓存（零配置时 serve 读这里）
 uv run decis serve --engine laya-multilingual --host 127.0.0.1     # CPU 冷启动约 75-90 秒
+#   想落到挂载目录：`--dest ./models` 写成 ./models/laya-multilingual/，再用 DECIS_MODEL_DIR=./models 服务
 #   冷启动期间 /healthz 立即可用，/readyz 报 {"status":"loading"}；加载失败则报 "failed"
 uv run pytest -m weights             # 真实推理 + 批不变性（CPU 上约 113 秒）
 
@@ -253,6 +271,19 @@ uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45
 ```bash
 docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 默认引擎；需要机器上已有权重或联网下载
 docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
+```
+
+本地编排（发布镜像；profile 决定起哪个引擎，选择写在 `.env` 的 `COMPOSE_PROFILES` 里）：
+
+```bash
+cp .env.example .env                      # COMPOSE_PROFILES=laya-multilingual
+docker compose up -d --wait               # 只起默认引擎；首次先把 647 MiB 权重下进 decis_models 卷
+#   `--wait` 只等到预取结束 + `/healthz` 通过；引擎加载期间 `/readyz` 仍报 "loading"
+#   （本机 CPU 容器内实测 77.7 s）。等服务真能作答：
+#   until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
+docker compose --profile kev-0.8b up -d   # 换一个引擎（宿主端口 8001）；这个 flag 会取代 .env 里的选择
+docker compose config -q                  # 只校验 schema / 插值 / profile，不拉镜像（CI 的 docker job 跑这个）
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build   # 或从本仓库源码构建 decis-local:*
 ```
 
 本地构建（不传 `DECIS_EXTRAS` 得到的是 engine-free 的纯 API 镜像：能起、能列模型，但不会 ready）：
@@ -358,6 +389,19 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 - ❌ 在文档里写出一个**没被任何测试对照过**的镜像 tag / URL / 文件名
   （`design-review.md §2-D15`：README 曾写一个实际不存在的镜像 tag，照着文档拉的第一条命令就失败）。
   凡是文档里出现的、由 CI 产出的名字，都要有一条测试从**真正产出它的那段脚本**里读出来比对
+- ❌ 让"预取/下载"写到一个 loader 不会去读的目录（`design-review.md §2-D17`：`decis download`
+  用 `local_dir` 复制的是**仓库布局**，而 `paths.resolve` 只认 `<DECIS_MODEL_DIR>/<engine id>/`，
+  于是这条命令对**任何** `--dest` 都失败，`DECIS_PREDOWNLOAD` 离线镜像也从没构建成功过）。
+  下载完必须用 `paths.resolve` 本身验证；测试必须让 stub 写出**真实下载器的布局**，
+  而不是只断言"传了哪些参数"——那是把写和读之间剪断还宣称它们连着
+- ❌ 在 compose 的 `command:` 里只写镜像 `CMD` 的后半截（compose 的 `command:` **替换** `CMD`
+  而不是追加：`Dockerfile` 没有 `ENTRYPOINT` 时容器会去 exec 一个叫 `download` 的程序，
+  `design-review.md §2-D18`）。测试要**从 Dockerfile 读**入口点再决定断言什么，
+  不要把当前写法当常量抄一遍——那是把错误的期望固化成守卫
+- ❌ 让容器的 liveness 探针继承环境里的代理（`urllib` 读 `HTTP_PROXY`，于是探针去问代理要
+  `http://127.0.0.1:8000/healthz`、拿到 502，一个 `ready after 86.1s` 的服务被判成 unhealthy，
+  Kubernetes 会一直重启它：`design-review.md §2-D19`）。探针命令必须 `env -u` 掉代理变量，
+  并且有一条测试盯住这一点
 
 ---
 

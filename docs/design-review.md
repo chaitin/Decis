@@ -520,6 +520,100 @@ D14 是"表达式 vs 抄本"，D15 是"文档 vs 工作流"，这里是"腿 A vs
 而它此前躲过了全部 422 个测试。体积不是被断言出来的，是推上去之后用 registry API 量出来的——
 `AGENTS.md §8` 那条"数字必须来自实测"在这里救了一次场。
 
+### D17（高，已修正）`decis download` 把权重写到 `resolve` 永远不看的目录，于是每次都失败
+
+**发现方式**：为 compose 设计"一次性 init 容器把权重预取进卷"时，用一个会写出**真实布局**的
+`snapshot_download` stub 跑 `decis download`，三种 `--dest` 全部退出码 1：
+
+```
+dest='models'                     exit=1  written=multilingual/rl_agent_config.json
+dest='models/laya-multilingual'   exit=1  written=multilingual/rl_agent_config.json
+error: download finished but ... still has no usable checkpoint
+```
+
+**根因**：`snapshot_download(local_dir=X)` 复制的是**仓库自己的布局**，所以 `laya-multilingual`
+落在 `X/multilingual/…`；而 `cli._download` 把 `X` 当作 `DECIS_MODEL_DIR` 交给 `paths.resolve`，
+后者只找 `X/<engine id>/`。两边各自的"唯一事实来源"（`download_arguments` 的 allow_patterns 与
+`candidate_directories`）都没错，错在下载器选了个两边都不认的落盘位置。
+
+**影响面远不止一条命令**：
+- `decis download` 从来没能成功过一次，而 README 与 `AGENTS.md §7` 都把它写成用户的第一步；
+- `docker/Dockerfile` 的 `DECIS_PREDOWNLOAD` 在 `RUN decis download` 处**直接构建失败**——
+  所以"带权重的离线镜像"不是"未验证"，是从来没构建成功过（AGENTS 里那条"未验证"也要跟着改）；
+- 任何"先把权重预取进卷、再起服务"的编排（compose、K8s initContainer）都不成立。
+
+**为什么测试没抓到**：`test_download_accepts_an_alias` 把 `snapshot_download` stub 成"什么都不写"，
+只断言传进去的 `allow_patterns` 与 `revision`——它验证的是**我们请求了什么**，不是**下完之后
+loader 能不能找到**。D14 是"表达式 vs 抄本"，这里是"请求参数 vs 真实落盘"：同一形状第四次。
+
+**修法**：
+1. 有模型目录时落盘到 `<dir>/<engine id>/`——`Dockerfile` 的注释、`.env.example` 与
+   `paths.resolve` 三处一直就是这么写的，缺的只是让下载器照做；
+2. 没有模型目录时（`DECIS_MODEL_DIR` 未设、也没有 `--dest`）写 **Hub 缓存**，那才是 `serve`
+   在零配置时会读的地方，于是 README 的"下载一次、然后 serve"真的只下载一次；
+3. 两条路都在下载之后**用 `paths.resolve` 自己验证**才报成功（缓存那条用 `checkpoint_root` 验）；
+4. 回归测试让 stub 写出**真实下载器的布局**，并断言 `resolve` 找得到——只断言参数的测试
+   在这类缺陷面前是恒绿的。
+
+**教训**：凡是"写到某处、之后从某处读"的两个模块，必须有一条测试把**真实的写**接上
+**真实的读**；把写 stub 掉再断言参数，等于把这条链子中间剪断还宣称它连着。
+
+### D18（中，已修正）compose 的 `command:` 覆盖了镜像的 `CMD`，容器去找一个叫 `download` 的程序
+
+**发现方式**：第一次真的用发布镜像跑 `docker compose up -d --wait`（D17 修好之后的端到端验证），
+`weights-laya-multilingual` 立刻失败：
+
+```
+OCI runtime create failed: exec: "download": executable file not found in $PATH
+```
+
+**根因**：`docker/Dockerfile` 只有 `CMD ["decis", "serve"]`，**没有 `ENTRYPOINT`**。
+compose 的 `command:` 是**替换** CMD，不是追加，所以 `["download", ...]` 让内核去 exec 一个
+叫 `download` 的程序。YAML 层的测试测不出来——更糟的是，`tests/test_compose.py` 当时断言的
+正是 `command == ["download", "--engine", X]`：**它把错误的期望抄了一遍**（D14 的同一形状，
+只是这次的"抄本"是编排文件本身的写法）。
+
+**修法**：所有 `command` 都以 `decis` 开头；测试改成**从 Dockerfile 读出有没有 `ENTRYPOINT`**
+再决定该断言什么，而不是把当前写法当常量。
+
+**教训**：镜像的入口点（`ENTRYPOINT`/`CMD`）与编排层的 `command:` 是两个东西，它们的组合语义
+只有真起一次容器才会暴露。凡是"编排文件该怎么写"的判断，至少要有一条测试把它和镜像定义对起来，
+并且**真的跑一次**——这里从 `up` 到报错只用了 1 秒。
+
+### D19（中，已修正）为权重下载配的代理把镜像自己的 liveness 探针打成了 502
+
+**发现方式**：真实 `docker compose up -d --wait` 的下一次尝试。引擎**已经加载成功**——
+日志里明明白白 `engine laya-multilingual ready after 86.1s`——但容器一直是 `unhealthy`：
+
+```
+urllib.error.HTTPError: HTTP Error 502: Bad Gateway
+```
+
+**根因**：这台机器没有直连出口（`sysctl` 之外还有网络策略），容器要么走代理、要么什么都下不来，
+于是 `.env` 里有 `HTTP_PROXY=…`，`env_file` 把它传进容器。而 `docker/Dockerfile` 的 HEALTHCHECK 是
+
+```
+python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', …) …)"
+```
+
+**`urllib` 会读 `HTTP_PROXY`**：探针于是去问代理要 `http://127.0.0.1:8000/healthz`，
+代理当然给不出这个地址，返回 502。服务是健康的，**探针不是**。
+
+**为什么危险**：这不是"启动慢"，是"探针永久失败"。同一组合在 Kubernetes 里会让一个完全健康的
+Pod 反复重启——每轮都要重付 86 秒冷启动，而日志里全是 `ready`。§2-D7 论证了 liveness 与
+readiness 的分工，却没料到 liveness **自身**会被环境变量劫持。
+
+**修法**：
+1. `HEALTHCHECK` 的命令前加 `env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy
+   -u ALL_PROXY -u all_proxy`——**只作用于探针**，引擎自己的下载照旧走代理；
+2. `.env.example` 的代理段落一并给出 `NO_PROXY=127.0.0.1,localhost,::1`，
+   给"镜像早于这个修复"的场景一条出路（本次验证就是这么过的）；
+3. `tests/test_compose.py` 加守卫：从 Dockerfile 的 HEALTHCHECK 块里断言它确实 `-u` 掉了代理变量。
+
+**教训**：探针是"从容器内部发出的一个请求"，因此它继承该容器的一切环境（代理、`SSL_CERT_FILE`、
+DNS、`NO_PROXY`）。把它写成"用通用 HTTP 客户端访问 loopback"就等于假设这些环境是干净的——
+而在"需要代理才能下载权重"这个**恰恰是本项目镜像最常见部署前提**的场景里，假设不成立。
+
 ---
 
 ## 3. 标准符合性对照
