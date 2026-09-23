@@ -331,7 +331,8 @@ Makefile 自己做的。`make pull` 是唯一指名 `docker-compose.yml` 的目�
 ### Playground：在浏览器里玩三个小游戏
 
 同一条 `docker compose up` 会在 <http://localhost:8080> 起一个 playground：snake、dino、
-tetris，每一步都由页面调用一次 `POST /v1/systemone` 来自己做决定。
+tetris。三个游戏都可以自己用键盘玩，也可以交给模型——三页的手动/AI 开关是同一个——AI
+模式下每一步就是一次 `POST /v1/systemone`。
 
 | 游戏 | 问的是什么 |
 |---|---|
@@ -342,12 +343,27 @@ tetris，每一步都由页面调用一次 `POST /v1/systemone` 来自己做决�
 "给几个落点"是容量问题，不是口味问题。Laya 会把整个问题记在 `head_max_len` 上，超了就报
 422 而不是截断，所以页面按**最小**的那个兜底预算来定数量。用引擎自己的 `measure()` 实测：
 五个落点时这个问题是 178 token，整个请求占 512 的 `state + 问题` 预算里的 415（兜底预算是
-512/192）；六个落点约 207 token，会被 422 拒掉。引擎仍然拒绝时页面会退回自己的启发式——
-`sim` 标记就是这个意思。
+512/192）；六个落点约 207 token，会被 422 拒掉。引擎仍然拒绝时页面会退回自己的启发式，并
+如实说明，而不是假装模型走了那一步。
 
 改了页面上的问题之后想重测，不需要自己准备 tokenizer：超预算时引擎会把数字写在错误里——
 `Question 'placement' is about N tokens, over this model's limit of M per question`，
 成功响应里同样的数字在 `usage.input_tokens` 和 `decis` 命名空间下。把页面自己的请求发过去读就行。
+
+三个页面就是同一套外壳套在三块不同的棋盘上。手动/AI 开关、推理面板、最近一次调用的控制台、
+引擎状态灯和快捷键都来自 `playground/web/game.js`，所以三个游戏的差别只在棋盘和旁边的选项。
+两种模式下每个页面都是 `enter` 开始/暂停（snake 的棋盘用不到 `space`，所以那里 `space` 也
+可以）；`R` 重开，`M` 切换模式。手动模式下方向键玩 snake 和 tetris——那里 `space` 是直接落底——
+dino 则是 `space` 跳、下方向键蹲、上方向键也能跳。
+
+推理面板里的数字只来自 API 真的返回了什么、以及浏览器自己的时钟：`usage.input_tokens`、
+`usage.output_tokens`，和 `performance.now()` 量出的那次 `fetch` 往返。契约里没有服务端计时，
+所以这里显示的是端到端延迟（含引擎排队和网络），速率是 `(输入 + 输出) / 延迟`。p50、p95 和
+调用计数说的是这个页面最近 200 次调用。还没调用过的页面显示破折号，不会编一个占位数字。
+
+面板下面那个可折叠的控制台显示最近一次 `/v1/systemone` 调用：请求体原样（playground 自己加
+的记账字段已去掉），然后是响应或者页面收到的错误。三个页面是同一个面板，也是"这步为什么这么
+走"该看的地方。
 
 它是代理，不是客户端：浏览器请求的是 playground 自己这个源上的 `/v1/systemone`，
 由 playground 附上 `DECIS_API_KEY` 再转发。所以页面里永远没有密钥——也因此**谁能访问
@@ -364,9 +380,10 @@ playground 自己的 `/readyz` 报 `searching`，页面会如实显示而不是�
 转发时它还会把 `model` 改写成引擎在 `/readyz` 里报的 id，所以页面可以继续发 `jev-latest`，
 在两个 profile 下都能用，不需要 `DECIS_ACCEPT_FOREIGN_DEFAULTS`。
 
-四个页面共用一份样式表（`playground/web/theme.css`）和一套 i18n 机制
-（`playground/web/i18n.js`）；每个页面只带自己的文案和自己的布局，没有任何一页重抄调色板。
-所以改一次设计、或者漏一条翻译，都不会变成要改四个地方。
+四个页面共用一份样式表（`playground/web/theme.css`）、一套 i18n 机制
+（`playground/web/i18n.js`）和一个游戏外壳（`playground/web/game.js`）。每个页面只带自己的
+文案、自己的棋盘和自己的布局；除了棋盘之外的东西都来自外壳，没有任何一页重抄调色板、或者自己
+再实现一个模式开关。所以改一次设计、或者漏一条翻译，都不会变成要改四个地方。
 
 界面是中英双语的：默认按 `navigator.languages` 选，`?lang=zh` 可以指定，顶栏的开关可以随时
 切换，选过之后记在 `localStorage` 里。**只有界面被翻译**：发给模型的 `state`、`instructions`
@@ -382,8 +399,9 @@ docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
   -e DECIS_PLAYGROUND_CANDIDATES=http://host.docker.internal:8000 decis-playground
 ```
 
-CPU 上游戏比参考实现（GPU）慢，每个游戏都按自己测到的延迟来调整节奏。dino 和 tetris 退回本地
-启发式时会显示 `sim` 标记——那意味着 API 拒绝了或连不上，不是模型在走棋。
+CPU 上游戏比参考实现（GPU）慢，每个游戏都按自己测到的延迟来调整节奏。某一步做不出决定时
+——API 拒了这个问题，或者根本连不上——页面会退回自己的规划器，并把错误显示出来；概率条
+旁边的标记则统计模型和这个规划器有多少次选到了一起。
 
 想自己构建：
 

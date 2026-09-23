@@ -358,7 +358,8 @@ builds exist in no registry.
 ### The playground: the three games, in a browser
 
 The same `docker compose up` starts the playground on <http://localhost:8080>: snake, dino and
-tetris, each playing itself by calling `POST /v1/systemone` once per decision.
+tetris. Each game can be played by hand from the keyboard or handed to the model — the manual/AI
+switch is the same on all three — and in AI mode each decision is one `POST /v1/systemone`.
 
 | Game | What it asks |
 |---|---|
@@ -372,12 +373,32 @@ with the number that fits the *smallest* budget a checkpoint can fall back to. M
 the engine's own `measure()`: the placement question is 178 tokens at five options and the whole
 request is 415 of a 512-token `state + question` budget, against a fallback of 512/192. Six
 options would be about 207 and get a 422. The page drops to its own heuristic if an engine still
-says no, which is what the `sim` badge means.
+says no, and says so rather than pretending the model moved.
 
 To re-measure after changing a page's questions, you do not need a tokenizer: the engine refuses
 an over-budget question with the number in it — `Question 'placement' is about N tokens, over
 this model's limit of M per question` — and a successful response reports the same figures under
 `usage.input_tokens` and the `decis` namespace. Send the page's own payload and read it off.
+
+All three pages are one shell around three different boards. The manual/AI switch, the inference
+panel, the console for the last call, the engine chip and the keyboard shortcuts come from
+`playground/web/game.js`, so the games differ only in the board and in the per-game options beside
+it. `enter` starts and pauses in both modes on every page (`space` does too on snake, whose board
+has no use for it); `R` resets, `M` flips the switch. In manual mode the arrow keys play snake and
+tetris -- where `space` is the hard drop -- and dino takes `space` to jump, the down arrow to duck
+and the up arrow to jump as well.
+
+The inference panel is fed only by what the API returned and by the client's own clock:
+`usage.input_tokens`, `usage.output_tokens`, and the round trip that `performance.now()` measures
+around the `fetch`. The contract has no server-side timing, so the latency shown is end to end
+— engine queueing and the network included — and the rate is `(input + output) / latency`.
+p50, p95 and the call counters describe the last 200 calls on that page. A page that has not called
+anything yet shows dashes, never a placeholder number.
+
+Below it, the collapsible console shows the last `/v1/systemone` call: the request body exactly as
+it went on the wire (the playground's own bookkeeping fields stripped), then either the response or
+the error the page got back. It is the same panel on all three pages, and it is what to read when a
+decision looks wrong.
 
 The service is a proxy, not a client: the browser calls `/v1/systemone` on the playground's own
 origin, and the playground attaches `DECIS_API_KEY` and forwards it. That is why the pages never
@@ -396,10 +417,11 @@ failing. Set `DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip the search.
 The proxy also rewrites `model` to the id the engine reported at `/readyz`, so the pages can ask
 for `jev-latest` and still work under either profile without `DECIS_ACCEPT_FOREIGN_DEFAULTS`.
 
-The four pages share one stylesheet (`playground/web/theme.css`) and one i18n mechanism
-(`playground/web/i18n.js`); each page carries its own strings and its own layout, and no page
-restates the palette. That keeps a change to the design — or a missing translation — from being
-a change in four places.
+The four pages share one stylesheet (`playground/web/theme.css`), one i18n mechanism
+(`playground/web/i18n.js`) and one game shell (`playground/web/game.js`). A page carries its own
+strings, its own board and its own layout; everything that is not the board comes from the shell,
+and no page restates the palette or re-implements a mode control. That keeps a change to the design
+— or a missing translation — from being a change in four places.
 
 The interface is bilingual, English and Simplified Chinese. The language comes from
 `navigator.languages` unless `?lang=zh` says otherwise, the switch in the app bar overrides it,
@@ -418,8 +440,9 @@ docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
 ```
 
 On CPU the games are slower than the reference GPU deployment, and each one paces itself around
-the latency it measures. Dino and tetris show a `sim` badge when they fall back to their local
-heuristic — that means the API refused or could not be reached, not that the model moved.
+the latency it measures. When a decision cannot be made — the API refused the question or could not
+be reached — the page falls back to its own planner for that move and shows the error, and the
+badge beside the probabilities counts how often the model and that planner agreed.
 
 To build an image yourself:
 
