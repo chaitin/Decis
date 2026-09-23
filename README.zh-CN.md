@@ -7,7 +7,7 @@
 Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)，也就是和 Jev 相同的 `/v1/systemone` 契约，并用你选定的开源决策模型来回答这些请求。把官方 `typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
 
 > **状态：两个真实模型家族跑在同一个契约后面。** `Stage 0`–`Stage 2` 已完成。线格式契约、认证、
-> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**498 个无权重测试通过**——
+> 错误形状、引擎抽象、权重解析、CLI、Dockerfile 与 CI 都已实现，**514 个无权重测试通过**——
 > 其中包括官方 `typesafe-sdk` 0.7.1 走真实 socket 的验收测试。已注册四个真实
 > checkpoint，**`decis serve --engine laya-multilingual` 与 `decis serve --engine kev-0.8b`
 > 现在都能回答真实请求**；另有 27 个测试会加载真实权重。接 kev 的过程**没有改 `render.py`、
@@ -301,6 +301,33 @@ docker compose --profile kev-0.8b up -d     # 或者另一个引擎（宿主端�
 `docker-compose.override.yml`，它会用你**当前的工作区**把同样的服务构建成 `decis-local:*`。
 想让改动生效就别加 `-f`；部署时只拷 `docker-compose.yml` 这一个文件。
 
+### 同样的命令，写成 `make`
+
+`make` 包的就是上面这两个 compose 文件，所以不用记也不用重打：
+
+```bash
+make help                    # 列出所有目标，以及本目录解析到的引擎
+
+make up                      # 用当前源码构建 decis-local:*，起一个引擎 + 游戏页面
+make down                    # 停掉；镜像留着
+
+# 也可以只动其中一个 —— playground 是最便宜的那个：
+make build-playground        # 几秒钟：那个 Dockerfile 里没有 RUN
+make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
+make build-engine ENGINE=kev-0.8b
+make up-engine    ENGINE=kev-0.8b
+
+make ps / logs / images / config   # 在跑什么，以及它们来自哪个镜像
+make pull                    # 部署路径：拉发布的 kingfs/decis:* 镜像
+make test / lint
+```
+
+`Makefile` 里**没有**写死任何镜像 tag、引擎 id 或构建参数：它去问 Compose。所以 `make up`
+和上面的 `docker compose up` 不会各说各话；也因此 `COMPOSE_PROFILES=kev-0.8b make build-engine`
+构建的是 kev —— 对 Compose 来说 shell 覆盖 `.env`，对 `make` 就必须一样，而这个判断不是
+Makefile 自己做的。`make pull` 是唯一指名 `docker-compose.yml` 的目标，因为本目录构建出来的
+`decis-local:*` 在任何一个 registry 里都不存在。
+
 ### Playground：在浏览器里玩三个小游戏
 
 同一条 `docker compose up` 会在 <http://localhost:8080> 起一个 playground：snake、dino、
@@ -420,7 +447,7 @@ Decis 不训练模型，只负责把它们服务起来；它尽量给出署名�
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 498 个测试，约 25 秒，无权重、无网络
+uv run pytest -q                        # 514 个测试，约 25 秒，无权重、无网络
 uv run pytest -m weights                # 27 个加载真实权重（Laya + kev）的测试
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # 回环地址允许不带 token

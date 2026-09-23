@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**498 通过 / 33 跳过**，约 25 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**522 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**514 通过 / 33 跳过**，约 25 秒，不联网）；
+> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**538 通过 / 28 跳过**）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -191,6 +191,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
 | playground 页面的调色板 / 字体 / 组件样式 | `playground/web/theme.css` | 页面在自己的 `<style>` 里再抄一套颜色或按钮样式（`tests/test_playground.py` 盯着） |
 | playground 的界面语言（检测、切换、顶栏文案） | `playground/web/i18n.js` | 页面自己实现语言检测或切换；把要发给模型的 `state`/`instructions`/`criteria` 翻译掉——那是 API 的语言，也是上面那些 token 数字量出来的那份字符串 |
+| 「怎么构建、怎么起服务」的快捷方式 | `Makefile`（目标全部转调 Compose） | 在 Makefile 里重写镜像 tag / 引擎 id / 构建参数（归 compose 与工作流）；在文档里写一个不存在的 `make` 目标（`tests/test_makefile.py` 两条都盯着） |
 
 `tests/test_conventions.py` 是这些规则的守卫（照抄 kev 的做法：一张"唯一事实来源"表 + 断言）。**新增一个 canonical helper 时，同时加一行守卫。**
 
@@ -301,7 +302,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：498 通过 / 33 跳过，约 25 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：514 通过 / 33 跳过，约 25 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
@@ -361,6 +362,23 @@ docker compose up -d --build              # 源码目录里：自动叠 docker-c
 
 `docker-compose.override.yml` 是靠**文件名**被 Compose 自动发现的，所以源码目录里裸
 `docker compose up` 走本地构建；部署只拷 `docker-compose.yml`（或加 `-f docker-compose.yml`）。
+
+`Makefile` 是这些命令的**快捷方式，不是第二份定义**：目标全部转调 Compose，里面不写任何
+镜像 tag、引擎 id 或构建参数，而是问 Compose（`config --services` / `config --profiles` /
+`config --images`），所以 `make` 与 `docker compose` 不会各说各话，`COMPOSE_PROFILES=...`
+的作用也一样（shell 覆盖 `.env`）。守卫在 `tests/test_makefile.py`：它用一个假 `docker`
+真跑 `make`，因此不需要 daemon，其中一条还断言 docs 里出现的每个 `make <target>` 都真的存在。
+
+```bash
+make help                    # 目标清单 + 本目录解析到的引擎
+make up / down               # 起（构建源码）/ 停
+make up-local                # 同上，但先重建镜像（引擎那次是全量烤权重，慢）
+make build-playground        # 只重建游戏页面镜像：几秒（那个 Dockerfile 没有 RUN）
+make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
+make build-engine / up-engine ENGINE=kev-0.8b
+make ps / logs / images / config / pull
+make test / lint
+```
 
 本地构建（不传 `DECIS_EXTRAS` 得到的是 engine-free 的纯 API 镜像：能起、能列模型，但不会 ready；
 不传 `DECIS_PREDOWNLOAD` 得到的是不带权重的变体）：

@@ -8,7 +8,7 @@ Decis is a small, self-hostable server that speaks [TypeSafe's System One API](h
 
 > **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
 > contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **498 tests passing** without weights — including the official
+> Dockerfile and CI are implemented, with **514 tests passing** without weights — including the official
 > `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
 > **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
 > real requests today; 27 further tests load the real weights. Adding kev required **no change to
@@ -327,6 +327,34 @@ The `-f docker-compose.yml` is not decoration: inside a checkout Compose also lo
 `decis-local:*` instead. Leave it off to develop against your edit; a deployment copies
 `docker-compose.yml` alone.
 
+### The same thing, as `make` targets
+
+`make` wraps those two files, so there is nothing to retype and nothing to remember:
+
+```bash
+make help                    # every target, and the engine this checkout resolves to
+
+make up                      # build decis-local:* from this tree, run one engine + the games
+make down                    # stop; the images stay
+
+# one piece at a time -- the playground is the cheap one:
+make build-playground        # seconds: that Dockerfile has no RUN
+make up-playground           # the games only, beside an engine already running anywhere
+make build-engine ENGINE=kev-0.8b
+make up-engine    ENGINE=kev-0.8b
+
+make ps / logs / images / config   # what is running, and the images it came from
+make pull                    # the deployment path: the published kingfs/decis:* images
+make test / lint
+```
+
+The `Makefile` writes down no image tag, no engine id and no build argument: it asks Compose.
+That is why `make up` and the `docker compose up` above cannot drift apart, and why
+`COMPOSE_PROFILES=kev-0.8b make build-engine` builds kev — the shell overrides `.env` for
+Compose, so it has to for `make` too, and the Makefile is not the one deciding. `make pull` is
+the only target that names `docker-compose.yml`, because the `decis-local:*` tags this checkout
+builds exist in no registry.
+
 ### The playground: the three games, in a browser
 
 The same `docker compose up` starts the playground on <http://localhost:8080>: snake, dino and
@@ -459,7 +487,7 @@ Decis does not train models. It serves them, and it tries to give credit rather 
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 498 tests, ~25 s, no weights, no network
+uv run pytest -q                        # 514 tests, ~25 s, no weights, no network
 uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
 uv run ruff check && uv run ruff format --check
 uv run decis serve --host 127.0.0.1     # loopback may run without a token
