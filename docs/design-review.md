@@ -645,6 +645,12 @@ README 有一句 `Images ship with the model so docker run works offline`，
    且**不存在"要烤权重却没装对应 extra"的腿**；`tests/test_compose.py` 断言 compose 用的
    image tag 正是那个烤权重的变体。
 
+**验证**（2026-09-23，`v0.0.1`）：`kingfs/decis:laya-multilingual-v0.0.1` 从 Docker Hub 拉下来
+（arm64 digest `sha256:3d96587c…`）后单独跑，容器日志里 **0 条下载**、`ready after 122.3s`、
+`/readyz` 131 s 变 200、常驻 2.87 GiB，`noul` 与本地自建的同版镜像**逐位相同**；
+registry 逐层求和：默认 tag **4401 MB**（amd64）/ **4543 MB**（arm64），
+`-runtime-v0.0.1` 3203 / 3346 MB。原来那个假引擎残留的 7 个 `mock*` tag 也一并从 registry 删掉了。
+
 **代价（写下来，不藏）**：权重的 `RUN` 层在 `COPY src` 之后（下载器要读引擎的权重声明，那是代码），
 所以**每次源码改动这条腿都要重新下载**。laya 是 647 MiB，kev 是 1.7 GiB adapter + 1.65 GiB 基座，
 乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里让 `COPY --from` 命中缓存

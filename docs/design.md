@@ -956,9 +956,10 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   只有 release tag 追加版本（`laya-multilingual-v1.2.0`），并同时发布瘦身的
   `laya-multilingual-runtime-v1.2.0`；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
   方案在 `plan` 步骤里算，有测试真跑（含"默认 tag 必须烤权重"和"不许给没装 extra 的腿烤权重"两条断言）。
-- ✅ **体积已量**（registry API 逐层求和，压缩后下载量）：**不带权重的** `laya-multilingual` 3203 MB、
-  `kev-0.8b` 3206 MB（§2-D20 翻转变体之后，这两个数只适用于 `-runtime` 变体；烤权重的默认 tag
-  等 CI 构建出来再量）。当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
+- ✅ **体积已量**（registry API 逐层求和，压缩后下载量，2026-09-23 的 `v0.0.1`）：
+  烤权重的 `laya-multilingual`（= `latest`）4401 MB amd64 / 4543 MB arm64，`kev-0.8b` 6045 / 6188 MB；
+  不带权重的 `-runtime-v0.0.1` 是 3203 / 3346 MB 与 3206 / 3349 MB。
+  当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
   装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，
   那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
   容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
@@ -1008,11 +1009,10 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
   （三个引擎 tag × amd64 / arm64，单腿 7m51s–15m52s），3 个 merge 任务成功，
   合成多架构 manifest，例如 `ghcr.io/kingfs/decis-laya-multilingual:latest@sha256:e6651499f7ba355155af16f5d52cdc1393f44afc08c0981b48d9c2d046f0d6f5`
   （amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了"能构建、能推送、能合并"** |
-| 镜像体积与容器内冷启动 | **仍未测**。上面那次运行没有记录体积，也没有在容器里起过服务量冷启动 |
-| release tag 路径与 `-runtime` 变体 | **未验证**。`v*` tag 触发的分支只在 `tests/test_docker_workflow.py` 里被模拟过；`-runtime`（不带权重）变体在改成默认烤权重之后还没构建过 |
-| 默认镜像里确实有权重 | **已验证**（2026-09-23，aarch64）：带权重的默认镜像冷启动不需要任何下载，容器内 `/v1/systemone` 真的作答；见 `AGENTS.md` 的镜像段落 |
-| Docker Hub 仓库的可见性 | 未核实。首次推送会自动创建 `kingfs/decis`，新仓库默认是**公开**的（与 GHCR 相反），
-  所以 `docker pull kingfs/decis:laya-multilingual` 应当无需登录——但这一点要等推送成功后再确认 |
+| 镜像体积与容器内冷启动 | **已量**（2026-09-23，`v0.0.1`）：体积见下面的体积 bullet；容器内冷启动从起了容器到 `/readyz` 变 200 是 **122.3 s**（`compose --wait` 131 s），常驻 2.87 GiB。上面那次 2026-09-22 的运行本身没有记录体积、也没有在容器里起过服务。 |
+| release tag 路径与 `-runtime` 变体 | **已构建并推送**（2026-09-23，`v0.0.1`，[run 35830071254](https://github.com/kingfs/Decis/actions/runs/35830071254)：8 条腿 + 4 个 merge 全绿，产出 `<engine>-v0.0.1` 与 `<engine>-runtime-v0.0.1`）。**拉下来跑过的是烤权重那个**；`-runtime` 只验证了"能构建、能合并、体积对" |
+| 默认镜像里确实有权重 | **已验证**（2026-09-23，aarch64，本地自建 + 从 Docker Hub 拉下来的 `laya-multilingual-v0.0.1` 两版）：冷启动 **0 条下载**，容器内 `/v1/systemone` 真的作答且两版结果逐位相同；见 `AGENTS.md` 的镜像段落 |
+| Docker Hub 仓库的可见性 | **已验证**（2026-09-23）：不带任何凭证的匿名 token 就能读到 manifest 与逐层体积，`docker pull kingfs/decis:laya-multilingual-v0.0.1` 也直接成功 |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 

@@ -268,8 +268,8 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 
 | Tag | Engine | What it carries |
 |---|---|---|
-| `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | the 647 MiB checkpoint, baked in; on CPU ~1-2 min to `/readyz`, ~3 GiB resident |
-| `kev-0.8b` | kev 0.8B | the 1.7 GiB adapter and Qwen base, baked in; wants a GPU |
+| `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | the 647 MiB checkpoint, baked in — 4.4 GB to pull on amd64, 4.5 GB on arm64; ~2 min to `/readyz` and ~3 GiB resident on CPU |
+| `kev-0.8b` | kev 0.8B | the 1.7 GiB adapter and Qwen base, baked in — 6.0 GB / 6.2 GB; wants a GPU |
 
 `laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis`
 gives you the default engine. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
@@ -290,10 +290,10 @@ volume is seeded from the image and then keeps its own copy; a bind mount replac
 outright), and the container quietly goes back to downloading what you thought it already had. That is
 why `docker-compose.yml` mounts nothing there.
 
-Release tags also publish the weightless variant, `<engine>-runtime-<version>`, for a deployment that
-keeps one copy of the weights on a volume or must keep every node's image small. It is a release
-artifact, not a moving tag, so the examples below name a version — use the current one. Fill the
-volume once, then run the server against it:
+Release tags also publish the weightless variant, `<engine>-runtime-<version>` (3.2 GB on amd64,
+3.3 GB on arm64), for a deployment that keeps one copy of the weights on a volume or must keep every
+node's image small. It is a release artifact, not a moving tag, so the examples below name a version —
+use the current one. Fill the volume once, then run the server against it:
 
 ```bash
 docker pull kingfs/decis:laya-multilingual-runtime-v1.2.0

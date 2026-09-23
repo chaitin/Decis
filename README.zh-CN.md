@@ -248,8 +248,8 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 
 | Tag | 引擎 | 里面是什么 |
 |---|---|---|
-| `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 已经打进去的 647 MiB 权重；CPU 上约 1-2 分钟到 `/readyz`，常驻约 3 GiB |
-| `kev-0.8b` | kev 0.8B | 已经打进去的 1.7 GiB adapter + Qwen 基座；想要 GPU |
+| `laya-multilingual`、`latest` | Laya 多语言（322M）——默认引擎 | 已经打进去的 647 MiB 权重——amd64 要拉 4.4 GB、arm64 4.5 GB；CPU 上约 2 分钟到 `/readyz`，常驻约 3 GiB |
+| `kev-0.8b` | kev 0.8B | 已经打进去的 1.7 GiB adapter + Qwen 基座——6.0 GB / 6.2 GB；想要 GPU |
 
 只有 `laya-multilingual` 另外拿一个裸 `latest`，所以 `docker pull kingfs/decis` 拿到的是默认引擎。
 每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。
@@ -268,9 +268,9 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs
 一次然后自己留一份，bind mount 则直接替换掉整个目录），于是容器悄悄退回联网下载你以为已经有的
 东西。`docker-compose.yml` 因此什么都不往那里挂。
 
-release tag 还会发布不带权重的变体 `<engine>-runtime-<version>`，给"权重放共享卷"或"每个节点
-的镜像要尽量小"的部署用。它是 release 产物而不是滚动的 tag，所以下面的例子带版本号——用当前那个。
-先把卷填一次，再让服务端读它：
+release tag 还会发布不带权重的变体 `<engine>-runtime-<version>`（amd64 3.2 GB、arm64 3.3 GB），
+给"权重放共享卷"或"每个节点的镜像要尽量小"的部署用。它是 release 产物而不是滚动的 tag，所以下面的
+例子带版本号——用当前那个。先把卷填一次，再让服务端读它：
 
 ```bash
 docker pull kingfs/decis:laya-multilingual-runtime-v1.2.0

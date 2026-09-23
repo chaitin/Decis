@@ -48,10 +48,10 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `usage`、`x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401** 也都实测。
 > 容器里没配 `DECIS_API_KEY` 而监听 `0.0.0.0` 时**拒绝启动**（§3-19 在容器里同样生效）。
 > 体积用 registry API **逐层求和**量出（压缩后的下载量，不是 Docker Hub 页面那个数，
-> 也不是本地解压后的大小）：**不带权重的** `laya-multilingual` **3203 MB**、`kev-0.8b` **3206 MB**
-> （amd64；arm64 分别 3346 / 3349 MB）——那两个数是 §2-D20 翻转变体**之前**的默认 tag，
-> 现在描述的是 `-runtime` 变体；**烤权重的默认 tag 体积在 CI 构建出来之前没有数字**
-> （本地 arm64 解压后 7.25 GB，不能和上面的"压缩下载量"混着报）。
+> 也不是本地解压后的大小；`v0.0.1` 实测）：
+> 烤权重的 `laya-multilingual`（= `latest` = `laya-multilingual-v0.0.1`）**4401 MB** amd64 / **4543 MB** arm64；
+> `kev-0.8b`（= `kev-0.8b-v0.0.1`）**6045 / 6188 MB**；
+> 不带权重的 `-runtime-v0.0.1` 分别是 **3203 / 3346 MB** 与 **3206 / 3349 MB**。
 > **engine-free 基础镜像尚未量过体积与冷启动。**
 > 那个假引擎镜像曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），
 > 修好后构建时间从 9m16s 降到 59s——那个镜像已删除，但这条教训（§9 的三元表达式禁用）仍然有效。
@@ -79,8 +79,15 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 构建期实测到两个环境事实，都写进了 `design-review.md §2-D23`：Docker **不把** shell 或 `.env` 里的
 > 代理带进 `RUN`（本地构建必须 `--build-arg HTTP_PROXY=...`），而代理 build arg **不进** BuildKit 的
 > 缓存键（重建复用了依赖层）。
-> **未验证**：`-runtime` 变体（改成默认烤权重之后还没构建过）、release tag 触发的构建与版本化 tag、
-> kev 的 compose 路径（只跑了 laya）。报镜像相关的结论时不要超出这个范围。
+> **发布出去的镜像也实测过**（2026-09-23，`docker pull kingfs/decis:laya-multilingual-v0.0.1`，
+> arm64 digest `sha256:3d96587c…`，21 分钟 4.5 GB，走的是本机那个代理）：容器起来后**日志里
+> 0 条下载**，从 `/models/laya-multilingual/multilingual` 加载，`ready after 122.3s`，
+> `/readyz` 131 s 变 200，常驻 2.87 GiB，`/v1/systemone` 的 `noul` 与本地自建镜像
+> **逐位相同**（0.0107），403/401 与 `/v1/models` 都对。registry 里 7 个 `mock*` tag
+> （那个假引擎的残留）已删除：`kingfs/decis` 现在只有真实引擎的 tag。
+> **未验证**：`-runtime` 变体只验证了"能构建、能合并、体积对"，**没有拉下来跑过**（烤权重那个跑了）；
+> kev 镜像的容器内冷启动（没在容器里起过 kev）、kev 的 compose 路径（只跑了 laya）。
+> 报镜像相关的结论时不要超出这个范围。
 
 ---
 
