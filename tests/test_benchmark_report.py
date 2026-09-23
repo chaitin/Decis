@@ -242,7 +242,7 @@ def test_generated_tables_quote_the_numbers_that_are_in_the_json(groups) -> None
     A weaker version would check that *some* number appears; this checks the value the
     generator actually chose against the file it claims to have read.
     """
-    rendered = report.render_readme_latency(groups)
+    rendered = report.render_latency_table(groups)
     for group in groups:
         if group.hashless:
             continue
@@ -261,7 +261,7 @@ def test_the_readme_row_uses_one_thread_count_for_both_columns(groups) -> None:
     10-question latency from thread count 24 in the same row. Both numbers were honest;
     the row was not. A generated row now states its thread count and uses only that one.
     """
-    rendered = report.render_readme_latency(groups)
+    rendered = report.render_latency_table(groups)
     rows = [line for line in rendered.splitlines() if line.startswith("| `")]
     assert rows, "no data rows were generated"
     for row in rows:
@@ -468,8 +468,8 @@ def test_the_rendered_batching_block_carries_its_own_markers(gains) -> None:
     assert rendered.startswith(report.BATCHING_BEGIN)
     assert rendered.rstrip().endswith(report.BATCHING_END)
 
-    for path in (ROOT / "README.md", ROOT / "README.zh-CN.md"):
-        block = report.render_batching_readme(gains, chinese=path.name.endswith("zh-CN.md"))
+    for path in (ROOT / "docs" / "performance.md", ROOT / "docs" / "performance.zh-CN.md"):
+        block = report.render_batching_summary(gains, chinese=path.name.endswith("zh-CN.md"))
         assert block.startswith(report.BATCHING_BEGIN), path.name
         assert block.rstrip().endswith(report.BATCHING_END), path.name
 
@@ -521,30 +521,31 @@ def test_the_verdict_refuses_to_claim_a_gain_that_is_not_there(gains) -> None:
 
 
 def test_a_hand_edited_batching_table_is_detected(gains) -> None:
-    """The negative control, on the new block, in the file that had drifted by hand before."""
+    """The negative control, on the block that drifted by hand when it lived in a README."""
     groups = report.load_all()
     gaps = report.verify(groups)
-    readme = ROOT / "README.zh-CN.md"
-    original = readme.read_text(encoding="utf-8")
-    block = report.render_batching_readme(gains, chinese=True)
-    assert block in original, "the Chinese README's batching block is not in sync"
+    page = ROOT / "docs" / "performance.zh-CN.md"
+    original = page.read_text(encoding="utf-8")
+    block = report.render_batching_summary(gains, chinese=True)
+    assert block in original, "the Chinese performance page's batching block is not in sync"
 
     edited = block.replace("1.92x", "9.99x", 1)
     assert edited != block, "the fixture failed to modify the block"
     try:
-        readme.write_text(original.replace(block, edited), encoding="utf-8")
+        page.write_text(original.replace(block, edited), encoding="utf-8")
         assert report.stale(groups, gaps) != [], "a hand-edited batching table was not detected"
     finally:
-        readme.write_text(original, encoding="utf-8")
-    assert report.stale(groups, gaps) == [], "the test failed to restore README.zh-CN.md"
+        page.write_text(original, encoding="utf-8")
+    assert report.stale(groups, gaps) == [], "the test failed to restore docs/performance.zh-CN.md"
 
 
-def test_the_readmes_agree_because_one_generator_writes_both(groups) -> None:
+def test_every_file_that_shows_the_latency_table_agrees(groups) -> None:
     """The Chinese README used to carry a hand-copied table, and it drifted (D12 again).
 
     It quoted 201 ms for one question (16 threads) beside 987 ms for ten (24 threads) --
     the same mixed-thread-count defect `§2-D12` records, still live because no generator
-    checked that file. Both READMEs are generated now, so their numbers must be identical.
+    checked that file. The headline table is generated into four files now (both READMEs
+    and both performance pages), so all four must quote the same figures.
     """
 
     def figures(path: Path) -> list[str]:
@@ -562,28 +563,51 @@ def test_the_readmes_agree_because_one_generator_writes_both(groups) -> None:
         assert rows, f"{path.name} has no data rows"
         return re.findall(r"\d[\d,]*\.?\d*", "\n".join(rows))
 
-    english = figures(ROOT / "README.md")
-    chinese = figures(ROOT / "README.zh-CN.md")
+    shown = [
+        ROOT / "README.md",
+        ROOT / "README.zh-CN.md",
+        ROOT / "docs" / "performance.md",
+        ROOT / "docs" / "performance.zh-CN.md",
+    ]
+    figures_by_file = {path.relative_to(ROOT).as_posix(): figures(path) for path in shown}
     # Read from the files, not from the renderers: comparing two calls of the same
     # generator would pass even if a file still held a stale hand-written table, which is
     # exactly the defect being guarded against.
-    assert english == chinese, f"the two READMEs quote different figures:\n{english}\n{chinese}"
+    unique = {tuple(values) for values in figures_by_file.values()}
+    assert len(unique) == 1, f"the files quote different figures: {figures_by_file}"
     # 2 engines x (threads + 2 latencies + 2 memory figures) at least.
-    assert len(english) >= 10, english
+    assert len(next(iter(unique))) >= 10, figures_by_file
 
 
-def test_both_readmes_have_every_generated_marker() -> None:
-    """A missing marker is a crash during `--write`, and it had already happened once."""
+def test_every_generated_block_has_a_home_with_its_markers() -> None:
+    """A missing marker is a crash during `--write`, and it had already happened once.
+
+    The four generated blocks now live in three kinds of file: the headline latency table
+    stays in the READMEs, the dtype and cross-request batching blocks live in the
+    performance pages, and the full measurement dump stays in `docs/feasibility.md`.
+    Splitting them is fine; a block whose markers are missing is not.
+    """
     groups = report.load_all()
+    targets = report.targets(groups, report.verify(groups))
+    assert {path.name for path, begin, _, _ in targets if begin} >= {"README.md", "performance.md"}
+    for path, begin, end, _ in targets:
+        if begin is None:
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert begin in text, f"{path.name} is missing {begin}"
+        assert end in text, f"{path.name} is missing {end}"
+
+
+def test_the_readme_keeps_only_the_headline_table() -> None:
+    """The READMEs are landing pages, so the long tables live in `docs/performance.md`.
+
+    Asserted rather than left to taste because it is the whole point of the split: a
+    README that grows the dtype and batching tables back is the 500-line README this
+    change removed. The latency block is the one exception -- it is the number a reader
+    deciding whether to try this came for.
+    """
     for path in (ROOT / "README.md", ROOT / "README.zh-CN.md"):
         text = path.read_text(encoding="utf-8")
-        for marker in (
-            report.README_LATENCY_BEGIN,
-            report.README_LATENCY_END,
-            report.README_DTYPE_BEGIN,
-            report.README_DTYPE_END,
-            report.BATCHING_BEGIN,
-            report.BATCHING_END,
-        ):
-            assert marker in text, f"{path.name} is missing {marker}"
-    assert report.load_all(), groups
+        assert report.README_LATENCY_BEGIN in text, path.name
+        for moved in (report.README_DTYPE_BEGIN, report.BATCHING_BEGIN):
+            assert moved not in text, f"{path.name} grew {moved} back; it belongs in docs/performance.md"

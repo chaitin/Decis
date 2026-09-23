@@ -11,8 +11,9 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**514 通过 / 33 跳过**，约 25 秒，不联网）；
-> 装了真实 `laya` 的环境另有 22 个依赖相关用例会真正执行（**538 通过 / 28 跳过**）；
+> **测试**：`uv run pytest -q` 跑无权重的那套（**645 通过 / 33 跳过**，约 25 秒，不联网）；
+> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **669 通过 / 28 跳过**（多出来的 24 个用例
+> 是引擎可用后才参数化出来的依赖分支）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
 >
@@ -144,10 +145,17 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 | 文档 | 作用 | 什么时候必须读 |
 |---|---|---|
 | [`docs/api-compatibility.md`](docs/api-compatibility.md) | 对外线格式的**唯一事实来源**，含证据等级（L > S > A > B > C > D） | 任何涉及请求/响应字段的改动 |
+| [`docs/api.md`](docs/api.md) | 面向调用方的 API 参考：端点、原语、错误码、容量上限（双语） | 改端点、错误码、容量校验或 `decis` 命名空间时 |
+| [`docs/schema/`](docs/schema/) | 由 `src/decis/schema.py` **生成**的 JSON Schema + OpenAPI（`export.py --check` 进 CI） | 改任何线格式模型时；不得手改生成的 JSON |
 | [`docs/design.md`](docs/design.md) | 架构、抽象、并发、打包方案 | 任何新增模块或引擎的改动 |
 | [`docs/design-review.md`](docs/design-review.md) | 对本设计的**自我审查**：已修正的缺陷、方法论局限、尚未验证的假设 | 动手实现前；以及任何"这个设计是不是已经想清楚了"的疑问 |
 | [`docs/feasibility.md`](docs/feasibility.md) | 调查证据、实测数字、风险登记 | 讨论性能预期或选型时 |
 | [`docs/contract/`](docs/contract/) | 官方 OpenAPI 快照（L0 测试基准）+ 线上观测原始记录（L 级证据） | 任何契约相关改动；**改前必须跑一次线上差分** |
+
+面向用户的双语指南（`docs/getting-started.md`、`configuration.md`、`deployment.md`、`api.md`、
+`engines.md`、`playground.md`、`performance.md`，各有 `.zh-CN.md` 孪生）是**产品的一部分**：
+改一种语言就必须改另一种，`tests/test_docs.py` 盯着文件对是否存在、互链、以及相对链接 /
+`DECIS_*` 变量 / 代码块语言 / 生成标记在两侧是否一致。
 
 冲突时优先级：`api-compatibility.md` > `design.md` > 其余。
 
@@ -192,6 +200,8 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | playground 页面的调色板 / 字体 / 组件样式 | `playground/web/theme.css` | 页面在自己的 `<style>` 里再抄一套颜色或按钮样式（`tests/test_playground.py` 盯着） |
 | playground 的界面语言（检测、切换、顶栏文案） | `playground/web/i18n.js` | 页面自己实现语言检测或切换；把要发给模型的 `state`/`instructions`/`criteria` 翻译掉——那是 API 的语言，也是上面那些 token 数字量出来的那份字符串 |
 | 「怎么构建、怎么起服务」的快捷方式 | `Makefile`（目标全部转调 Compose） | 在 Makefile 里重写镜像 tag / 引擎 id / 构建参数（归 compose 与工作流）；在文档里写一个不存在的 `make` 目标（`tests/test_makefile.py` 两条都盯着） |
+| 对外 API 的 JSON Schema / OpenAPI | `docs/schema/export.py`（由 `src/decis/schema.py` 的模型生成） | 手改 `docs/schema/*.json`（生成物；`tests/test_api_schema.py` 盯着）。改线格式要改 `schema.py` 再 `export.py --write` |
+| 用户文档的语言版本 | `docs/<name>.md` + `docs/<name>.zh-CN.md` 成对存在 | 只改一种语言；两侧的相对链接 / `DECIS_*` 变量 / 代码块语言 / 生成标记不一致（`tests/test_docs.py` 盯着） |
 
 `tests/test_conventions.py` 是这些规则的守卫（照抄 kev 的做法：一张"唯一事实来源"表 + 断言）。**新增一个 canonical helper 时，同时加一行守卫。**
 
@@ -302,13 +312,13 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：514 通过 / 33 跳过，约 25 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：645 通过 / 33 跳过，约 25 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
 uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token；同样需要引擎就绪
 uv run decis models                  # 列出已注册引擎及其在本机是否可用
-uv run decis doctor                  # 环境自检：依赖、配置安全性、设备
+uv run decis doctor                  # 环境自检：依赖、配置安全性、绑定地址、线程数（不报设备/dtype）
 ```
 
 服务行为相关的配置（都有默认值，`decis doctor` 会报告实际取值）：
@@ -399,6 +409,16 @@ uv run python benchmarks/report.py --write   # 由原始 JSON 生成 README 与 
 uv run python benchmarks/report.py --check   # CI 跑这个：手改过的数字会让它变红
 ```
 
+对外 API 的 JSON Schema 与 OpenAPI 文档（生成物，进 CI）：
+
+```bash
+uv run python docs/schema/export.py --write   # 由 src/decis/schema.py 重新生成 docs/schema/*.json
+uv run python docs/schema/export.py --check   # CI 跑这个：手改过的 schema 会让它变红
+```
+
+`openapi.json` 由 `create_app(..., load_engine=False)` 导出，因此它描述的是**真正在跑的那个 app**，
+不是另写一份；`tests/test_api_schema.py` 会把生成结果与运行中的应用对比。
+
 跨请求批处理的收益（M5）——`decis bench --cross-request` 转调 `benchmarks/batch_gain.py`
 （第二个 harness，不是第二份实现）：
 
@@ -463,8 +483,22 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 - ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
 - ❌ 用"上游截断后的输出"反推 `measure()` 的数字（会得到永远等于上限的假测量）
 - ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` / `<!-- BATCHING -->` 标记块里的数字
-  （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）
+  （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）。**标记块里的散文同样是生成物**——
+  措辞要改就改 `benchmarks/report.py` 里的模板再 `--write`。中文那两句的语病（"随后已经测过"、
+  "旁边的散文"）就是这么修的，手改会让 `--check` 变红
 - ❌ 手改 `benchmarks/RESULTS.md`（它是生成物）
+- ❌ 手改 `docs/schema/*.json`（生成物；改线格式要改 `src/decis/schema.py` 再 `export.py --write`，
+  `docs/schema/export.py --check` 与 `tests/test_api_schema.py` 会拦下）
+- ❌ 只改双语指南的一种语言，或让两侧的相对链接 / `DECIS_*` 变量 / 代码块语言 / 生成标记不一致
+  （`tests/test_docs.py` 盯着；用户文档是产品的一部分，不是附带说明）
+- ❌ 凭印象写文档里的字段值、CLI 输出或错误码。这一轮从用户文档里一次抓到五处：
+  `max_options` 写成 64 而代码是 255；把 `decis models` 的输出写成 `not-installed`
+  （那是 `/v1/models` 在**依赖**缺失时给的 `version`，CLI 报的是 `deps missing` /
+  `needs weights`）；说容量能在 `decis models` 里看到（它只报"这台机器能不能跑"）；
+  把一个点号无法表示的引擎覆盖变量写成可用（`kev-0.8b` 会规范化成 `kev-0-8b`，
+  `config.py` 静默丢弃）；给一个从不返回的 504 写了错误行。**文档里出现的每个值都要能在
+  代码里指出处。** 其中两类已经机械化：`tests/test_docs.py` 断言配置文档里的每个 `DECIS_*`
+  都被某处读到，且每个具体的 `DECIS_MODEL_PATH_*` 都规范化到一个已注册的引擎 id
 - ❌ 让一行性能表的不同列取自不同配置（`design-review.md §2-D12`：线程数混用曾真实发生过）
 - ❌ 手工把一张表从一个文件抄到另一个文件（`README.zh-CN.md` 抄过，于是它**只在中文版里**带着 D12）：
   抄写就是第二处实现（§2），要么生成，要么不要放
@@ -530,6 +564,9 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 - 讲开发者的问题，直接对读者说话，代码尽量靠前。避免口号、排比、"赋能"类词。
 - **诚实优先**：不确定的写"未说明/未实测"，不要编造字段名、性能数字或上游行为。`docs/api-compatibility.md` 的证据等级表就是这个原则的体现，沿用它的做法。
 - 提到某个结论时**给出处**：文件路径 + 行号，或 URL。
+- **用户指南是双语的**：`docs/<name>.md` 与 `docs/<name>.zh-CN.md` 成对，`README.md` 与
+  `README.zh-CN.md` 成对。改一种语言必须同时改另一种；代码、命令、字段名、环境变量、链接目标
+  与生成标记不翻译，两侧保持一致。
 
 ---
 

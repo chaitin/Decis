@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "ModelMetadata": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "release_date": {
+          "title": "Release Date",
+          "type": "string"
+        },
+        "decis": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decis"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "release_date"
+      ],
+      "title": "ModelMetadata",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "models": {
+      "items": {
+        "$ref": "#/$defs/ModelMetadata"
+      },
+      "title": "Models",
+      "type": "array"
+    }
+  },
+  "required": [
+    "models"
+  ],
+  "title": "ModelMetadataList",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kingfs/Decis/docs/schema/models.schema.json"
+}

@@ -2,47 +2,64 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/kingfs/Decis/actions/workflows/ci.yml/badge.svg)](https://github.com/kingfs/Decis/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/kingfs/decis.svg)](https://hub.docker.com/r/kingfs/decis)
+
 **One API to run all light-weight decision models.**
 
-Decis is a small, self-hostable server that speaks [TypeSafe's System One API](https://docs.typesafe.ai/api) — the same `/v1/systemone` contract as Jev — and answers those requests with an open decision model of your choosing. Point the official `typesafe-sdk` at Decis instead of `api.typesafe.ai` and nothing else changes.
+Decis is a small, self-hostable server that speaks [TypeSafe's System One
+API](https://docs.typesafe.ai/api) — the same `/v1/systemone` contract as Jev — and answers
+those requests with an open decision model of your choosing. Point the official
+`typesafe-sdk` at Decis instead of `api.typesafe.ai` and nothing else changes.
 
-> **Status: two real model families run behind one contract.** `Stage 0`–`Stage 2` are done. The wire
-> contract, authentication, error shapes, the engine abstraction, weight resolution, the CLI, the
-> Dockerfile and CI are implemented, with **514 tests passing** without weights — including the official
-> `typesafe-sdk` 0.7.1 driven over a real socket. Four real checkpoints are registered, and both
-> **`decis serve --engine laya-multilingual`** and **`decis serve --engine kev-0.8b`** answer
-> real requests today; 27 further tests load the real weights. Adding kev required **no change to
-> `render.py`, `answers.py` or the routes** — that is what Stage 2 was for (`docs/design-review.md §2`).
->
-> The contract in [`docs/api-compatibility.md`](docs/api-compatibility.md) rests on the [official OpenAPI snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API actually returns](docs/contract/observations-2026-09-22.md) — not on inference. [`docs/design-review.md`](docs/design-review.md) is an adversarial audit of the design, including what is still unproven.
+A *decision model* returns calibrated probabilities for typed questions instead of
+generating text. It is a single forward pass, small enough to run next to your app, and fast
+enough to sit in a request path. Decis is the serving layer for those models: one wire
+contract, many interchangeable engines, and one container per engine.
 
----
+> **Status: v0.1.0.** Two model families run behind one contract —
+> `laya-multilingual` (default) and `kev-0.8b` — plus the English and typed-decision Laya
+> checkpoints. The wire contract, authentication, error shapes, the engine abstraction,
+> weight resolution, the CLI, the Docker images and CI are implemented and tested. The
+> contract rests on the [official OpenAPI
+> snapshot](docs/contract/typesafe-openapi-0.2.0.json) and a [record of what the live API
+> actually returns](docs/contract/observations-2026-09-22.md), not on inference. What is
+> **not** done is written down in [`docs/design-review.md`](docs/design-review.md) rather
+> than left out.
 
 ## Quickstart
 
 ```bash
 git clone https://github.com/kingfs/Decis && cd Decis
 uv sync --extra dev --extra laya
-cp .env.example .env                               # then set DECIS_API_KEY to anything
-uv run decis download --engine laya-multilingual   # 647 MiB, one time
-uv run decis serve --host 127.0.0.1 --port 8000    # serves laya-multilingual by default
+cp .env.example .env                               # set DECIS_API_KEY=local, as the sample does
+uv run decis download --engine laya-multilingual   # 647 MiB, once
+uv run decis serve --host 127.0.0.1 --port 8000
 ```
 
-`laya-multilingual` is the default engine. On CPU it takes about **80 s** to load, so poll
-`/readyz` before sending traffic — `/healthz` answers immediately, `/readyz` reports `loading`
-until the model is usable.
+`laya-multilingual` is the default engine and takes about **75 seconds** to load on CPU
+([measured](docs/performance.md#latency)). `/healthz` answers immediately; `/readyz` reports
+`loading` until the model can answer:
+
+```bash
+until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
+```
+
+The official SDK needs one changed line:
 
 ```python
 from typesafe_sdk import Choice, Noul, TypeSafeClient
 
 # No `model=`: the SDK sends its default, "jev-latest", and Decis answers with the
-# engine it is actually running. Swapping TYPESAFE_BASE_URL is the whole migration.
+# engine it is actually running. Swapping base_url is the whole migration.
 client = TypeSafeClient(api_key="local", base_url="http://127.0.0.1:8000")
 
 response = client.system_one(
     state={
         "subject": "Duplicate charge on invoice #4411",
-        "body": "We were billed twice for March. Please refund the duplicate today or we will cancel our plan.",
+        "body": "We were billed twice for March. Refund it today or we cancel our plan.",
     },
     questions={
         "department": Choice(
@@ -57,140 +74,47 @@ response = client.system_one(
     },
 )
 
-print(response.model)  # decis/laya-multilingual@<laya version>
-print(response.choices["department"].choice)  # whichever the engine picked
+print(response.choices["department"].choice)  # one of the criteria keys
 print(response.choices["department"].confidence)  # 0..1
 print(response.nouls["churn_risk"].noul)  # P(true), 0..1
 ```
 
-The same request by hand:
-
-```bash
-curl -s localhost:8000/v1/systemone \
-  -H 'authorization: Bearer local' -H 'content-type: application/json' -d '{
-  "state": "We were billed twice for March. Please refund the duplicate today.",
-  "model": "jev-latest",
-  "questions": {
-    "department": {"type": "choice", "instructions": "Which team should handle this?",
-                   "criteria": {"billing": "invoices, payments, refunds",
-                                "technical": "bugs, outages, system errors"}},
-    "churn_risk": {"type": "noul", "instructions": "Does the user threaten to cancel?"}
-  }}'
-```
-
-```jsonc
-{
-  "model": "decis/laya-multilingual@<laya version>",
-  "answers": {
-    "department": { "type": "choice", "choice": "<one of your criteria keys>", "confidence": "<0..1>",
-                    "probabilities": { "billing": "<p>", "technical": "<p>" } },
-    "churn_risk": { "type": "noul", "noul": "<P(true), 0..1>" }
-  },
-  "usage": { "input_tokens": "<n>", "output_tokens": "<n>" },
-  // Everything Decis adds beyond the contract lives under one key, and the
-  // official SDK ignores it. `batch_size` is how you can see batching happen.
-  "decis": { "engine": "laya-multilingual", "engine_version": "<laya version>", "device": "cpu",
-             "dtype": "float32", "latency_ms": "<n>", "batch_size": 2 }
-}
-```
-
-The values depend on the engine and its weights, so they are shown as `<…>` rather than
-invented; [`examples/curl.md`](examples/curl.md) explains every field.
-
-Other things that work today:
-
-```bash
-uv run decis models     # which engines are registered and usable here
-uv run decis doctor     # environment and configuration self-check
-```
-
-### Loading, readiness, and offline images
-
-Cold start is about **80 s on CPU**, and the server is usable for probes the whole time: the engine
-loads on a worker thread, so `/healthz` answers immediately and `/readyz` reports what is going on
-rather than leaving you to guess.
-
-```
-$ curl -s localhost:8000/healthz   # 0.5 s after start
-{"status":"ok","version":"0.0.1"}
-$ curl -s localhost:8000/readyz    # still loading
-{"status":"loading","engine":"laya-multilingual"}     # 503, with retry-after
-$ curl -s localhost:8000/readyz    # ~80 s later
-{"status":"ready","engine":"laya-multilingual"}
-```
-
-A request that arrives mid-load gets a `503` with `"The model is still loading. Please retry
-shortly."`, and one that arrives on an engine whose weights failed to load gets a `503` that says
-so and carries **no** `retry-after` — retrying something that will never recover only wastes your
-time. Don't point a *liveness* probe at `/readyz`, or a slow start becomes a restart loop. The
-published images ship the weights, so the container then runs with no network at all:
-
-```bash
-docker build -f docker/Dockerfile \
-  --build-arg DECIS_EXTRAS=laya --build-arg DECIS_ENGINE=laya-multilingual \
-  --build-arg DECIS_PREDOWNLOAD=laya-multilingual -t decis:laya-multilingual .
-docker run --rm -p 8000:8000 -e DECIS_API_KEY=local decis:laya-multilingual
-```
-
-To serve your own fine-tune, point that engine at a directory instead — it takes precedence over
-everything else, including the network:
-
-```bash
-DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage uv run decis serve
-```
-
-One caveat for kev: that directory is the **adapter** (the LoRA plus the pointer head), which is what
-you fine-tune. The Qwen3.5 **base** is referenced by its checkpoint metadata as a Hub repo id, so a
-separately mounted copy of the base is not picked up — `decis download` puts the base in the Hugging
-Face cache, and everything works offline from there. See `docs/design-review.md §2-D11`.
-
-## The problem
-
-Jev proved that a *decision model* — a model that answers typed questions about a state and returns calibrated probabilities instead of generated text — belongs in your request path, not in a chat window. But it is a hosted, closed API:
-
-- **Latency.** Independently measured at 236–276 ms p50 per question. If your decision is a routing check, that is a network round trip you pay on every call.
-- **Data.** Your ticket, your invoice, your user's message leaves your infrastructure.
-- **Cost.** $42 per billion input tokens, forever.
-
-There are now open alternatives. They are small enough to run next to your app. What is missing is not the model — it is a **uniform way to serve it**.
-
-Decis is that uniform way: one stable API, many engines, packaged as one container per model.
+[Getting started](docs/getting-started.md) covers readiness, the raw `curl` form, and
+`decis models` / `decis doctor`.
 
 ## What you get
 
-- **The jev contract, implemented once.** `POST /v1/systemone`, `GET /v1/models`, `choice` / `score` / `noul` primitives, the official SDK's error shapes and request-id header. The wire format is pinned down in [`docs/api-compatibility.md`](docs/api-compatibility.md) with an evidence level on every claim — and the live API was probed rather than assumed, which is how we found that a missing credential is 403 while an invalid one is 401.
-- **Pluggable engines.** An engine only has to produce a probability per option; the server turns that into `Noul` / `Choice` / `Score` answers, so every engine returns identical, comparable shapes — including a single documented `confidence` definition. Engines are referenced by string path, so an image with one engine's dependencies installed can still list the others.
-- **Aimed at small, frequent calls.** Both open decision models are a single forward pass, so the request path is designed to batch questions *across requests* before they reach the model — see the honesty note under Performance.
-- **Baked-in weights.** Every published image carries its checkpoint, so `docker run` needs no network, no
-  volume and no download step. `DECIS_MODEL_DIR` points the loader at your own directory instead, and a
-  weightless `-runtime` variant exists for deployments that keep one copy of the weights on a shared
-  volume.
-- **Safe by default.** Bearer-token auth (from `.env`), a constant-time comparison, a request-size cap, and a refusal to start on a public address with no token configured.
+- **The jev contract, implemented once.** `POST /v1/systemone`, `GET /v1/models`, the
+  `choice` / `score` / `noul` primitives, the official error shapes and the request-id
+  header. The wire format is pinned in [`docs/api-compatibility.md`](docs/api-compatibility.md)
+  with an evidence level per claim.
+- **Pluggable engines.** An engine produces a probability per option; the server turns that
+  into identical `Noul` / `Choice` / `Score` answers, including one documented `confidence`
+  formula. Adding an engine changes no normalisation code.
+- **Baked-in weights.** The image tag that names an engine carries that engine's checkpoint,
+  so `docker run` needs no network, no volume and no download step. (The `-runtime` variant
+  and the `playground` image are the exceptions, and are named as such.)
+- **Safe by default.** Bearer auth, a constant-time comparison, a request-size cap, and a
+  refusal to start on a public address with no token configured.
 
 ## Engines
 
-| Engine | Backbone | Params | Weights | Status | Notes |
-|---|---|---|---|---|---|
-| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | **shipped** | 100+ languages, ~2.2× faster — the default engine |
-| `laya` | ModernBERT-large | 421M | 807 MiB | **shipped** | English, strongest on English benchmarks |
-| `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | **shipped** | The typed-decisions checkpoint from the same repo |
-| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | available | Different architecture (prefill-only, no text generation), different error profile |
-| `kev-4b` / `kev-9b` | Qwen3.5 + LoRA | 4B / 9B | ~8 GB / ~18 GB | not registered | Higher accuracy, no longer "light-weight" |
-| `remote` | — | — | — | planned | Forwards to the real `api.typesafe.ai`; A/B and test oracle |
+| Engine | Backbone | Params | Weights | Notes |
+|---|---|---|---|---|
+| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | 100+ languages; the default engine |
+| `laya` | ModernBERT-large | 421M | 807 MiB | English |
+| `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | The typed-decisions checkpoint |
+| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | Prefill-only; wants a GPU |
 
-Every registered engine is a real checkpoint with real weights. The wire-contract suite runs on a
-weight-free test double that lives in [`tests/`](tests/fixture_engine.py) and is deliberately **not**
-registered by the server, so `decis serve` can never answer from a fake model.
-
-Adding an engine is one module plus one registry line, and **no change to the normalisation layer** —
-if an engine needs `render.py` or `answers.py` changed, the abstraction is wrong. See [`AGENTS.md §5`](AGENTS.md).
+Every registered engine is a real checkpoint. The weight-free test double used by the
+contract suite is [`tests/fixture_engine.py`](tests/fixture_engine.py) and is deliberately
+not registered by the server. See [Engines](docs/engines.md).
 
 ## Performance
 
-Decision models do one forward pass, so the headline numbers people quote come from **small, short
-inputs on Apple silicon with MLX**: ~11–18 ms per question on an M3 Max. That is real, but it is not
-what a CPU-only container does. Measured on a **24 vCPU aarch64 host with no GPU** — the worst case,
-and the one most people will try first:
+Decision models do one forward pass, so the figures usually quoted for them come from small
+inputs on Apple silicon with MLX. That is real, but it is not what a CPU-only container does.
+Measured on a **24 vCPU aarch64 host with no GPU**:
 
 <!-- LATENCY:START -->
 
@@ -201,316 +125,105 @@ and the one most people will try first:
 
 Generated by [`benchmarks/report.py`](benchmarks/report.py) from the raw JSON in [`benchmarks/results/`](benchmarks/results/); a whole row comes from one configuration (the thread count torch picks by default, one per vCPU). p50 over the recorded samples, single process, within-request batching only.
 
-**These are latencies, not throughput.** Every question in a row shares one `state`, which is the easy case. Cross-request batching has since been measured and does **not** raise throughput on CPU -- see the batching section below and [`docs/design-review.md §4-M5`](docs/design-review.md).
+**These are latencies, not throughput.** Every question in a row shares one `state`, which is the easy case. Cross-request batching has since been measured and does **not** raise throughput on CPU -- see [`docs/performance.md`](docs/performance.md) and [`docs/design-review.md §4-M5`](docs/design-review.md).
 
 <!-- LATENCY:END -->
 
-Three things worth taking from this table:
+Two things worth taking from it: asking ten questions in one call is much cheaper per
+question than asking one, and peak memory is several times the weight files. Cross-request
+batching, the original throughput claim, was measured and **does not help** on CPU; the
+evidence and the upper bound are in [Performance](docs/performance.md).
 
-- **Within-request batching is a real lever.** Ten questions in one call cost about half as much per
-  question as one question on its own.
-- **Cold start is ~75 seconds**, and peak memory is 3–7× the weight files. Plan readiness probes and
-  container memory accordingly.
-- **`kev-0.8b` wants a GPU.** Its Qwen3.5 backbone needs `flash-linear-attention` and `causal_conv1d`
-  to run at speed, and both require Triton/CUDA, so on CPU it is an order of magnitude slower than
-  Laya. Its `bf16` path on CPU is far worse still:
-
-<!-- DTYPE:START -->
-
-| Engine | dtype | 3 questions | relative | vs. baseline |
-|---|---|---:|---:|---|
-| `kev-0.8b` | `fp32` | 1,656 ms | 1x | baseline |
-| `kev-0.8b` | `bf16` | 137,174 ms | 83x | same argmax, max probability delta 0.01 |
-
-Generated by [`benchmarks/report.py`](benchmarks/report.py). One observation per dtype, so the ratio is an order-of-magnitude finding, not a statistic, and the comparison column is computed from the recorded answer bodies rather than from the prose next to them.
-
-<!-- DTYPE:END -->
-
-  That is why Decis picks dtypes per engine *and* device, and warns rather than silently crawling.
-
-### Cross-request batching: measured, and the answer is no
-
-Joining questions from *different* requests into one forward pass was the design's throughput claim.
-It has now been measured on this host:
-
-<!-- BATCHING:START -->
-
-| Item set | Sequence length | padding | Best batch | vs. serial |
-|---|---|---:|---:|---:|
-| one state (positive control, short) | 115–115 | 1.00 | 8 | 1.92x |
-| one state (positive control) | 393–393 | 1.00 | 16 | 1.24x |
-| different states, similar lengths | 530–674 | 1.10 | 8 | 1.09x |
-| different states, skewed lengths | 140–821 | 2.41 | 8 | 0.34x |
-
-The positive control (identical items, padding 1.00) reaches **1.92x** (`shared_short`, batch 8), which confirms the bottleneck is per-call fixed overhead and that this harness can detect a gain. For the shape real traffic has -- different states -- the best case is 1.09x (`uniform`, batch 8) and the worst is 0.34x (`skewed`, batch 8). When lengths are skewed, padding reaches 2.47x (`skewed`, batch 16): every row is padded to the longest in its batch, and that wasted compute shows up directly as a higher per-item cost.
-
-Raw JSON in [`benchmarks/results/`](benchmarks/results/); the full table -- every batch size, padding, break-even wait, process comparison -- is in [`docs/design-review.md §4-M5`](docs/design-review.md). Batches are synthesised by calling the engine directly, with no queue and no cancellation, so these are an **upper bound** on a real batcher.
-
-<!-- BATCHING:END -->
-
-So: **do not expect cross-request batching to raise throughput.** It only pays when sequences are
-short enough that per-call overhead dominates; at realistic state lengths there is nothing left to
-amortise, and once lengths vary the padding makes it several times slower rather than faster.
-`decis.batch_size` is still in every response — the mechanism has to be observable, or "it batches"
-is unfalsifiable.
-
-Raw per-sample output, the exact commands, and the host spec are in
-[`benchmarks/results/`](benchmarks/results/). Every number quoted in the docs comes from there.
-
-## Deployment
-
-One image per engine, because engine dependencies conflict and are large. They share a single
-Docker Hub repository, with the engine in the tag:
+## Deploy
 
 ```bash
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
 ```
 
-| Tag | Engine | What it carries |
-|---|---|---|
-| `laya-multilingual`, `latest` | Laya multilingual (322M) — the default engine | the 647 MiB checkpoint, baked in — 4.4 GB to pull on amd64, 4.5 GB on arm64; ~2 min to `/readyz` and ~3 GiB resident on CPU |
-| `kev-0.8b` | kev 0.8B | the 1.7 GiB adapter and Qwen base, baked in — 6.0 GB / 6.2 GB; wants a GPU |
-| `playground` | the three browser games, not an engine | four HTML pages and a standard-library Python proxy; it answers the games and forwards their `/v1/systemone` calls to whichever engine is up |
-
-`laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull kingfs/decis`
-gives you the default engine. Each tag is a multi-arch manifest covering `amd64` and `arm64`.
-The registered `laya` (English) and `laya-typed-decisions` checkpoints have **no image**: the build
-matrix covers exactly the two tags above. Run those from a source checkout.
-
-The weights are *inside* the image, so that container needs no network and no volume on first start.
-To swap in a different checkpoint without pulling an image, mount a directory that already holds
-`<engine-id>/`:
+One image per engine, one Docker Hub repository, the engine in the tag. Every engine-tagged
+image is multi-arch (`amd64` + `arm64`) and carries its weights. From a checkout, Compose and
+`make` wrap the same thing:
 
 ```bash
-# /srv/models/laya-multilingual/multilingual/... must already exist
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
-```
+docker compose up -d --wait                         # published images, default engine
+docker compose --profile kev-0.8b up -d             # the other engine, host port 8001
 
-Do not mount an *empty* directory at `/models`: a mount there **hides the baked weights** (a named
-volume is seeded from the image and then keeps its own copy; a bind mount replaces the directory
-outright), and the container quietly goes back to downloading what you thought it already had. That is
-why `docker-compose.yml` mounts nothing there.
-
-Release tags also publish the weightless variant, `<engine>-runtime-<version>` (3.2 GB on amd64,
-3.3 GB on arm64), for a deployment that keeps one copy of the weights on a volume or must keep every
-node's image small. It is a release artifact, not a moving tag, so the examples below name a version —
-use the current one. Fill the volume once, then run the server against it:
-
-```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v1.2.0
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v1.2.0 \
-  decis download --engine laya-multilingual
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v1.2.0
-```
-
-`docker compose` runs the published image and nothing else — no prefetch container, no volume, no
-download:
-
-```bash
-cp .env.example .env        # set DECIS_API_KEY; COMPOSE_PROFILES picks the engine
-docker compose -f docker-compose.yml up -d --wait   # laya-multilingual only, by default
-
-# `--wait` returns when the engine can actually answer: the compose-level probe asks
-# /readyz, so this waits out the ~2 min CPU cold start. The image's own HEALTHCHECK
-# stays on /healthz for orchestrators, where a liveness probe must not fail while the
-# engine is still loading.
-#
-# Or ask directly, if you would rather not use --wait:
-until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
-
-docker compose --profile kev-0.8b up -d     # or the other engine (host port 8001)
-```
-
-The `-f docker-compose.yml` is not decoration: inside a checkout Compose also loads
-`docker-compose.override.yml`, which builds the same services from your working tree into
-`decis-local:*` instead. Leave it off to develop against your edit; a deployment copies
-`docker-compose.yml` alone.
-
-### The same thing, as `make` targets
-
-`make` wraps those two files, so there is nothing to retype and nothing to remember:
-
-```bash
 make help                    # every target, and the engine this checkout resolves to
-
-make up                      # build decis-local:* from this tree, run one engine + the games
-make down                    # stop; the images stay
-
-# one piece at a time -- the playground is the cheap one:
-make build-playground        # seconds: that Dockerfile has no RUN
-make up-playground           # the games only, beside an engine already running anywhere
-make build-engine ENGINE=kev-0.8b
-make up-engine    ENGINE=kev-0.8b
-
-make ps / logs / images / config   # what is running, and the images it came from
-make pull                    # the deployment path: the published kingfs/decis:* images
-make test / lint
+make up / down               # build from this tree and run, or stop
+make build-playground        # rebuild just the games image: seconds
+make up-playground           # the games, beside an engine already running anywhere
+make pull                    # the deployment path: the published images
 ```
 
-The `Makefile` writes down no image tag, no engine id and no build argument: it asks Compose.
-That is why `make up` and the `docker compose up` above cannot drift apart, and why
-`COMPOSE_PROFILES=kev-0.8b make build-engine` builds kev — the shell overrides `.env` for
-Compose, so it has to for `make` too, and the Makefile is not the one deciding. `make pull` is
-the only target that names `docker-compose.yml`, because the `decis-local:*` tags this checkout
-builds exist in no registry.
+Sizes, volume caveats, the weightless `-runtime` variant, Kubernetes probes and proxy builds
+are in [Deployment](docs/deployment.md).
 
-### The playground: the three games, in a browser
+## Playground
 
-The same `docker compose up` starts the playground on <http://localhost:8080>: snake, dino and
-tetris, each playing itself by calling `POST /v1/systemone` once per decision.
-
-| Game | What it asks |
-|---|---|
-| `/snake` | one `choice` over four moves, from a flood-fill safety analysis |
-| `/dino` | one `choice` over jump/duck/run, from a physics planner's safe/best marks |
-| `/tetris` | a `choice` over five placements, a `choice` strategy, a `score` stack health, and a `noul` fit |
-
-"How many placements?" is a capacity question, not a taste one. Laya charges a whole question
-against `head_max_len` and refuses an over-budget one instead of truncating it, so the page asks
-with the number that fits the *smallest* budget a checkpoint can fall back to. Measured through
-the engine's own `measure()`: the placement question is 178 tokens at five options and the whole
-request is 415 of a 512-token `state + question` budget, against a fallback of 512/192. Six
-options would be about 207 and get a 422. The page drops to its own heuristic if an engine still
-says no, which is what the `sim` badge means.
-
-To re-measure after changing a page's questions, you do not need a tokenizer: the engine refuses
-an over-budget question with the number in it — `Question 'placement' is about N tokens, over
-this model's limit of M per question` — and a successful response reports the same figures under
-`usage.input_tokens` and the `decis` namespace. Send the page's own payload and read it off.
-
-The service is a proxy, not a client: the browser calls `/v1/systemone` on the playground's own
-origin, and the playground attaches `DECIS_API_KEY` and forwards it. That is why the pages never
-hold a key — and why **anyone who can reach the playground's port can use the model**. It is the
-same decision as publishing the engine's port, without even the token prompt. The default
-publishes it on every interface, like the engines; `.env.example` shows the loopback form
-(`DECIS_PLAYGROUND_HOST_PORT=127.0.0.1:8080`).
-
-It needs no configuration to find the engine. It asks `/readyz` on
-`http://laya-multilingual:8000`, `http://kev-0.8b:8000` and `http://host.docker.internal:8000`
-in that order, and connects to the first that answers — so the same service works under
-`--profile kev-0.8b` and next to a `decis serve` running on the host. While the engine is still
-loading, the playground's own `/readyz` reports `searching` and the games say so instead of
-failing. Set `DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip the search.
-
-The proxy also rewrites `model` to the id the engine reported at `/readyz`, so the pages can ask
-for `jev-latest` and still work under either profile without `DECIS_ACCEPT_FOREIGN_DEFAULTS`.
-
-The four pages share one stylesheet (`playground/web/theme.css`) and one i18n mechanism
-(`playground/web/i18n.js`); each page carries its own strings and its own layout, and no page
-restates the palette. That keeps a change to the design — or a missing translation — from being
-a change in four places.
-
-The interface is bilingual, English and Simplified Chinese. The language comes from
-`navigator.languages` unless `?lang=zh` says otherwise, the switch in the app bar overrides it,
-and the choice is remembered in `localStorage`. **Only the interface is translated**: the
-`state`, `instructions` and `criteria` sent to the model stay English, because that is the
-language the prompts are written in and because the token budget these pages were sized against
-is the budget of those exact strings. Where a page shows a value it also sends -- an option
-name, a placement id -- the label around it may be localised, but the value on the wire is not.
-
-Building it is one Dockerfile and no Python dependencies:
-
-```bash
-docker build -f playground/Dockerfile -t decis-playground .
-docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
-  -e DECIS_PLAYGROUND_CANDIDATES=http://host.docker.internal:8000 decis-playground
-```
-
-On CPU the games are slower than the reference GPU deployment, and each one paces itself around
-the latency it measures. Dino and tetris show a `sim` badge when they fall back to their local
-heuristic — that means the API refused or could not be reached, not that the model moved.
-
-To build an image yourself:
-
-```bash
-docker build -f docker/Dockerfile \
-  --build-arg DECIS_EXTRAS=laya \
-  --build-arg DECIS_ENGINE=laya-multilingual \
-  --build-arg DECIS_PREDOWNLOAD=laya-multilingual \
-  -t decis:laya-multilingual .
-```
-
-The image installs no engine extra unless you ask for one, so a bare `docker build` produces an
-API-only image: it starts and answers `/healthz` and `/v1/models`, but `/readyz` stays 503 until an
-engine's dependencies and weights are present. Leaving out `DECIS_PREDOWNLOAD` gives the weightless
-variant described above.
-
-On a network that needs a proxy, pass it to the *build* as well — `env_file` only reaches
-containers, and Docker forwards neither `.env` nor your shell's `HTTP_PROXY` into a `RUN`, so the
-weight download fails with `Network is unreachable` while the dependency install may still succeed:
-
-```bash
-docker compose build --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
-  --build-arg NO_PROXY="$NO_PROXY"
-```
-
-The container runs as a non-root user, needs no external services — no Redis, no Postgres, no Celery —
-and refuses to start on a public address with no token configured.
-
-## Primitives
-
-Three question types, mixable in one request, evaluated in parallel against the same state:
-
-| Type | Ask | Returns |
-|---|---|---|
-| `choice` | pick one of a named set | `choice`, `probabilities`, `confidence` |
-| `score` | rate on an ordered rubric | `score` (expected level), `legend`, `probabilities`, `confidence` |
-| `noul` | is this true? | `noul` — calibrated P(true), 0–1 |
+`docker compose up` also starts three browser games at <http://localhost:8080> — snake, dino
+and tetris, each playing itself with one real `/v1/systemone` call per decision. The
+playground holds the API key server-side, so the pages never see it, and it finds the engine
+by itself. See [Playground](docs/playground.md), including the projects the games are
+adapted from.
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
-| [`examples/`](examples/README.md) | Runnable examples: raw `curl` and the official SDK. Every command is executed by CI |
-| [`docs/api-compatibility.md`](docs/api-compatibility.md) | The exact wire contract, with an evidence level per claim and every known deviation |
-| [`docs/design.md`](docs/design.md) | Architecture, the engine abstraction, batching, packaging, roadmap |
-| [`docs/design-review.md`](docs/design-review.md) | A self-audit of this design: defects found and fixed, methodology limits, what is still unverified |
-| [`docs/feasibility.md`](docs/feasibility.md) | Investigation results, measured numbers, risk register |
-| [`docs/contract/`](docs/contract/) | The official OpenAPI snapshot, plus the raw record of what the live API actually returns |
-| [`AGENTS.md`](AGENTS.md) | Engineering contract: canonical homes, invariants, banned patterns |
+| [Getting started](docs/getting-started.md) | Clone to first answer, readiness, CLI |
+| [API reference](docs/api.md) | Endpoints, schemas, primitives, error codes, limits |
+| [API schemas](docs/schema/) | Generated JSON Schema and the server's OpenAPI document |
+| [Configuration](docs/configuration.md) | Every `DECIS_*` variable, auth, model paths, dtype |
+| [Engines](docs/engines.md) | What each engine is, its limits, how to add one |
+| [Deployment](docs/deployment.md) | Docker, Compose, `make`, Kubernetes |
+| [Performance](docs/performance.md) | Measured latency, memory, dtype and batching results |
+| [Playground](docs/playground.md) | The three games, the proxy, and credits |
+| [Wire contract](docs/api-compatibility.md) | The exact jev contract, with an evidence level per claim |
+| [Design](docs/design.md) | Architecture, the engine abstraction, packaging |
+| [Design review](docs/design-review.md) | A self-audit: defects found, methodology limits, what is unverified |
+| [Feasibility](docs/feasibility.md) | Investigation results and the risk register |
+| [`examples/`](examples/README.md) | Runnable `curl` and official-SDK examples, executed by CI |
+| [AGENTS.md](AGENTS.md) | Engineering contract for contributors and agents |
 
-If you read only one document before contributing, read the design review. It is where the gaps are
-written down instead of hidden.
+If you read one document before contributing, read the design review: it is the list of
+defects found and questions still open.
+
+The wire contract, the design, its self-audit and the feasibility study are written in
+Chinese — that is the language they were researched and reviewed in. The contract itself is
+not locked in prose: [`docs/schema/`](docs/schema/) is generated from `src/decis/schema.py`
+and checked in CI, and [API reference](docs/api.md) is the English view of it.
 
 ## Relationship to other projects
 
-Decis does not train models. It serves them, and it tries to give credit rather than duplicate work.
+Decis does not train models. It serves them, and it gives credit rather than duplicating
+work.
 
-- **[Jev](https://docs.typesafe.ai/introduction)** (TypeSafe AI) — the closed model whose API this project targets. Decis reimplements the *interface*, not the model.
-- **[kev](https://github.com/jaredpalmer/kev)** (Jared Palmer) — a Jev-style decision model built on Qwen3.5, and already a TypeSafe-compatible server for its own weights. Decis reuses kev's inference kernel (vendor-pinned, Apache-2.0, attributed in `NOTICE`) and generalises the serving layer to many engines.
-- **[Laya](https://huggingface.co/convaiinnovations/laya)** (Convai Innovations) — Apache-2.0, multilingual, non-autoregressive, one forward pass. Decis uses the official `laya` package as an engine.
-- **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)** — the multi-model container build pattern Decis follows (one Dockerfile with a build arg, GitHub Actions matrix pushing by digest, then `imagetools create`).
-- **[djev-run](https://github.com/taeold/djev-run)** (Daniel Lee) — the Snake, Dino and Tetris pages in `playground/web/` are adapted from it. Decis changed their endpoint to the playground's own origin (so the API key stays server-side), removed the borrowed latency baselines, cut Tetris from sixteen verbose options to five terse ones so it fits the default engine's per-question token budget, and restyled and translated the interface (the text sent to the model is untouched). Attribution is in `NOTICE`; the games' physics and planner code comes from the projects that repository credits.
+- **[Jev](https://docs.typesafe.ai/introduction)** (TypeSafe AI) — the closed model whose
+  API this project targets. Decis reimplements the *interface*, not the model.
+- **[kev](https://github.com/jaredpalmer/kev)** (Jared Palmer) — a Jev-style decision model
+  built on Qwen3.5. Decis reuses kev's inference kernel (vendor-pinned, Apache-2.0,
+  attributed in [`NOTICE`](NOTICE)) and generalises the serving layer to many engines.
+- **[Laya](https://huggingface.co/convaiinnovations/laya)** (Convai Innovations) —
+  Apache-2.0, multilingual, one forward pass. Decis uses the official `laya` package.
+- **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)** — the multi-model container build
+  pattern Decis follows.
+- **[djev-run](https://github.com/taeold/djev-run)** (Daniel Lee) — the playground's games
+  are adapted from it; see [Playground](docs/playground.md#credits).
 
-## Development
+## Contributing
+
+Contributions are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the development
+setup, the two test environments, and the pull-request rules; [`AGENTS.md`](AGENTS.md) is
+the normative engineering contract — canonical homes, invariants and banned patterns — and
+applies to human and automated contributors alike.
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                        # 514 tests, ~25 s, no weights, no network
-uv run pytest -m weights                # 27 tests that load the real weights (Laya + kev)
+uv run pytest -q            # the weight-free suite: what CI runs
 uv run ruff check && uv run ruff format --check
-uv run decis serve --host 127.0.0.1     # loopback may run without a token
 ```
 
-The test suite is organised by the evidence it provides, following
-[`docs/api-compatibility.md §8`](docs/api-compatibility.md):
-
-| Layer | What it proves | Where |
-|---|---|---|
-| L0 | Our models still match the vendored official OpenAPI snapshot | [`tests/test_contract_openapi.py`](tests/test_contract_openapi.py) |
-| L1/L2 | Response shape and every invariant in `AGENTS.md §3` | [`tests/test_contract_shape.py`](tests/test_contract_shape.py) |
-| L3b | The error contract: 401 vs 403, auth before validation, request ids | [`tests/test_contract_errors.py`](tests/test_contract_errors.py) |
-| L4 | **The real `typesafe-sdk` over a real socket** — the only test that proves compatibility | [`tests/test_contract_sdk.py`](tests/test_contract_sdk.py) |
-| — | Readiness, cold start, shutdown | [`tests/test_readiness.py`](tests/test_readiness.py) |
-| — | The canonical-home and layering rules, enforced by parsing the AST | [`tests/test_conventions.py`](tests/test_conventions.py) |
-
-Before changing anything in `docs/api-compatibility.md`, run the differential check against the live API
-— no offline test can detect the live server disagreeing with its own OpenAPI:
-
-```bash
-TYPESAFE_LIVE_API_KEY=<key> uv run pytest tests/test_contract_sdk.py -m network
-```
+Security issues should go through [`SECURITY.md`](SECURITY.md), not a public issue.
 
 ## License
 

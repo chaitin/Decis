@@ -1,0 +1,131 @@
+# Playground
+
+**English** · [简体中文](playground.zh-CN.md)
+
+[Documentation index](../README.md#documentation) · [Deployment](deployment.md) · [API](api.md)
+
+The playground is three small browser games that play themselves by calling a live engine.
+Every move is a real `POST /v1/systemone` request, and the probability bars are the model's
+actual answers, so you can watch a decision model play a game instead of reading JSON.
+
+`docker compose up` starts it next to the engine at <http://localhost:8080>.
+
+| Page | What it asks per decision |
+|---|---|
+| `/snake` | One `choice` over four moves, from a flood-fill safety analysis |
+| `/dino` | One `choice` over jump/duck/run, from a physics planner's safe/best marks |
+| `/tetris` | A `choice` over five placements, a `choice` strategy, a `score` stack health, and a `noul` fit |
+
+On a CPU-only host the games are slower than the original GPU deployment and each paces
+itself around the latency it measures. Dino and tetris show a `sim` badge when they fall
+back to a local heuristic — that means the API refused or could not be reached, not that the
+model moved.
+
+## How it is wired
+
+The playground is a proxy, not a client:
+
+```
+browser ──POST /v1/systemone──▶ playground ──POST /v1/systemone──▶ engine
+        (same origin, no key)              (attaches DECIS_API_KEY)
+```
+
+The browser never holds the API key. It needs none: it sends to the playground's own origin
+and the playground attaches the token server-side. Two consequences follow, and both are
+deliberate:
+
+- **Anyone who can reach the playground's port can use the model.** Publishing it is the
+  same decision as publishing the engine's port, without even a token prompt. The default
+  binds every interface; `DECIS_PLAYGROUND_HOST_PORT=127.0.0.1:8080` keeps it local.
+- **The playground's port is the model's port.** The playground rewrites the request's
+  `model` to the id the engine reported at `/readyz`, so the pages can ask for `jev-latest`
+  and work under either engine profile.
+
+### Finding the engine
+
+The playground needs no configuration to find an engine. It asks `/readyz` on a list of
+candidates and connects to the first that answers:
+
+1. `http://laya-multilingual:8000`
+2. `http://kev-0.8b:8000`
+3. `http://host.docker.internal:8000`
+
+So the same service works under `--profile kev-0.8b` and next to a `decis serve` running on
+the host. While the engine is still loading, the playground reports `searching` and the
+games say so instead of failing. Set `DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip
+the search, or `DECIS_PLAYGROUND_CANDIDATES` to replace the list.
+
+It does not `depends_on` an engine: a Compose profile that is not active does not resolve
+the service name at all, so a dependency on a stopped engine would fail to start.
+
+## Interface
+
+The four pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css))
+and one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)). Each page
+carries its own strings and layout; no page restates the palette.
+
+The interface is bilingual, English and Simplified Chinese. The language comes from
+`navigator.languages` unless `?lang=zh` says otherwise; the switch in the app bar overrides
+it, and the choice is remembered in `localStorage`.
+
+**Only the interface is translated.** The `state`, `instructions` and `criteria` sent to the
+model stay English, because that is the language the prompts are written in and because the
+token budget these pages were sized against is the budget of those exact strings. Where a
+page shows a value it also sends — an option name, a placement id — the label around it may
+be localised, but the value on the wire is not.
+
+## The five-placement decision
+
+"How many placements should Tetris consider?" is a capacity question, not a taste one. Laya
+charges a whole question against its `head_max_len` and rejects an over-budget one instead
+of truncating it, so the page asks with the number that fits the smallest budget a
+checkpoint can fall back to.
+
+Measured through the engine's own `measure()`: the placement question is **178 tokens at
+five options** and the whole request is **415 of a 512-token** `state + question` budget,
+against a fallback of 512/192. Six options would be about 207 and would get a 422. The page
+drops to its own heuristic if an engine still says no — which is what the `sim` badge means.
+
+## Credits
+
+The games are adapted from open-source projects, and the API and inference are Decis's:
+
+| | |
+|---|---|
+| [taeold/djev-run](https://github.com/taeold/djev-run) | The Snake, Dino and Tetris pages. Decis changed their endpoint to the playground's own origin, removed the borrowed latency baselines, cut Tetris from sixteen verbose options to five terse ones to fit the default engine's token budget, and restyled and translated the interface. The games' physics and planner code comes from the projects that repository credits. |
+| [trungdq88/jev-tetris](https://github.com/trungdq88/jev-tetris) | The Tetris page also credits it. |
+| [kingfs/Decis](https://github.com/kingfs/Decis) | The server: the System One wire format, the engine abstraction, model inference and token accounting. The playground renders the games and proxies their requests; it owns none of the decision logic. |
+
+Attribution is recorded in [`NOTICE`](../NOTICE).
+
+## Build and run it yourself
+
+The playground's image has no Python dependencies and its Dockerfile has no `RUN`, so it
+builds in seconds:
+
+```bash
+docker build -f playground/Dockerfile -t decis-playground .
+docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
+  --add-host=host.docker.internal:host-gateway \
+  -e DECIS_PLAYGROUND_CANDIDATES=http://host.docker.internal:8000 decis-playground
+```
+
+`--add-host` is what makes `host.docker.internal` resolve on Linux; Docker Desktop resolves
+it on its own. `DECIS_PLAYGROUND_UPSTREAM` names one engine to try first (it is still probed,
+not trusted). Without it, the proxy tries both engine container names, `host.docker.internal`
+and `127.0.0.1`; the first that answers `/readyz` with 200 wins.
+
+Or through Compose, beside an engine that is already running anywhere:
+
+```bash
+make build-playground
+make up-playground
+```
+
+## Tests
+
+[`tests/test_playground.py`](../tests/test_playground.py) stands up the playground and a
+fake engine on loopback and checks the proxy without importing `decis`, because the
+playground's image does not contain it. It asserts the pages are self-contained, that every
+string is translated, that the proxied request carries the playground's token and the
+rewritten model id, and that the repository URL has one home.

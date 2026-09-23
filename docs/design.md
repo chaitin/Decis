@@ -732,9 +732,13 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 
 ```
 Decis/
-├── README.md                     # ✅ 面向人类：项目价值、快速开始、文档索引（英文，默认）
+├── README.md                     # ✅ 面向人类：项目价值、快速开始、引擎表、性能头条、文档索引（英文，默认）
 ├── README.zh-CN.md               # ✅ 中文 README（与英文互链切换）
 ├── AGENTS.md                     # ✅ 面向 AI agent：约束、唯一事实来源、命令、禁区
+├── CONTRIBUTING.md               # ✅ 开发环境、两套测试环境、PR 规则
+├── SECURITY.md                   # ✅ 威胁模型、报告渠道、加固清单
+├── CODE_OF_CONDUCT.md            # ✅ Contributor Covenant 2.1
+├── CHANGELOG.md                  # ✅ Keep a Changelog
 ├── LICENSE                       # ✅ Apache-2.0
 ├── NOTICE                        # ✅ 第三方署名（kev vendored 代码、Laya 等）
 ├── pyproject.toml                # ✅ uv / hatchling，extras: server,laya,kev,all
@@ -744,13 +748,27 @@ Decis/
 ├── docker/
 │   └── Dockerfile                # ✅ 单文件 + ARG DECIS_ENGINE / DECIS_EXTRAS / DECIS_PREDOWNLOAD
 ├── .github/workflows/
-│   ├── ci.yml                    # ✅ lint + 无权重测试 + report.py --check
+│   ├── ci.yml                    # ✅ lint + 无权重测试 + report.py --check + export.py --check
 │   └── docker-build.yml          # 🟡 test → plan → build(matrix) → merge → Docker Hub
 ├── docs/
-│   ├── api-compatibility.md      # ✅ jev 契约（唯一事实来源）
-│   ├── design.md                 # ✅ 本文
-│   ├── design-review.md          # ✅ 对本设计的自我审查：已知不足与改进项
-│   ├── feasibility.md            # ✅ 调查 + 可行性 + 实测 + 风险
+│   ├── api-compatibility.md      # ✅ jev 契约（唯一事实来源，中文）
+│   ├── design.md                 # ✅ 本文（中文）
+│   ├── design-review.md          # ✅ 对本设计的自我审查：已知不足与改进项（中文）
+│   ├── feasibility.md            # ✅ 调查 + 可行性 + 实测 + 风险（中文）
+│   ├── getting-started.md        # ✅ 面向用户的双语指南（每份都有 .zh-CN.md 孪生）
+│   ├── configuration.md          # ✅ 全部 DECIS_* 变量、认证、权重解析、精度
+│   ├── api.md                    # ✅ API 参考：端点、原语、错误码、容量上限
+│   ├── engines.md                # ✅ 引擎清单、容量表、新增引擎的步骤
+│   ├── deployment.md             # ✅ Docker / Compose / make / Kubernetes
+│   ├── playground.md             # ✅ 三个游戏、代理架构、第三方致谢
+│   ├── performance.md            # ✅ 延迟 / dtype / 批处理的实测结果（report.py 渲染）
+│   ├── schema/
+│   │   ├── export.py             # ✅ 由 src/decis/schema.py 生成下面这些文件（--check 进 CI）
+│   │   ├── systemone-request.schema.json   # ✅ 生成物，勿手改
+│   │   ├── systemone-response.schema.json  # ✅ 生成物，勿手改
+│   │   ├── models.schema.json              # ✅ 生成物，勿手改
+│   │   ├── errors.schema.json              # ✅ 生成物，勿手改
+│   │   └── openapi.json                    # ✅ 生成物：应用真正挂载的那份 OpenAPI
 │   └── contract/
 │       ├── typesafe-openapi-0.2.0.json   # ✅ 官方 OpenAPI 快照（L0 测试的基准）
 │       ├── observations-2026-09-22.md    # ✅ 线上实测记录（L 级证据的原始材料）
@@ -788,9 +806,15 @@ Decis/
 │   ├── test_auth.py              # ✅ 认证顺序、常数时间、拒绝不安全的默认启动
 │   ├── test_batch_invariance.py  # ✅ batch=1/8/32 的偏差与 argmax 稳定性（含负向对照）
 │   ├── test_benchmark_report.py  # ✅ 吃住 §8：文档表格必须与原始 JSON 一致
+│   ├── test_api_schema.py        # ✅ 吃住生成的 Schema：手改会被发现，OpenAPI 与运行中的应用一致
+│   ├── test_docs.py              # ✅ 双语指南成对、互链、相对链接可解析、两侧结构一致
 │   ├── test_conventions.py       # ✅ "唯一事实来源"的守卫（照抄 kev 的思路）
 │   ├── test_engines_shape.py     # ✅
 │   └── test_upstream_contract.py # ✅ laya / kev 上游 API 未变
+├── playground/
+│   ├── Dockerfile                # ✅ 无 RUN：纯标准库镜像，秒级构建
+│   ├── server.py                 # ✅ 静态文件 + 只转发 /v1/systemone 的代理（token 只在服务端）
+│   └── web/                      # ✅ index + snake/dino/tetris；theme.css 与 i18n.js 是共享的唯一实现
 ├── benchmarks/
 │   ├── run.py                    # ✅ 逐样本 JSON + 输入 sha256 + 全部维度
 │   ├── report.py                 # ✅ 由 JSON 生成 docs 与 README 的表格（--check 进 CI）

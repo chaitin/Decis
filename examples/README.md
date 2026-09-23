@@ -5,7 +5,7 @@ Runnable examples, in the order a newcomer should read them.
 | File | What it shows |
 |---|---|
 | [`curl.md`](curl.md) | Raw HTTP. Every endpoint, all three question primitives, and the error contract — one `curl` command per example, each with the status code it returns. |
-| [`python_sdk.py`](python_sdk.py) | The **official** `typesafe-sdk`, unmodified, pointed at Decis instead of `api.typesafe.ai`. This is the whole compatibility argument in 40 lines. |
+| [`python_sdk.py`](python_sdk.py) | The **official** `typesafe-sdk`, unmodified, pointed at Decis instead of `api.typesafe.ai`. This is the compatibility argument, executable. |
 
 ## Before you start
 
@@ -42,7 +42,9 @@ commands — or read the evidence-level table in
 
 ## Where to go next
 
-- [`../README.md`](../README.md) — install, deploy, and the measured performance table.
+- [`../README.md`](../README.md) — what Decis is, the engines, and the measured latency table.
+- [`../docs/getting-started.md`](../docs/getting-started.md) — install, first request, readiness.
+- [`../docs/deployment.md`](../docs/deployment.md) — Docker, Compose, Kubernetes.
 - [`../docs/api-compatibility.md`](../docs/api-compatibility.md) — the wire contract, with
   an evidence level on every claim.
 - [`../docs/design.md`](../docs/design.md) — why the server is built the way it is.

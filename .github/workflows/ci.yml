@@ -55,6 +55,12 @@ jobs:
         # checker itself, including that a hand-edited digit is detected.
         run: uv run python benchmarks/report.py --check
 
+      - name: The checked-in API schemas match the models
+        # docs/schema/*.json is generated from src/decis/schema.py, and openapi.json
+        # from the app `create_app()` actually builds. A hand-edited schema, or a
+        # field added to a model without regenerating, fails here.
+        run: uv run python docs/schema/export.py --check
+
       - name: The server starts with a real HTTP client
         # No engine extra is installed here, so no decision request can be answered --
         # `tests/test_examples.py` covers that over a real socket, on the weight-free

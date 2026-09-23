@@ -1,0 +1,266 @@
+{
+  "$defs": {
+    "ChoiceQuestion": {
+      "properties": {
+        "type": {
+          "const": "choice",
+          "title": "Type",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "criteria": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Criteria",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "criteria"
+      ],
+      "title": "ChoiceQuestion",
+      "type": "object"
+    },
+    "NoulCriteria": {
+      "description": "What counts as yes and what counts as no. Both halves are optional.",
+      "properties": {
+        "true": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "True"
+        },
+        "false": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "False"
+        }
+      },
+      "title": "NoulCriteria",
+      "type": "object"
+    },
+    "NoulQuestion": {
+      "properties": {
+        "type": {
+          "const": "noul",
+          "title": "Type",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NoulCriteria"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "NoulQuestion",
+      "type": "object"
+    },
+    "ScoreQuestion": {
+      "properties": {
+        "type": {
+          "const": "score",
+          "title": "Type",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "criteria": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ]
+          },
+          "minItems": 1,
+          "title": "Criteria",
+          "type": "array"
+        }
+      },
+      "required": [
+        "type",
+        "criteria"
+      ],
+      "title": "ScoreQuestion",
+      "type": "object"
+    }
+  },
+  "description": "`POST /v1/systemone` request body.",
+  "properties": {
+    "state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "items": {},
+          "type": "array"
+        }
+      ],
+      "title": "State"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "questions": {
+      "additionalProperties": {
+        "discriminator": {
+          "mapping": {
+            "choice": "#/$defs/ChoiceQuestion",
+            "noul": "#/$defs/NoulQuestion",
+            "score": "#/$defs/ScoreQuestion"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/NoulQuestion"
+          },
+          {
+            "$ref": "#/$defs/ChoiceQuestion"
+          },
+          {
+            "$ref": "#/$defs/ScoreQuestion"
+          }
+        ]
+      },
+      "minProperties": 1,
+      "title": "Questions",
+      "type": "object"
+    }
+  },
+  "required": [
+    "state",
+    "model",
+    "questions"
+  ],
+  "title": "SystemOneRequest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kingfs/Decis/docs/schema/systemone-request.schema.json"
+}

@@ -230,9 +230,24 @@ INLINE_COMMAND = re.compile(r"`make ([a-z][a-z0-9-]*)")
 BLOCK_COMMAND = re.compile(r"^\s*(?:\$ |# )?make ([a-z][a-z0-9-]*)", re.MULTILINE)
 
 
-@pytest.mark.parametrize("readme", [README, README_ZH, AGENTS], ids=lambda path: path.name)
+@pytest.mark.parametrize(
+    "readme",
+    [
+        README,
+        README_ZH,
+        AGENTS,
+        *sorted((ROOT / "docs").glob("*.md")),
+        *sorted((ROOT / "docs" / "schema").glob("*.md")),
+    ],
+    ids=lambda path: path.relative_to(ROOT).as_posix(),
+)
 def test_the_documented_make_commands_are_real_targets(readme: Path) -> None:
-    """A `make something` in the docs that is not a target is a command that cannot run."""
+    """A `make something` in the docs that is not a target is a command that cannot run.
+
+    Every markdown file a reader might follow is scanned, not just the READMEs: the guides
+    are where the deployment commands now live, so a target renamed in the Makefile and
+    missed in `docs/deployment.md` would otherwise ship.
+    """
     known = set(documented())
     text = readme.read_text(encoding="utf-8")
     for command in INLINE_COMMAND.findall(text) + BLOCK_COMMAND.findall(text):

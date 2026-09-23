@@ -1,0 +1,247 @@
+{
+  "$defs": {
+    "ChoiceAnswer": {
+      "properties": {
+        "type": {
+          "const": "choice",
+          "title": "Type",
+          "type": "string"
+        },
+        "choice": {
+          "title": "Choice",
+          "type": "string"
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "probabilities": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Probabilities",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "choice",
+        "confidence",
+        "probabilities"
+      ],
+      "title": "ChoiceAnswer",
+      "type": "object"
+    },
+    "DecisExtensions": {
+      "description": "Everything Decis adds beyond the contract.\n\nKept in one namespace so that `extra=\"ignore\"` on the official SDK's models\nswallows all of it, and so that nothing here can ever be mistaken for a\ncontract field.",
+      "properties": {
+        "engine": {
+          "title": "Engine",
+          "type": "string"
+        },
+        "engine_version": {
+          "title": "Engine Version",
+          "type": "string"
+        },
+        "device": {
+          "title": "Device",
+          "type": "string"
+        },
+        "dtype": {
+          "title": "Dtype",
+          "type": "string"
+        },
+        "latency_ms": {
+          "title": "Latency Ms",
+          "type": "number"
+        },
+        "batch_size": {
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "requested_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Model"
+        },
+        "native_confidence": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Confidence"
+        }
+      },
+      "required": [
+        "engine",
+        "engine_version",
+        "device",
+        "dtype",
+        "latency_ms",
+        "batch_size"
+      ],
+      "title": "DecisExtensions",
+      "type": "object"
+    },
+    "NoulAnswer": {
+      "description": "A scalar. No `confidence`, no `probabilities` -- matching the wire contract.",
+      "properties": {
+        "type": {
+          "const": "noul",
+          "title": "Type",
+          "type": "string"
+        },
+        "noul": {
+          "title": "Noul",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "noul"
+      ],
+      "title": "NoulAnswer",
+      "type": "object"
+    },
+    "ScoreAnswer": {
+      "properties": {
+        "type": {
+          "const": "score",
+          "title": "Type",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "legend": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ]
+          },
+          "title": "Legend",
+          "type": "object"
+        },
+        "probabilities": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Probabilities",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "score",
+        "confidence",
+        "legend",
+        "probabilities"
+      ],
+      "title": "ScoreAnswer",
+      "type": "object"
+    },
+    "Usage": {
+      "description": "Both fields are required integers. They are a billing convention, not a\ngeneration length: these models do not generate text (see docs/design.md §4.3).",
+      "properties": {
+        "input_tokens": {
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "title": "Usage",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "answers": {
+      "additionalProperties": {
+        "discriminator": {
+          "mapping": {
+            "choice": "#/$defs/ChoiceAnswer",
+            "noul": "#/$defs/NoulAnswer",
+            "score": "#/$defs/ScoreAnswer"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/NoulAnswer"
+          },
+          {
+            "$ref": "#/$defs/ChoiceAnswer"
+          },
+          {
+            "$ref": "#/$defs/ScoreAnswer"
+          }
+        ]
+      },
+      "title": "Answers",
+      "type": "object"
+    },
+    "usage": {
+      "$ref": "#/$defs/Usage"
+    },
+    "decis": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DecisExtensions"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "model",
+    "answers",
+    "usage"
+  ],
+  "title": "SystemOneResponse",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kingfs/Decis/docs/schema/systemone-response.schema.json"
+}
