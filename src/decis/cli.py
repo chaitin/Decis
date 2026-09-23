@@ -58,7 +58,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     download = sub.add_parser("download", help="fetch model weights ahead of time")
     download.add_argument("--engine", required=True, help="engine id whose weights to fetch")
-    download.add_argument("--dest", default=None, help="directory to write to (default: DECIS_MODEL_DIR)")
+    download.add_argument(
+        "--dest",
+        default=None,
+        help="model directory; weights land in <dest>/<engine id>/ (default: DECIS_MODEL_DIR, else the Hugging Face cache)",
+    )
     download.add_argument("--env-file", default=None)
     download.set_defaults(handler=_download)
 
@@ -275,13 +279,14 @@ def _download(args: argparse.Namespace) -> int:
 
     Deliberately independent of torch: the whole point of pre-downloading is to do it
     where the model cannot or should not be loaded -- on a build host, or before a
-    container starts. The destination is resolved by the same `paths.resolve` the
-    loader uses, so this cannot fetch somewhere the server will not later read.
+    container starts. Both destinations are ones `paths.resolve` reads: an explicit
+    model directory (`<dir>/<engine id>/`) or, with none configured, the Hub cache.
+    So this cannot fetch somewhere the server will not later look.
     """
     from pathlib import Path
 
     from .engines.registry import canonical
-    from .paths import describe_local, download_arguments, filesystem_has_room, human_bytes, resolve
+    from .paths import checkpoint_root, describe_local, download_arguments, filesystem_has_room, human_bytes, resolve
 
     settings = _load(args)
     engine_id = canonical(args.engine) or args.engine
@@ -304,14 +309,20 @@ def _download(args: argparse.Namespace) -> int:
         print(f"error: {engine_id} has no published weights.", file=sys.stderr)
         return _EXIT_CONFIG_ERROR
 
-    destination = Path(args.dest) if args.dest else (settings.model_dir or Path("models"))
-    configured = _with(settings, model_dir=destination)
+    # Two destinations, and the loader reads back both:
+    #
+    #   * a model directory (`--dest`, else `DECIS_MODEL_DIR`) -> `<dir>/<engine id>/`,
+    #     which is what a mounted volume serves and what an offline image bakes;
+    #   * neither configured -> the Hugging Face cache, which is where `serve` looks
+    #     when no model directory is set. That is the default because it is the only
+    #     destination the server finds again without being told where to look.
+    base = Path(args.dest) if args.dest else settings.model_dir
+    configured = _with(settings, model_dir=base) if base is not None else settings
 
     existing = resolve(spec, configured)
     if existing.is_local:
         print(f"{engine_id}: already present at {existing.path} ({describe_local(existing.path)})")
         return _download_bases(spec)
-
     if not has_module("huggingface_hub"):
         print(
             "error: `huggingface_hub` is not installed. It arrives with any engine extra:\n"
@@ -320,16 +331,36 @@ def _download(args: argparse.Namespace) -> int:
         )
         return _EXIT_CONFIG_ERROR
 
-    destination.mkdir(parents=True, exist_ok=True)
     expected = spec.expected_bytes or 0
+    from huggingface_hub import snapshot_download
+
+    if base is None:
+        print(f"{engine_id}: downloading to the Hugging Face cache ({human_bytes(expected)}) ...")
+        cached = Path(snapshot_download(**download_arguments(spec)))  # type: ignore[arg-type]
+        if checkpoint_root(cached, spec) is None:
+            print(
+                f"error: download finished but {cached} still has no usable checkpoint. "
+                f"Expected to find {spec.marker} there.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{engine_id}: ready in the cache at {cached}")
+        return _download_bases(spec)
+
+    # `snapshot_download(local_dir=...)` replicates the *repository's* own layout, so the
+    # checkpoint keeps the subfolder it lives in upstream. Landing it under
+    # `<dir>/<engine id>/` is what makes `paths.resolve` -- which looks under
+    # `<DECIS_MODEL_DIR>/<engine id>/` -- find it again. Writing it directly into `<dir>/`
+    # meant `decis download` failed on every destination it was ever given:
+    # docs/design-review.md §2-D17.
+    destination = base / spec.directory_name()
     if filesystem_has_room(destination, spec.expected_bytes) is False:
         print(
             f"warning: {destination} may not have room for {human_bytes(expected)}.",
             file=sys.stderr,
         )
 
-    from huggingface_hub import snapshot_download
-
+    destination.mkdir(parents=True, exist_ok=True)
     print(f"{engine_id}: downloading to {destination} ({human_bytes(expected)}) ...")
     snapshot_download(local_dir=str(destination), **download_arguments(spec))  # type: ignore[arg-type]
 

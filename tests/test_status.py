@@ -18,9 +18,10 @@ from pathlib import Path
 
 import pytest
 
+from decis.config import Settings
 from decis.engines.laya import WEIGHTS, LayaEngine
 from decis.engines.registry import SPECS, EngineStatus, create, status
-from decis.paths import WeightSpec, missing_requirements
+from decis.paths import WeightSpec, missing_requirements, resolve
 
 # --- the probe itself -----------------------------------------------------------
 
@@ -305,6 +306,70 @@ def test_download_accepts_an_alias(cli, tmp_path: Path, monkeypatch) -> None:
     #    asserted rather than stubbed away entirely.
     assert code != 0, f"claimed success with no checkpoint on disk: {output}"
     assert "no usable checkpoint" in output, output
+
+
+def test_the_downloader_writes_where_the_loader_looks(cli, tmp_path: Path, monkeypatch) -> None:
+    """The layout `snapshot_download(local_dir=...)` really produces must resolve.
+
+    `test_download_accepts_an_alias` asserts the arguments the downloader is handed and
+    stubs away the write, so it stayed green while `decis download` failed on every
+    destination a user could pass: the files landed in `<dir>/multilingual/` while
+    `paths.resolve` only looks under `<dir>/<engine id>/` (`design-review.md §2-D17`).
+    This test makes the stub write what the real downloader writes.
+    """
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+
+    def fake_snapshot(*args: object, **kwargs: object) -> str:
+        local = Path(str(kwargs["local_dir"]))
+        for pattern in kwargs["allow_patterns"]:  # type: ignore[union-attr]
+            target = local / str(pattern)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}")
+        return str(local)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    model_dir = tmp_path / "models"
+    code, output = cli("download", "--engine", "laya-multilingual", "--dest", str(model_dir), "--env-file", "")
+    if "`huggingface_hub` is not installed" in output:
+        pytest.skip("the `laya` extra is not installed here, so no download was attempted")
+
+    assert code == 0, output
+    assert (model_dir / "laya-multilingual" / "multilingual" / "rl_agent_config.json").is_file()
+    # The server has to agree, asked the same question it asks at load time.
+    source = resolve(WEIGHTS["laya-multilingual"], Settings(model_dir=model_dir, env_file=""))
+    assert source.is_local, source
+    assert source.path == model_dir / "laya-multilingual" / "multilingual"
+
+
+def test_downloading_with_no_model_directory_warms_the_hub_cache(cli, tmp_path: Path, monkeypatch) -> None:
+    """With no model directory the download goes to the cache, not to a `./models` nobody reads.
+
+    `serve` reads the Hub cache when `DECIS_MODEL_DIR` is unset, so that is the one
+    destination it finds again with no configuration -- which is the quickstart: download
+    once, then serve.
+    """
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    monkeypatch.delenv("DECIS_MODEL_DIR", raising=False)
+
+    calls: list[dict] = []
+
+    def fake_snapshot(*args: object, **kwargs: object) -> str:
+        calls.append(dict(kwargs))
+        snapshot = tmp_path / "hub" / "models--convaiinnovations--laya" / "snapshots" / "abc"
+        for pattern in kwargs["allow_patterns"]:  # type: ignore[union-attr]
+            target = snapshot / str(pattern)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("{}")
+        return str(snapshot)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
+    code, output = cli("download", "--engine", "laya-multilingual", "--env-file", "")
+    if not calls:
+        pytest.skip("the `laya` extra is not installed here, so no download was attempted")
+
+    assert "local_dir" not in calls[0], calls[0]
+    assert code == 0, output
+    assert "cache" in output
 
 
 def test_a_weighted_engine_without_huggingface_hub_says_so(cli, tmp_path: Path, monkeypatch) -> None:
