@@ -558,6 +558,14 @@ loader 能不能找到**。D14 是"表达式 vs 抄本"，这里是"请求参数
 **教训**：凡是"写到某处、之后从某处读"的两个模块，必须有一条测试把**真实的写**接上
 **真实的读**；把写 stub 掉再断言参数，等于把这条链子中间剪断还宣称它连着。
 
+**验证（2026-09-23）**：修好后的下载器在真容器里跑通——`PYTHONPATH` 挂载修好的源码、
+`DECIS_MODEL_DIR=/tmp/models-check`，`decis download --engine laya-multilingual` 打印
+`ready at /tmp/models-check/laya-multilingual/multilingual`、exit 0，
+`find` 得到 `<dir>/<engine id>/multilingual/rl_agent_config.json`。
+随后 commit `e8b6bd2` 构建的镜像在**空卷**上完整跑通：`docker compose up -d --wait` 里那个一次性
+预取把 646.8 MiB 下进卷、exit 0，服务端起容器后 `/v1/systemone` 正常作答（74 s 内 `--wait` 返回，
+引擎 101.0 s 后就绪）。
+
 ### D18（中，已修正）compose 的 `command:` 覆盖了镜像的 `CMD`，容器去找一个叫 `download` 的程序
 
 **发现方式**：第一次真的用发布镜像跑 `docker compose up -d --wait`（D17 修好之后的端到端验证），

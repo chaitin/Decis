@@ -1018,10 +1018,12 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 2. **`/metrics`**——本来的理由是"让攒批器真的触发了在生产里可观测"。攒批器若不做，这条的理由要重新论证；
    仍然值得有的是**单进程饱和度的可观测性**（队列深度、排队时间、`decis.batch_size` 分布），因为
    M5 说明这台机器的瓶颈是算力本身，不是攒批。
-3. ✅ **`docker-compose.yml`**——已实现，并且**已在本机用发布镜像跑通**（`docker compose up -d --wait` →
-   容器内 `/v1/systemone` 真的作答；容器内冷启动 **77.7 s / 86.1 s**，常驻 **2.2 GiB**；见 `AGENTS.md`
-   的镜像段落与 `design-review.md` §2-D18/§2-D19）。这个数字来自本机 CPU 实测，**不来自
-   `benchmarks/results/` 的 checked-in JSON**，所以按 §8 它不进 README 的性能表，只在状态记录里出现。
+3. ✅ **`docker-compose.yml`**——已实现，并且**已在空卷上用发布镜像（commit `e8b6bd2` 构建）跑通**：
+   一次性预取自己下载 646.8 MiB 权重并 exit 0，`docker compose up -d --wait` 74 s 返回，
+   容器内 `/v1/systemone` 真的作答；容器内引擎冷启动 **77.7 / 86.1 / 101.0 s**，常驻 **2.2–2.7 GiB**
+   （见 `AGENTS.md` 的镜像段落与 `design-review.md` §2-D17/§2-D18/§2-D19）。这些数字来自本机
+   aarch64 CPU 实测，**不来自 `benchmarks/results/` 的 checked-in JSON**，所以按 §8 它们不进 README
+   的性能表，只在状态记录里出现。
 4. **镜像的实测记录**——在真实 runner 上跑一次工作流，把镜像体积与容器内冷启动记进 `benchmarks/`。
 5. **GPU 上的同一组测量**（M6）——本结论**不适用于 GPU**，而 GPU 是 kev 的目标场景。
    在 GPU 上重跑 `batch_gain.py` 之前，不得对 GPU 的吞吐做任何承诺。

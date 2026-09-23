@@ -54,19 +54,19 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 正是 `paths.resolve` 读的位置，§2-D17），服务端用 `depends_on: service_completed_successfully` 等它；
 > 权重已在卷里时它是 no-op。`tests/test_compose.py` 不需要 docker daemon：image tag、profile、端口、
 > 卷、鉴权全部**从工作流 `plan` 脚本和 compose 文件本身读出来**比对，不抄常量。
-> **本地编排已实测**（2026-09-23，本机，`kingfs/decis:laya-multilingual`，权重已在卷里）：
-> `docker compose up -d --wait` 起单引擎成功，容器里的 `/v1/systemone` 真的作答（`noul` 标量、
-> `score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、`usage`、
+> **本地编排已实测**（2026-09-23，aarch64 本机，**空卷冷启动**，镜像由 commit `e8b6bd2` 构建，
+> 也就是 §2-D17/D18/D19 三个修复之后的镜像）：
+> 一次性的 `weights-laya-multilingual` 自己把 **646.8 MiB** 权重下进 `decis_models` 卷、
+> 用 `paths.resolve` 校验通过后打印 `ready at /models/laya-multilingual/multilingual` 并 exit 0；
+> `docker compose up -d --wait` 全程 **74 s** 返回，容器里的 `/v1/systemone` 真的作答
+> （`noul` 标量、`score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、`usage`、
 > `x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401**、
-> 加载期间 `/readyz` 报 503 都复现；容器内冷启动 **77.7 s**（另一次 86.1 s，CPU），
-> 常驻 **2.2 GiB**。**`--wait` 等的是 `/healthz` 不是 `/readyz`**：它返回时引擎可能还在加载，
+> 加载期间 `/readyz` 报 503 都复现。容器内引擎冷启动 **77.7 / 86.1 / 101.0 s**（三次，CPU，
+> 后一次是冷页缓存），常驻 **2.2–2.7 GiB**。
+> **`--wait` 等的是 `/healthz` 不是 `/readyz`**：它返回时引擎可能还在加载，
 > 要等服务真能作答得自己轮询 `/readyz`。
-> **未验证**：`-offline` 变体（§2-D17 修好前它在 `RUN decis download` 处必然构建失败，
-> 修好后还没重建过）、`v*` tag 触发的 release 路径、kev 的 compose 路径（只跑了 laya）。
-> **当前已发布的那版镜像早于 §2-D17 的修复**，它自带的 `decis download` 仍写到错目录，
-> 所以拿它跑预取会失败；修复后的代码已在真容器里验证（`decis download` 写出
-> `<dir>/<engine id>/` 并通过 `paths.resolve`），下一次 master 构建起这个坑消失。
-> 报镜像相关的结论时不要超出这个范围。
+> **未验证**：`-offline` 变体（§2-D17 修好后还没重建过）、`v*` tag 触发的 release 路径、
+> kev 的 compose 路径（只跑了 laya）。报镜像相关的结论时不要超出这个范围。
 
 ---
 
@@ -279,7 +279,7 @@ docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
 cp .env.example .env                      # COMPOSE_PROFILES=laya-multilingual
 docker compose up -d --wait               # 只起默认引擎；首次先把 647 MiB 权重下进 decis_models 卷
 #   `--wait` 只等到预取结束 + `/healthz` 通过；引擎加载期间 `/readyz` 仍报 "loading"
-#   （本机 CPU 容器内实测 77.7 s）。等服务真能作答：
+#   （本机 CPU 容器内实测 77.7-101.0 s）。等服务真能作答：
 #   until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 docker compose --profile kev-0.8b up -d   # 换一个引擎（宿主端口 8001）；这个 flag 会取代 .env 里的选择
 docker compose config -q                  # 只校验 schema / 插值 / profile，不拉镜像（CI 的 docker job 跑这个）
