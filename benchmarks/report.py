@@ -2,8 +2,10 @@
 
 `AGENTS.md §8` makes two demands that this program exists to satisfy:
 
-1. **No hand-written numbers.** Every figure in `README.md` and `docs/` that describes
-   performance is rendered here, from a checked-in raw file.
+1. **No hand-written numbers.** Every figure in `docs/` that describes performance is
+   rendered here, from a checked-in raw file. The READMEs print none of them: latency is
+   dominated by the machine, so a headline table there says more about the host than about
+   this project. The measured record lives in `docs/performance.md`.
 2. **Refuse to compare incomparable things.** Before rendering, every configuration
    inside a comparison group must be shown to have processed the *same input* --
    identical `input_sha256` and identical token count. If they differ, the honest
@@ -19,7 +21,7 @@ derives a row from one declared configuration, so that class of error cannot rec
 Usage:
 
     python benchmarks/report.py            # print the generated blocks
-    python benchmarks/report.py --write    # update README.md, docs/performance.md and docs/feasibility.md
+    python benchmarks/report.py --write    # update docs/performance.md and docs/feasibility.md
     python benchmarks/report.py --check    # exit 1 if the docs are out of date (CI)
 
 `--check` is what makes §8 enforceable: a PR that edits a number by hand fails CI.
@@ -613,21 +615,19 @@ def render_latency_table(
     *,
     chinese: bool = False,
     benchmark_prefix: str = "",
-    docs_prefix: str = "docs/",
 ) -> str:
-    """The headline latency table: the READMEs and `docs/performance.md` all carry it.
+    """The headline latency table, for the two `docs/performance*.md` pages.
 
     A row is derived from **one** configuration: the thread count torch picks by default
     on this host (one per vCPU), because that is what a reader gets without tuning
     anything. The alternative -- picking the best cell per column -- is exactly how the
     previous hand-written table ended up quoting two different thread counts in one row.
-    The Chinese README had the same defect, which is why this is generated into every file
-    that shows it instead of copied.
+    The Chinese page carried the same defect, which is why this is generated into every
+    file that shows it instead of copied.
 
-    The table appears both at the repository root and inside `docs/`, so the two relative
-    link bases are parameters: `benchmark_prefix` is `""` from the root and `"../"` from
-    `docs/`; `docs_prefix` is the reverse. Copying one file's block into the other is the
-    drift `AGENTS.md` §8 exists to prevent.
+    The table lives inside `docs/`, so both callers pass `benchmark_prefix="../"`; it stays
+    a parameter because the tests and the bare print mode render the block from the
+    repository root.
     """
     lines = [README_LATENCY_BEGIN, ""]
     if chinese:
@@ -659,17 +659,7 @@ def render_latency_table(
         )
 
     lines.append("")
-    # On the performance page itself the batching section is below; in a README it is a
-    # link. A self-link is not wrong, but it reads like a mistake, so the sentence changes
-    # with the file it lands in.
     if chinese:
-        if docs_prefix:
-            batching_ref = (
-                "跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见 "
-                f"[`docs/performance.zh-CN.md`]({docs_prefix}performance.zh-CN.md) 与 "
-            )
-        else:
-            batching_ref = "跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 "
         lines.append(
             f"由 [`benchmarks/report.py`]({benchmark_prefix}benchmarks/report.py) 从 "
             f"[`benchmarks/results/`]({benchmark_prefix}benchmarks/results/) 的原始 JSON 生成；"
@@ -678,8 +668,8 @@ def render_latency_table(
         lines.append("")
         lines.append(
             "**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。"
-            + batching_ref
-            + f"[`docs/design-review.md`]({docs_prefix}design-review.md) §4-M5）。"
+            "跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 "
+            "[`design-review.md`](design-review.md) §4-M5）。"
         )
     else:
         lines.append(
@@ -689,16 +679,11 @@ def render_latency_table(
             "single process, within-request batching only."
         )
         lines.append("")
-        batching_ref = (
-            f"throughput on CPU -- see [`docs/performance.md`]({docs_prefix}performance.md) and "
-            if docs_prefix
-            else "throughput on CPU -- see the cross-request batching section below and "
-        )
         lines.append(
             "**These are latencies, not throughput.** Every question in a row shares one `state`, which "
             "is the easy case. Cross-request batching was measured and does **not** raise "
-            + batching_ref
-            + f"[`docs/design-review.md §4-M5`]({docs_prefix}design-review.md)."
+            "throughput on CPU -- see the cross-request batching section below and "
+            "[`design-review.md §4-M5`](design-review.md)."
         )
     lines.append("")
     lines.append(README_LATENCY_END)
@@ -1314,27 +1299,22 @@ def targets(groups: list[Group], gaps: list[str]) -> list[tuple[Path, str | None
     """
     return [
         (ROOT / "docs" / "feasibility.md", MARKER_BEGIN, MARKER_END, render_measurements(groups, gaps)),
-        # The headline latency table stays in the READMEs -- it is the one number a reader
-        # deciding whether to try this needs. Everything that explains or qualifies it
-        # lives in `docs/performance.md`, which is where the dtype and batching blocks go.
-        (ROOT / "README.md", README_LATENCY_BEGIN, README_LATENCY_END, render_latency_table(groups)),
-        (
-            ROOT / "README.zh-CN.md",
-            README_LATENCY_BEGIN,
-            README_LATENCY_END,
-            render_latency_table(groups, chinese=True),
-        ),
+        # The latency table is generated into both performance pages and nowhere else. It
+        # used to be the READMEs' one headline number; it is not, because the figure is a
+        # property of the host as much as of this project, so a landing page that leads
+        # with it says more about the machine it was measured on than about Decis.
+        # `docs/performance.md` states the host and the method beside the numbers.
         (
             ROOT / "docs" / "performance.md",
             README_LATENCY_BEGIN,
             README_LATENCY_END,
-            render_latency_table(groups, benchmark_prefix="../", docs_prefix=""),
+            render_latency_table(groups, benchmark_prefix="../"),
         ),
         (
             ROOT / "docs" / "performance.zh-CN.md",
             README_LATENCY_BEGIN,
             README_LATENCY_END,
-            render_latency_table(groups, chinese=True, benchmark_prefix="../", docs_prefix=""),
+            render_latency_table(groups, chinese=True, benchmark_prefix="../"),
         ),
         (
             ROOT / "docs" / "performance.md",

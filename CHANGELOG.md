@@ -23,6 +23,12 @@ each engine will run.
   the hand-written performance numbers (`AGENTS.md §8` requires those to come from
   `benchmarks/results/`) and the field values, CLI output and error codes the code does not
   have are gone; what replaced them is shorter and traceable to a file and line.
+- **The READMEs lead with what the project is for, and print no measurements.** Three commands
+  bring up an engine and the playground; the four highlights are out of the box, a Jev-like
+  API, one published image per engine, and the three games. The latency table is gone,
+  because the figure is a property of the host — the same release answers in hundreds of
+  milliseconds on the machine it was measured on and several times faster on a laptop — so it
+  lives on `docs/performance.md`, beside the host description and the method.
 
 ### Removed
 

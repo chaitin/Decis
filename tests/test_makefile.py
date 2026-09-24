@@ -260,8 +260,16 @@ def test_the_documented_make_commands_are_real_targets(readme: Path) -> None:
         assert command in known, f"{readme.name} tells the reader to run `make {command}`"
 
 
-def test_the_readme_documents_the_workflow_the_targets_implement() -> None:
-    """The lines a reader needs: the target list, rebuild the pages, start what is here."""
-    text = README.read_text(encoding="utf-8")
-    documented_commands = set(INLINE_COMMAND.findall(text)) | set(BLOCK_COMMAND.findall(text))
-    assert {"help", "build-playground", "up-playground", "up"} <= documented_commands, sorted(documented_commands)
+def test_the_deployment_pages_document_the_workflow_the_targets_implement() -> None:
+    """The lines a reader needs: the target list, rebuild the pages, start what is here.
+
+    These commands lived in the README until the landing pages stopped carrying deployment
+    detail; the guard follows them to the pages that document them now.
+    """
+    for page in (ROOT / "docs" / "deployment.md", ROOT / "docs" / "deployment.zh-CN.md"):
+        text = page.read_text(encoding="utf-8")
+        documented_commands = set(INLINE_COMMAND.findall(text)) | set(BLOCK_COMMAND.findall(text))
+        assert {"help", "build-playground", "up-playground", "up"} <= documented_commands, (
+            page.name,
+            sorted(documented_commands),
+        )

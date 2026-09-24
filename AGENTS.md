@@ -310,7 +310,7 @@ docker build -f docker/Dockerfile \
 
 ```bash
 uv run decis bench --engine laya-multilingual --batch 1,3,10,30   # 采集，写 benchmarks/results/
-uv run python benchmarks/report.py --write   # 由原始 JSON 生成 README 与 docs 里的表
+uv run python benchmarks/report.py --write   # 由原始 JSON 生成 docs 里的表
 uv run python benchmarks/report.py --check   # CI 跑这个：手改过的数字会让它变红
 ```
 
@@ -336,11 +336,11 @@ uv run decis bench --engine laya-multilingual --cross-request --threads 24 --pro
 直接调 `batch_gain.py` 时这个除法要自己算，忘了就是在测线程超配。别加 `--items` 时改小它：
 item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值。
 
-`--check` 已在 CI 里，且**覆盖两个 README**。生成器在渲染前会断言同一组内各配置处理的是**同一个输入**
+`--check` 已在 CI 里，覆盖 `docs/performance{,.zh-CN}.md`、`docs/design-review.md`、`docs/feasibility.md` 与 `benchmarks/RESULTS.md`。生成器在渲染前会断言同一组内各配置处理的是**同一个输入**
 （`input_sha256` + token 数），不一致就拒绝生成；对攒批数据还会拒绝**没有正对照**的文件
 （测不出收益的 harness 无法区分"机制没用"和"测量坏了"）。它第一次运行就抓到了 §2-D12
 （README 曾把两个线程数的数字混进同一行）——**同一缺陷当时还留在 `README.zh-CN.md` 里**，
-因为那个文件靠手工抄表；现在两个 README 由同一个生成器写。没有 checked-in 原始 JSON 支撑的数字不许进文档。
+因为那个文件靠手工抄表；现在 README 一行性能数字都不印，这些表只生成到 `docs/` 里。没有 checked-in 原始 JSON 支撑的数字不许进文档。
 
 **两套测试各自都会漏东西，声称"测试通过"之前必须在两个环境里都跑过。**
 
@@ -365,6 +365,8 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 ## 8. 性能数字的纪律
 
 - **文档、README、PR 描述里的任何性能数字都必须来自 `benchmarks/results/` 里的 checked-in 原始 JSON**，由 `benchmarks/report.py` 生成。**禁止手写数字**，禁止引用单次跑的"感觉"。
+- **README 不打印任何性能数字。** 延迟强依赖硬件，落地页上的表说明的是测量那台机器，而不是 Decis；README 只链接 `docs/performance.md`。
+  守卫：`tests/test_benchmark_report.py::test_the_readmes_do_not_carry_performance_numbers`。
 - 报告生成前断言各对比配置处理的**输入 sha256 与 token 数完全一致**（照抄 laya-mlx 的做法）。
 - 报告性能时**必须同时给出**：引擎、设备、dtype、线程数/进程数、批大小、state 长度、问题数。缺任一维度的数字没有意义。
 - 不要把 GPU 数字和 CPU 数字放在同一张表里比较而不标注。

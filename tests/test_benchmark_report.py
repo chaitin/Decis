@@ -160,8 +160,8 @@ def test_a_hand_edited_number_is_detected() -> None:
     """
     groups = report.load_all()
     gaps = report.verify(groups)
-    readme = ROOT / "README.md"
-    original = readme.read_text(encoding="utf-8")
+    page = ROOT / "docs" / "performance.md"
+    original = page.read_text(encoding="utf-8")
 
     begin = report.README_LATENCY_BEGIN
     end = report.README_LATENCY_END
@@ -171,11 +171,11 @@ def test_a_hand_edited_number_is_detected() -> None:
     assert edited_block != block, "the fixture failed to modify the block"
 
     try:
-        readme.write_text(original.replace(block, edited_block), encoding="utf-8")
+        page.write_text(original.replace(block, edited_block), encoding="utf-8")
         assert report.stale(groups, gaps) != [], "a hand-edited table was not detected"
     finally:
-        readme.write_text(original, encoding="utf-8")
-    assert report.stale(groups, gaps) == [], "the test failed to restore README.md"
+        page.write_text(original, encoding="utf-8")
+    assert report.stale(groups, gaps) == [], "the test failed to restore docs/performance.md"
 
 
 def test_every_generated_block_has_markers_in_its_target() -> None:
@@ -237,7 +237,7 @@ def test_no_raw_results_at_all_is_an_error(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_generated_tables_quote_the_numbers_that_are_in_the_json(groups) -> None:
-    """Every latency the README shows must equal the raw file's value.
+    """Every latency the table shows must equal the raw file's value.
 
     A weaker version would check that *some* number appears; this checks the value the
     generator actually chose against the file it claims to have read.
@@ -254,7 +254,7 @@ def test_generated_tables_quote_the_numbers_that_are_in_the_json(groups) -> None
                 assert f"{config.p50_ms:,.0f} ms" in rendered
 
 
-def test_the_readme_row_uses_one_thread_count_for_both_columns(groups) -> None:
+def test_the_table_row_uses_one_thread_count_for_both_columns(groups) -> None:
     """The defect this generator was written to fix, pinned as a test.
 
     The table it replaced reported a 1-question latency from thread count 16 and a
@@ -540,12 +540,12 @@ def test_a_hand_edited_batching_table_is_detected(gains) -> None:
 
 
 def test_every_file_that_shows_the_latency_table_agrees(groups) -> None:
-    """The Chinese README used to carry a hand-copied table, and it drifted (D12 again).
+    """The Chinese page used to carry a hand-copied table, and it drifted (D12 again).
 
     It quoted 201 ms for one question (16 threads) beside 987 ms for ten (24 threads) --
     the same mixed-thread-count defect `§2-D12` records, still live because no generator
-    checked that file. The headline table is generated into four files now (both READMEs
-    and both performance pages), so all four must quote the same figures.
+    checked that file. The headline table is generated into both performance pages now, so
+    the two must quote the same figures.
     """
 
     def figures(path: Path) -> list[str]:
@@ -564,8 +564,6 @@ def test_every_file_that_shows_the_latency_table_agrees(groups) -> None:
         return re.findall(r"\d[\d,]*\.?\d*", "\n".join(rows))
 
     shown = [
-        ROOT / "README.md",
-        ROOT / "README.zh-CN.md",
         ROOT / "docs" / "performance.md",
         ROOT / "docs" / "performance.zh-CN.md",
     ]
@@ -582,14 +580,19 @@ def test_every_file_that_shows_the_latency_table_agrees(groups) -> None:
 def test_every_generated_block_has_a_home_with_its_markers() -> None:
     """A missing marker is a crash during `--write`, and it had already happened once.
 
-    The four generated blocks now live in three kinds of file: the headline latency table
-    stays in the READMEs, the dtype and cross-request batching blocks live in the
-    performance pages, and the full measurement dump stays in `docs/feasibility.md`.
-    Splitting them is fine; a block whose markers are missing is not.
+    The generated blocks live in two kinds of file now: the latency table, the dtype table
+    and the cross-request batching block in the performance pages, and the full measurement
+    dump in `docs/feasibility.md`. The READMEs carry none of them any more. Splitting them
+    is fine; a block whose markers are missing is not.
     """
     groups = report.load_all()
     targets = report.targets(groups, report.verify(groups))
-    assert {path.name for path, begin, _, _ in targets if begin} >= {"README.md", "performance.md"}
+    assert {path.name for path, begin, _, _ in targets if begin} == {
+        "performance.md",
+        "performance.zh-CN.md",
+        "design-review.md",
+        "feasibility.md",
+    }
     for path, begin, end, _ in targets:
         if begin is None:
             continue
@@ -598,16 +601,27 @@ def test_every_generated_block_has_a_home_with_its_markers() -> None:
         assert end in text, f"{path.name} is missing {end}"
 
 
-def test_the_readme_keeps_only_the_headline_table() -> None:
-    """The READMEs are landing pages, so the long tables live in `docs/performance.md`.
+def test_the_readmes_do_not_carry_performance_numbers() -> None:
+    """Latency is a property of the host, so the landing pages do not print it.
 
-    Asserted rather than left to taste because it is the whole point of the split: a
-    README that grows the dtype and batching tables back is the 500-line README this
-    change removed. The latency block is the one exception -- it is the number a reader
-    deciding whether to try this came for.
+    The READMEs led with a latency table until this changed. The same release answers in
+    hundreds of milliseconds on the machine the numbers came from and several times faster
+    on a laptop, so the table told a reader more about the hardware than about Decis. It now
+    lives on `docs/performance.md`, beside the host description and the method, and the
+    READMEs link there instead.
+
+    Asserted rather than left to taste: a README that grows a generated table back is the
+    drift `AGENTS.md §8` exists to prevent, and it would silently make CI's `--check` the
+    only thing standing between a reader and a number no raw file backs.
     """
-    for path in (ROOT / "README.md", ROOT / "README.zh-CN.md"):
+    for name, page in (("README.md", "docs/performance.md"), ("README.zh-CN.md", "docs/performance.zh-CN.md")):
+        path = ROOT / name
         text = path.read_text(encoding="utf-8")
-        assert report.README_LATENCY_BEGIN in text, path.name
-        for moved in (report.README_DTYPE_BEGIN, report.BATCHING_BEGIN):
-            assert moved not in text, f"{path.name} grew {moved} back; it belongs in docs/performance.md"
+        for marker, owner in (
+            (report.README_LATENCY_BEGIN, page),
+            (report.README_DTYPE_BEGIN, page),
+            (report.BATCHING_BEGIN, page),
+            (report.MARKER_BEGIN, "docs/feasibility.md"),
+        ):
+            assert marker not in text, f"{name} carries {marker}; it belongs in {owner}"
+        assert page in text, f"{name} no longer links {page}"

@@ -9,8 +9,10 @@ Decis 跑的是决策模型——每个请求只有一次前向，不生成文�
 [`benchmarks/report.py`](../benchmarks/report.py) 从 [`benchmarks/results/`](../benchmarks/results/)
 里的原始 JSON 生成，仓库里的表与数据不一致时 CI 会失败。
 
-测量是在**一台 24 vCPU、没有 GPU 的 aarch64 机器**上做的——没有 GPU 的读者本机就是这种机器。
-本仓库里**没有 GPU 或 Apple 芯片上的数字**：本页的任何结论都不适用于那两种硬件。
+测量是在**一台 24 vCPU、没有 GPU 的 aarch64 机器**上做的。延迟既是 Decis 的性质，也同样是机器的
+性质：这类模型通常拿 Apple 芯片上的 MLX 做基准，同一个版本在那里比下面这些 CPU 数字快得多。请把
+这些表当作**这台机器**的数字，定容量之前先在自己机器上量一遍。仓库里**没有自己的 GPU 或 Apple
+芯片数字**，所以本页的任何结论都不适用于那两种硬件。
 
 ## 延迟
 
@@ -23,7 +25,7 @@ Decis 跑的是决策模型——每个请求只有一次前向，不生成文�
 
 由 [`benchmarks/report.py`](../benchmarks/report.py) 从 [`benchmarks/results/`](../benchmarks/results/) 的原始 JSON 生成；**整行取自同一个配置**（torch 在本机的默认线程数，每个 vCPU 一个），样本 p50，单进程，仅请求内批处理。
 
-**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 [`docs/design-review.md`](design-review.md) §4-M5）。
+**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 [`design-review.md`](design-review.md) §4-M5）。
 
 <!-- LATENCY:END -->
 

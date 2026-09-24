@@ -9,25 +9,32 @@
 
 **一个 API，跑所有轻量决策模型。**
 
-Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 的 System One API](https://docs.typesafe.ai/api)——
-也就是和 Jev 相同的 `/v1/systemone` 契约——并用你选定的开源决策模型来回答这些请求。把官方
-`typesafe-sdk` 指向 Decis 而不是 `api.typesafe.ai`，其他什么都不用改。
+Decis 是一个可以自托管的推理服务端，专门跑开源决策模型。它实现的是
+[TypeSafe 的 System One API](https://docs.typesafe.ai/api)——也就是官方 `typesafe-sdk` 本来就在说的
+`/v1/systemone` 契约——所以把 SDK 指向你自己的地址就是全部迁移工作。一套线格式契约，多种可互换的
+引擎，一个引擎一个容器。
 
-*决策模型*不生成文本，而是针对有类型的问题返回校准过的概率。它只做一次前向，小到可以和应用
-跑在一起，也快到可以放进请求路径。Decis 就是这些模型缺的那层服务：一套稳定契约，多种引擎，
-一个引擎一个容器。
+*决策模型*不生成文本，而是针对有类型的问题返回校准过的概率：只做一次前向，小到可以和应用跑在
+一起。
+
+- **开箱即用。** 一句 `docker compose up`，你就有一个在回答 `/v1/systemone` 的引擎和一个可以上手的
+   playground。权重烤在镜像里，启动时不需要下载，也没有任何卷要挂。
+- **Jev 风格的 API。** 服务端说的是那个闭源模型同样的契约，官方 `typesafe-sdk` 只需要改 `base_url`。
+- **Laya 与 kev，各自一个镜像。** 每个引擎一个多架构发布镜像，权重自带。
+- **带三个游戏的 playground。** 贪吃蛇、恐龙、俄罗斯方块，每个决策都真的是一次 `/v1/systemone`
+  调用。
 
 > **状态：pre-1.0，当前 `v0.3.0`。** 线格式契约（`v1`）稳定，只增字段；运行中的服务在
 > `/healthz` 报告自己的版本。
 
 ## 快速开始
 
+三条命令，不用构建，也不下载模型：
+
 ```bash
 git clone https://github.com/chaitin/Decis && cd Decis
-uv sync --extra dev --extra laya
-cp .env.example .env                               # 设 DECIS_API_KEY=local
-uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
-uv run decis serve --host 127.0.0.1 --port 8000
+cp .env.example .env                                # 设 DECIS_API_KEY
+docker compose -f docker-compose.yml up -d --wait    # 引擎在 :8000，游戏在 :8080
 ```
 
 `laya-multilingual` 是默认引擎。`/healthz` 立刻可用，`/readyz` 在模型能作答之前一直报 `loading`：
@@ -36,7 +43,7 @@ uv run decis serve --host 127.0.0.1 --port 8000
 until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 ```
 
-官方 SDK 只需要改一行：
+客户端只需要改一行。官方 SDK 指向这里就能原样工作：
 
 ```python
 from typesafe_sdk import Choice, Noul, TypeSafeClient
@@ -68,71 +75,41 @@ print(response.choices["department"].confidence)  # 0..1
 print(response.nouls["churn_risk"].noul)  # P(true)，0..1
 ```
 
+Compose 会拉两个发布镜像：`chaitin/decis:laya-multilingual` 与 `chaitin/decis:playground`。不用
+Compose 的话，只起 API：
+
+```bash
+docker run --rm -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
+```
+
+想在源码目录里跑：
+
+```bash
+uv sync --extra dev --extra laya
+uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
+uv run decis serve --host 127.0.0.1 --port 8000
+```
+
 就绪语义、裸 `curl` 写法，以及 `decis models` / `decis doctor`，见
 [快速开始](docs/getting-started.zh-CN.md)。
 
 ## 引擎
 
-`laya-multilingual`（默认，约 100 种语言）与 `kev-0.8b` 有镜像；`laya` 与
-`laya-typed-decisions` 要在源码目录里跑。骨干、权重大小与每个引擎的上限见
-[引擎](docs/engines.zh-CN.md)。
+出厂四个引擎。`laya-multilingual`（默认，约 100 种语言）与 `kev-0.8b` 有发布的多架构镜像；
+`laya` 与 `laya-typed-decisions` 要在源码目录里跑。一个引擎一个镜像，引擎就是 tag，权重文件就在
+镜像里——启动时不需要网络、不需要卷、也没有下载步骤。服务要求 Bearer token，比较用常数时间，并且
+在公开地址上没配 token 时拒绝启动。
 
-## 性能
-
-决策模型常拿 Apple 芯片上的 MLX 做基准；只有 CPU 的容器是另一台机器。下面这台是
-**24 vCPU、没有 GPU 的 aarch64 机器**：
-
-<!-- LATENCY:START -->
-
-| 引擎 | 设备 | dtype | 线程 | 1 个问题 | 10 个问题 | 冷启动 | 峰值 RSS |
-|---|---|---|---:|---:|---:|---:|---:|
-| `laya` | cpu | float32 | 24 | 446 ms | 3,222 ms (322.1 ms/题) | 76.3 s | 2.8 GB |
-| `laya-multilingual` | cpu | float32 | 24 | 231 ms | 987 ms (98.7 ms/题) | 72.9 s | 4.84 GB |
-
-由 [`benchmarks/report.py`](benchmarks/report.py) 从 [`benchmarks/results/`](benchmarks/results/) 的原始 JSON 生成；**整行取自同一个配置**（torch 在本机的默认线程数，每个 vCPU 一个），样本 p50，单进程，仅请求内批处理。
-
-**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见 [`docs/performance.zh-CN.md`](docs/performance.zh-CN.md) 与 [`docs/design-review.md`](docs/design-review.md) §4-M5）。
-
-<!-- LATENCY:END -->
-
-值得从表里读出两件事：一次问十个问题，每题的代价明显低于单独问一个；峰值内存是权重
-文件的数倍。原本的吞吐主张，跨请求批处理，**测过，在 CPU 上不提升吞吐**；证据与上界见
-[性能](docs/performance.zh-CN.md)。
-
-## 部署
-
-```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
-```
-
-一个引擎一个镜像，所有引擎共用一个 Docker Hub 仓库，引擎就是 tag。以引擎为 tag 的每个镜像都是
-多架构（`amd64` + `arm64`）并带着权重，所以 `docker run` 不需要网络、不需要卷、也没有下载步骤。
-服务要求 Bearer token，比较用常数时间，并且在公开地址上没配 token 时拒绝启动。
-
-在源码目录里，Compose 与 `make` 封装的是同一件事。Compose 还会自动叠上
-`docker-compose.override.yml`，用本仓库源码构建 `decis-local:*`；加 `-f` 就不叠：
-
-```bash
-docker compose -f docker-compose.yml up -d --wait   # 发布镜像，默认引擎
-docker compose --profile kev-0.8b up -d             # 另一个引擎，宿主端口 8001
-
-make help                    # 目标清单 + 本目录解析到的引擎
-make up / down               # 用本仓库源码构建并启动，或停止
-make build-playground        # 只重建游戏页面镜像：几秒
-make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
-make pull                    # 部署路径：拉发布镜像
-```
-
-体积、挂卷的注意事项、不带权重的 `-runtime` 变体、Kubernetes 探针与代理构建，见
-[部署](docs/deployment.zh-CN.md)。
+骨干、权重大小与每个引擎的上限见 [引擎](docs/engines.zh-CN.md)；镜像体积、不带权重的 runtime
+变体、Kubernetes 探针与在代理后面构建，见 [部署](docs/deployment.zh-CN.md)。
 
 ## Playground
 
-`docker compose up` 还会在 <http://localhost:8080> 起三个网页小游戏——贪吃蛇、恐龙、俄罗斯
-方块，另外还有一个专门讲 API 的 `/api` 页面。每个游戏都可以用键盘自己玩，也可以交给模型：
-手动/AI 开关、推理面板和"最近一次调用"的控制台在三个页面上是同一套，AI 档下每个决策都真的发
-一次 `/v1/systemone`。API key 留在 playground 服务端，页面永远拿不到；引擎也由它自己找到。
-见 [Playground](docs/playground.zh-CN.md)，包括游戏改编自哪些项目。
+快速开始同时会在 <http://localhost:8080> 起三个网页小游戏——贪吃蛇、恐龙、俄罗斯方块，另外还有
+一个专门讲 API 的 `/api` 页面。每个游戏都可以用键盘自己玩，也可以交给模型：手动/AI 开关、推理面板
+和"最近一次调用"的控制台在三个页面上是同一套，AI 档下每个决策都真的发一次 `/v1/systemone`。API
+key 留在 playground 服务端，页面永远拿不到；引擎也由它自己找到。见
+[Playground](docs/playground.zh-CN.md)，包括游戏改编自哪些项目。
 
 下面三段录屏是这三个页面在 AI 档下的样子，对着真实的 CPU 引擎录制；画面没有变化的帧被丢掉了。
 
@@ -150,7 +127,7 @@ make pull                    # 部署路径：拉发布镜像
 | [配置](docs/configuration.zh-CN.md) | 全部 `DECIS_*` 变量、认证、权重路径、精度 |
 | [引擎](docs/engines.zh-CN.md) | 每个引擎是什么、它的上限、如何新增 |
 | [部署](docs/deployment.zh-CN.md) | Docker、Compose、`make`、Kubernetes |
-| [性能](docs/performance.zh-CN.md) | 实测延迟、内存、精度与批处理结果 |
+| [性能](docs/performance.zh-CN.md) | 实测延迟与内存，以及它们是在哪台机器上测的 |
 | [Playground](docs/playground.zh-CN.md) | 三个游戏、代理架构与致谢 |
 | [线格式契约](docs/api-compatibility.md) | 精确的 jev 契约，每条结论带证据等级 |
 | [设计](docs/design.md) | 架构、引擎抽象、打包 |
