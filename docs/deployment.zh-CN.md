@@ -33,10 +33,10 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingua
 就是默认引擎。每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。注册的 `laya`（英文）
 与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
-release 还会发布带版本的 tag，这些 tag 不会移动：`laya-multilingual-v0.1.0` 与
-`kev-0.8b-v0.1.0` 是 `v0.1.0` 发布的，`laya-multilingual-v0.0.1` 与 `kev-0.8b-v0.0.1` 是它
-前一次发布的。带版本的 tag 在对应的 `v*` git tag 被推送时创建，而引擎名那些 tag 会随着每次
-推送到 `master` 移动。
+release 还会发布带版本的 tag，这些 tag 不会移动：`laya-multilingual-v0.2.0` 与
+`kev-0.8b-v0.2.0` 是 `v0.2.0` 发布的，`laya-multilingual-v0.1.0` 与 `kev-0.8b-v0.1.0` 是
+`v0.1.0` 发布的，`laya-multilingual-v0.0.1` 与 `kev-0.8b-v0.0.1` 是它前一次发布的。带版本的
+tag 在对应的 `v*` git tag 被推送时创建，而引擎名那些 tag 会随着每次推送到 `master` 移动。
 
 ### 自带权重
 
@@ -58,14 +58,14 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs
 然后运行：
 
 ```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v0.1.0
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.1.0 \
+docker pull kingfs/decis:laya-multilingual-runtime-v0.2.0
+docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.2.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v0.1.0
+  kingfs/decis:laya-multilingual-runtime-v0.2.0
 ```
 
-卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。`v0.1.0` 是当前版本，
+卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。`v0.2.0` 是当前版本，
 而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master` 移动。
 
 ## Docker Compose

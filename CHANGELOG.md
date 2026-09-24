@@ -9,6 +9,37 @@ version is reported by `/healthz` and in the response's `decis` namespace.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-24
+
+### Added
+
+- **Playground API reference** at `/api`: the endpoint, the three question primitives, one
+  captured request/response pair, a form that really posts, the parameters and limits, and
+  both error tables — the engine's compared row by row against [`docs/api.md`](docs/api.md).
+- **Recordings of the three games** ([`playground/web/media/`](playground/web/media/)): each
+  page played in AI mode against a real engine, shown in both READMEs and on the index.
+- New guards in `tests/test_playground.py` and `tests/test_docs.py`: the shared game shell and
+  where its panels live, the request bodies the pages send, the recordings the index shows,
+  the errors the `/api` page lists, and the version `/healthz` reports.
+
+### Changed
+
+- **The three games share one shell.** The manual/AI switch, the reasoning panel and the
+  last-call console are now the same on all three pages; on snake and tetris the reasoning
+  panel sits in the reading column beside the board, and the console below the game spans its
+  full width.
+- The playground index says how to use the page instead of printing the upstream URL.
+
+### Fixed
+
+- **Tetris now chooses a rotation.** Its shortlist was ordered by the page's own heuristic
+  alone, which on a flat board put the same orientation in every slot, so the model was only
+  ever choosing a column.
+- The playground pages no longer send `samples`, `steps` or `seed`. The contract does not
+  define those fields, and `extra="ignore"` had been hiding them.
+- `/api` no longer overflows a 380px viewport: unbreakable error names pushed a table past the
+  edge.
+
 ## [0.1.0] - 2026-09-23
 
 ### Added

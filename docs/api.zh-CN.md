@@ -236,7 +236,7 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 
 ```jsonc
 // GET /healthz -> 进程一起来就 200，加载期间也一样
-{"status": "ok", "version": "0.1.0"}
+{"status": "ok", "version": "0.2.0"}
 
 // GET /readyz -> 引擎能作答后 200
 {"status": "ready", "engine": "laya-multilingual"}

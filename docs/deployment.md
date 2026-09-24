@@ -36,11 +36,11 @@ kingfs/decis` gives you the default engine. Every tag is a multi-arch manifest c
 `amd64` and `arm64`. The registered `laya` (English) and `laya-typed-decisions` checkpoints
 have no image; run those from a source checkout.
 
-Releases also publish versioned tags, which do not move: `laya-multilingual-v0.1.0` and
-`kev-0.8b-v0.1.0` are what `v0.1.0` published, `kev-0.8b-v0.0.1` and
-`laya-multilingual-v0.0.1` what the release before it did. A versioned tag is created when the
-matching `v*` git tag is pushed, and the engine-named tags keep moving with every push to
-`master`.
+Releases also publish versioned tags, which do not move: `laya-multilingual-v0.2.0` and
+`kev-0.8b-v0.2.0` are what `v0.2.0` published, `laya-multilingual-v0.1.0` and
+`kev-0.8b-v0.1.0` what `v0.1.0` did, and `kev-0.8b-v0.0.1` / `laya-multilingual-v0.0.1` the
+release before that. A versioned tag is created when the matching `v*` git tag is pushed, and
+the engine-named tags keep moving with every push to `master`.
 
 ### Bringing your own weights
 
@@ -65,15 +65,15 @@ node's image small, releases also publish a weightless variant named
 fill the volume once and mount it from then on:
 
 ```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v0.1.0
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.1.0 \
+docker pull kingfs/decis:laya-multilingual-runtime-v0.2.0
+docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.2.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v0.1.0
+  kingfs/decis:laya-multilingual-runtime-v0.2.0
 ```
 
 The volume must be filled before the service starts: this image has nothing to fall back on.
-`v0.1.0` is the current version, and pinning it is the point of this variant — the
+`v0.2.0` is the current version, and pinning it is the point of this variant — the
 engine-named tags move with every push to `master`.
 
 ## Docker Compose

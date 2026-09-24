@@ -17,7 +17,7 @@ Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 
 跑在一起，也快到可以放进请求路径。Decis 就是这些模型缺的那层服务：一套稳定契约，多种引擎，
 一个引擎一个容器。
 
-> **状态：v0.1.0。** 两个模型家族跑在同一份契约后面——`laya-multilingual`（默认）与
+> **状态：v0.2.0。** 两个模型家族跑在同一份契约后面——`laya-multilingual`（默认）与
 > `kev-0.8b`——另有 Laya 的英文与 typed-decisions checkpoint。线格式契约、认证、错误形状、
 > 引擎抽象、权重解析、CLI、Docker 镜像与 CI 都已实现并有测试。契约建立在[官方 OpenAPI
 > 快照](docs/contract/typesafe-openapi-0.2.0.json)和[线上 API 实际返回什么的记录](docs/contract/observations-2026-09-22.md)

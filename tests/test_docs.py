@@ -248,6 +248,25 @@ def test_the_api_page_covers_the_generated_schemas() -> None:
     assert "export.py" in text, "docs/api.md does not say how the schemas are regenerated"
 
 
+def test_the_documented_healthz_version_is_the_reported_one() -> None:
+    """`docs/api.md` prints a `/healthz` body, and `/healthz` prints the package version.
+
+    Two copies of one number, so a release that bumps the version has to move both or the
+    page shows a reader a version the server does not report. `decis.__version__` itself is
+    tied to `pyproject.toml` by `tests/test_conventions.py`.
+    """
+    import re
+
+    from decis import __version__
+
+    for name in ("api.md", "api.zh-CN.md"):
+        text = _text(DOCS / name)
+        documented = re.findall(r'\{"status": "ok", "version": "([^"]+)"\}', text)
+        assert documented == [__version__], (
+            f"docs/{name} documents /healthz returning {documented}, but the server reports {__version__}"
+        )
+
+
 def test_the_documented_environment_variables_are_read_by_something() -> None:
     """A documented knob that nothing reads is worse than an undocumented one.
 

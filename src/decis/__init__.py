@@ -4,6 +4,6 @@ Speaks the TypeSafe / jev "System One" wire contract and answers with an open
 decision model of your choosing.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

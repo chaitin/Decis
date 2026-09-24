@@ -19,7 +19,7 @@ generating text. It is a single forward pass, small enough to run next to your a
 enough to sit in a request path. Decis is the serving layer for those models: one wire
 contract, many interchangeable engines, and one container per engine.
 
-> **Status: v0.1.0.** Two model families run behind one contract —
+> **Status: v0.2.0.** Two model families run behind one contract —
 > `laya-multilingual` (default) and `kev-0.8b` — plus the English and typed-decision Laya
 > checkpoints. The wire contract, authentication, error shapes, the engine abstraction,
 > weight resolution, the CLI, the Docker images and CI are implemented and tested. The
