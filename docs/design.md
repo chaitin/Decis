@@ -655,6 +655,10 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 | `decis:kev-0.8b-cuda` | kev-0.8b | CUDA runtime | ~6–8 GB |
 | `decis:all-latest` | 全部（demo） | CPU | ~4 GB |
 
+> **这一节是最初的设计清单，不是当前发布的镜像集**：实际实现的矩阵只有 `laya-multilingual` 与
+> `kev-0.8b`（没有 `laya` 英文镜像、没有 `all` demo、没有 `-cuda` 变体），tag 方案以 §8.2 末尾那段
+> 与 `docs/deployment.md` 为准。表里的 `~x GB` 是设计时的估算，那一页的体积是逐层量出来的实测值。
+
 `docker-compose.yml` 用 profiles 按引擎起服务。
 
 ---
