@@ -132,6 +132,13 @@ def _anchors(path: Path) -> set[str]:
     return {_slug(heading) for heading in _HEADING.findall(_text(path))}
 
 
+def _section(text: str, title: str) -> str:
+    """The body of the `## <title>` section, up to the next level-2 heading."""
+    match = re.search(rf"^## {re.escape(title)}$\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    assert match, f"no `## {title}` section"
+    return match.group(1)
+
+
 # --- every guide exists twice, and the copies stay aligned ---------------------
 
 
@@ -289,6 +296,24 @@ def test_the_release_version_the_docs_quote_is_the_packaged_one() -> None:
     ):
         found = sorted(set(quoted.findall(_text(path))))
         assert found == [version], f"{path.name} quotes {found or 'no release version'}, the package reports {version}"
+
+
+def test_the_readmes_name_exactly_the_registered_engines() -> None:
+    """The README names the engines, so those names have to be the registry's.
+
+    That section was a hand-copied copy of the `docs/engines.md` table until `§9` caught it
+    drifting -- the two disagreed about `laya-typed-decisions` -- and it is now a sentence.
+    Prose drifts more quietly than a table, so the comparison is exact: an engine id is the
+    only thing either section puts in backticks.
+    """
+    from decis.engines.registry import SPECS
+
+    # `tests/conftest.py` registers its own deterministic engine as `stub` while the suite
+    # runs. It is deliberately not a shipped engine, so it is not one a README should name.
+    registered = {name for name, spec in SPECS.items() if not spec.target.startswith("fixture_engine")}
+    for name, title in (("README.md", "Engines"), ("README.zh-CN.md", "引擎")):
+        named = set(re.findall(r"`([^`\n]+)`", _section(_text(ROOT / name), title)))
+        assert named == registered, f"{name} names {sorted(named)} as engines, the registry has {sorted(registered)}"
 
 
 def test_the_documented_environment_variables_are_read_by_something() -> None:

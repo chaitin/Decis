@@ -17,25 +17,20 @@ Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 
 跑在一起，也快到可以放进请求路径。Decis 就是这些模型缺的那层服务：一套稳定契约，多种引擎，
 一个引擎一个容器。
 
-> **状态：v0.3.0。** 两个模型家族跑在同一份契约后面——`laya-multilingual`（默认）与
-> `kev-0.8b`——另有 Laya 的英文与 typed-decisions checkpoint。线格式契约、认证、错误形状、
-> 引擎抽象、权重解析、CLI、Docker 镜像与 CI 都已实现并有测试。契约建立在[官方 OpenAPI
-> 快照](docs/contract/typesafe-openapi-0.2.0.json)和[线上 API 实际返回什么的记录](docs/contract/observations-2026-09-22.md)
-> 之上，不是推断出来的。**没有做完的部分**写在
-> [`docs/design-review.md`](docs/design-review.md) 里，而不是被省略。
+> **状态：pre-1.0，当前 `v0.3.0`。** 线格式契约（`v1`）稳定，只增字段；运行中的服务版本由
+> `/healthz` 与每个响应的 `decis` 命名空间给出。
 
 ## 快速开始
 
 ```bash
 git clone https://github.com/chaitin/Decis && cd Decis
 uv sync --extra dev --extra laya
-cp .env.example .env                               # 设 DECIS_API_KEY=local，示例就是这么用的
+cp .env.example .env                               # 设 DECIS_API_KEY=local
 uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
 
-`laya-multilingual` 是默认引擎，CPU 上加载约需 **75 秒**（[实测](docs/performance.zh-CN.md#延迟)）。
-`/healthz` 立刻可用，`/readyz` 在模型能作答之前一直报 `loading`：
+`laya-multilingual` 是默认引擎。`/healthz` 立刻可用，`/readyz` 在模型能作答之前一直报 `loading`：
 
 ```bash
 until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
@@ -76,33 +71,16 @@ print(response.nouls["churn_risk"].noul)  # P(true)，0..1
 就绪语义、裸 `curl` 写法，以及 `decis models` / `decis doctor`，见
 [快速开始](docs/getting-started.zh-CN.md)。
 
-## 你能得到什么
-
-- **jev 契约只实现一次。** `POST /v1/systemone`、`GET /v1/models`、`choice` / `score` /
-  `noul` 三种原语、官方的错误形状与 request id 头。线格式在
-  [`docs/api-compatibility.md`](docs/api-compatibility.md) 里逐条钉死，每条结论都标了证据等级。
-- **可插拔的引擎。** 引擎只需给出每个选项的概率，服务端负责变成一致的 `Noul` / `Choice` /
-  `Score` 答案，包括唯一一份公开的 `confidence` 公式。接一个新引擎不需要改归一化层的任何代码。
-- **权重烤进镜像。** 以引擎为 tag 的那个镜像带着该引擎的 checkpoint，`docker run` 不需要网络、
-  不需要卷、也不需要下载步骤。（`-runtime` 变体与 `playground` 镜像是例外，文档里会分别说明。）
-- **默认安全。** Bearer 认证、常数时间比较、请求体上限，以及在公开地址上没配 token 时拒绝启动。
-
 ## 引擎
 
-| 引擎 | 骨干 | 参数量 | 权重 | 说明 |
-|---|---|---|---|---|
-| `laya-multilingual` | mmBERT-base | 322M | 647 MiB | 100+ 语言；默认引擎 |
-| `laya` | ModernBERT-large | 421M | 807 MiB | 英文 |
-| `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | 同仓库的 typed-decisions checkpoint |
-| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | 只有 prefill；建议用 GPU |
-
-注册表里每个引擎都是带真实权重的 checkpoint。契约测试用的无权重替身住在
-[`tests/fixture_engine.py`](tests/fixture_engine.py)，并且**刻意不注册**到服务里。详见[引擎](docs/engines.zh-CN.md)。
+`laya-multilingual`（默认，约 100 种语言）与 `kev-0.8b` 有镜像；`laya` 与
+`laya-typed-decisions` 要在源码目录里跑。骨干、权重大小与每个引擎的上限见
+[引擎](docs/engines.zh-CN.md)。
 
 ## 性能
 
-决策模型只做一次前向，所以常被引用的数字来自 Apple 芯片上 MLX 的小输入。那是真的，但不是
-只有 CPU 的容器能做到的。下面这台是 **24 vCPU、没有 GPU 的 aarch64 机器**：
+决策模型常拿 Apple 芯片上的 MLX 做基准；只有 CPU 的容器是另一台机器。下面这台是
+**24 vCPU、没有 GPU 的 aarch64 机器**：
 
 <!-- LATENCY:START -->
 
@@ -128,10 +106,14 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 ```
 
 一个引擎一个镜像，所有引擎共用一个 Docker Hub 仓库，引擎就是 tag。以引擎为 tag 的每个镜像都是
-多架构（`amd64` + `arm64`）并带着权重。在源码目录里，Compose 与 `make` 封装的是同一件事：
+多架构（`amd64` + `arm64`）并带着权重，所以 `docker run` 不需要网络、不需要卷、也没有下载步骤。
+服务要求 Bearer token，比较用常数时间，并且在公开地址上没配 token 时拒绝启动。
+
+在源码目录里，Compose 与 `make` 封装的是同一件事。Compose 还会自动叠上
+`docker-compose.override.yml`，用本仓库源码构建 `decis-local:*`；加 `-f` 就不叠：
 
 ```bash
-docker compose up -d --wait                         # 发布镜像，默认引擎
+docker compose -f docker-compose.yml up -d --wait   # 发布镜像，默认引擎
 docker compose --profile kev-0.8b up -d             # 另一个引擎，宿主端口 8001
 
 make help                    # 目标清单 + 本目录解析到的引擎
@@ -152,13 +134,11 @@ make pull                    # 部署路径：拉发布镜像
 一次 `/v1/systemone`。API key 留在 playground 服务端，页面永远拿不到；引擎也由它自己找到。
 见 [Playground](docs/playground.zh-CN.md)，包括游戏改编自哪些项目。
 
-下面三段录屏就是这三个页面在 AI 档下的样子，取自本仓库（真引擎、CPU）；画面没变化的帧被丢掉了，
-所以比它录的那一次会话快：
+下面三段录屏是这三个页面在 AI 档下的样子，对着真实的 CPU 引擎录制；画面没有变化的帧被丢掉了。
 
 | 贪吃蛇 | 恐龙 | 俄罗斯方块 |
 |---|---|---|
 | ![贪吃蛇：模型逐步选方向](playground/web/media/snake.gif) | ![恐龙：模型选跳、蹲还是跑](playground/web/media/dino.gif) | ![俄罗斯方块：模型选落点](playground/web/media/tetris.gif) |
-
 
 ## 文档
 
@@ -179,15 +159,10 @@ make pull                    # 部署路径：拉发布镜像
 | [`examples/`](examples/README.md) | 可运行的 `curl` 与官方 SDK 示例，CI 逐条执行 |
 | [AGENTS.md](AGENTS.md) | 面向贡献者与 agent 的工程契约 |
 
-如果只读一份文档再动手，读设计审查。它列出了已发现的缺陷和仍未回答的问题。
-
-线格式契约、设计、设计审查与可行性研究用中文写成——它们就是在这个语言里调研和评审的。
-契约本身不锁在散文里：[`docs/schema/`](docs/schema/) 由 `src/decis/schema.py` 生成并进 CI，
-[API 参考](docs/api.md) 就是它的英文版本。
+线格式契约、设计、设计审查与可行性研究用中文写成；契约同时钉在生成的 JSON Schema 里：
+[`docs/schema/`](docs/schema/) 由 `src/decis/schema.py` 生成并进 CI。
 
 ## 与其他项目的关系
-
-Decis 不训练模型。它只做服务，并且尽量致谢而不是重复造轮子。
 
 - **[Jev](https://docs.typesafe.ai/introduction)**（TypeSafe AI）——本项目对标的闭源模型。
   Decis 复刻的是它的*接口*，不是模型。

@@ -38,8 +38,9 @@ have no image; run those from a source checkout.
 
 A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
 `laya-multilingual-<version>` and `kev-0.8b-<version>`, plus the weightless
-`-runtime-<version>` variants described below. The engine-named tags are the opposite —
-they keep moving with every push to `master`, so a versioned tag is the one to pin.
+`-runtime-<version>` variants described below, and the GitHub Release for that tag. The
+engine-named tags are the opposite — they keep moving with every push to `master`, so a
+versioned tag is the one to pin.
 
 ### Bringing your own weights
 

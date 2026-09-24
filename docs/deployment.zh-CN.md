@@ -34,9 +34,9 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
 release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会生成
-`laya-multilingual-<version>` 与 `kev-0.8b-<version>`，以及下面说的不带权重的
-`-runtime-<version>` 变体。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，
-所以要钉住的是带版本的 tag。
+`laya-multilingual-<version>` 与 `kev-0.8b-<version>`、下面说的不带权重的
+`-runtime-<version>` 变体，以及该 tag 对应的 GitHub Release。引擎名那些 tag 正好相反——
+它们随每次推送到 `master` 移动，所以要钉住的是带版本的 tag。
 
 ### 自带权重
 
