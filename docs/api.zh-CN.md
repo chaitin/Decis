@@ -17,8 +17,9 @@ Decis 实现了 TypeSafe System One API。本页是实用参考：发什么、�
 | 内容类型 | `application/json` |
 | 认证 | `Authorization: Bearer <token>` |
 
-只有一个 API 版本 `v1`，它是 Decis 与托管 API 共享的契约。服务端自身的版本在 `/healthz`
-和每个响应的 `decis` 命名空间里；它从不改变线格式。
+只有一个 API 版本 `v1`，它是 Decis 与托管 API 共享的契约。服务端自身的版本只在 `/healthz`
+里。响应里的 `decis` 命名空间带的是 `engine_version`，那是上游模型包的版本，与 Decis 自己的
+版本各自独立。两者都不改变线格式。
 
 ## 认证
 
@@ -140,7 +141,7 @@ JSON Schema 是 [`docs/schema/systemone-request.schema.json`](schema/systemone-r
 
 - `criteria` 可选；两半都可选。如果发送它，键必须恰好是 `"true"` 与 `"false"`——
   **其他任何键都会被静默忽略**，答案在不含它的情况下算出。这是底层 Schema 的行为，
-  不是 Decis 的选择；见 [`design-review.md §2-D13`](design-review.md)。
+  不是 Decis 的选择。
 - 答案是单个标量 `noul` = P(true)，没有 `confidence`，也没有 `probabilities`。
 
 #### 响应
@@ -227,9 +228,16 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 }
 ```
 
-- *依赖*没有装进这个镜像的引擎会完全不出现在列表里；权重缺失的引擎仍会被列出。`version` 是
-  将要执行前向的上游包的版本，该包不存在时为 `not-installed`。引擎空闲时 `device` 为
-  `unloaded`。
+- 每一个注册过的引擎都会被列出，不管这个镜像能不能跑它。`version` 是将要执行前向的上游包的
+  版本，该包缺失时为 `not-installed`——缺*依赖包*不会让引擎消失，缺*权重*同样不会。
+- `dtype` 在引擎加载前是 `unloaded`；`device` 不能当作"是否已加载"的判断依据：有的引擎在加载
+  前就报出设备（`kev-0.8b` 报 `cpu`），有的空闲时报 `unloaded`（Laya）。
+- 这里的 `max_question_tokens` 与 `max_sequence_tokens` 是 Laya 为"没有声明上限的 checkpoint"
+  准备的兜底值（`src/decis/engines/laya.py` 的 `DEFAULT_HEAD_MAX_LEN` / `DEFAULT_MAX_LEN`）——
+  尚未加载的引擎报的就是它们。加载完成后这一项会被换成 checkpoint 自己声明的上限，所以请等
+  `/readyz` 变绿之后再读这一行。
+- `languages` 是 checkpoint 声明的语言覆盖范围。`aliases` 是响应里就有的字段，但今天出厂的
+  引擎都报空列表；服务端真正会应答的名字由 `uv run decis models` 打印。
 - 额外字段只允许出现在 `decis` 命名空间里，容量信息放在那里而不是顶层，就是这个原因。
 - `max_state_tokens: 0` 表示只有序列上限这一条。`kev-0.8b` 会设置它（384），因为它把 `state`
   单独设了上限，与 `state + question` 分开。
@@ -257,7 +265,7 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 
 ## 错误
 
-响应体有两种形状，客户端必须都能处理。
+响应体有三种形状，客户端必须都能处理。
 
 **除校验之外的一切** —— 认证、过载、故障：
 
@@ -271,20 +279,30 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 {"detail": [{"loc": ["body", "questions", "department"], "msg": "…", "type": "too_long"}]}
 ```
 
+**路径不存在或方法不对**：这两类由路由在任何 Decis 代码之前直接答复，所以 `detail` 是字符串。
+request id 头仍然会带上。
+
+```jsonc
+// GET /nope -> 404
+{"detail": "Not Found"}
+// GET /v1/systemone、POST /v1/models -> 405
+{"detail": "Method Not Allowed"}
+```
+
 | 状态码 | `error_type` | 何时 |
 |---|---|---|
 | **401** | `authentication_error` | Bearer token 无效。 |
 | **403** | `authentication_error` | 没有凭证，或 scheme 不是 `Bearer`。 |
-| **404** | — | 路径不存在。 |
-| **405** | — | 路径存在但方法不对。 |
+| **404** | —（`detail` 是字符串） | 路径不存在，由路由答复。 |
+| **405** | —（`detail` 是字符串） | 路径存在但方法不对，由路由答复。 |
 | **413** | `request_too_large` | 请求体超过 `DECIS_MAX_REQUEST_BYTES`（默认 2 MiB）。 |
-| **422** | validation | JSON 形状不合法，或引擎无法满足的请求：选项过多、问题过长、`state` 超出引擎预算、`criteria` 为空、`model` 未知。 |
+| **422** | —（`detail` 是列表） | JSON 形状不合法，或 Decis 无法满足的请求：选项过多、问题过长、`state` 超出引擎预算、`criteria` 为空、`model` 未知。 |
 | **429** | `rate_limit_error` | 等待引擎超过了 `DECIS_REQUEST_TIMEOUT_MS`。会带 `retry-after-ms`。已经开始的前向无法中断，所以这只覆盖排队——没有单独的 504。 |
-| **500** | `engine_error` | 引擎抛异常。消息里包含 request id。 |
+| **500** | `engine_error` | 引擎抛异常。消息里给出引擎名和异常；request id 在响应头和日志里。 |
 | **503** | `engine_unavailable` | 引擎未加载，或加载失败。 |
 
 容量相关的 422 会指出字段和上限，例如
-`Question 'placement' is about 207 tokens, over this model's limit of 192 per question.`
+`Question 'placement' is about 207 tokens, over this model's limit of 192 per question. Shorten the instructions or the criteria descriptions.`
 Decis 会拒绝超预算的请求而不是截断它，因为被截断的输入产生的是一个自信的错误答案，
 而不是一个错误。
 
@@ -297,6 +315,9 @@ Decis 会拒绝超预算的请求而不是截断它，因为被截断的输入�
   `DECIS_ACCEPT_FOREIGN_DEFAULTS=0` 可以关闭替换，改为返回 422。
 - **版本化 id**，例如 `decis/laya-multilingual@0.3.6`，由 `/v1/models` 返回。运行该引擎的
   服务端会作答；运行其他引擎的服务端返回 422。
+
+服务端也会应答每个引擎的别名：`laya-multilingual` 的 `laya-multi`，`kev-0.8b` 的 `kev` 或
+`kev-latest`，`laya` 的 `laya-english`。`uv run decis models` 会打印一个服务端接受的全部名字。
 
 ## 重试与幂等
 

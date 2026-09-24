@@ -61,10 +61,10 @@ engine would retry forever (`src/decis/routes.py:76-88`):
 
 ## 2. Which models can this server run?
 
-Requires authentication. Each engine carries its own capacity limits under the `decis` key
-(extra fields are namespaced so the official SDK can ignore them); engines whose weights are
-not on this machine report `not-installed` rather than disappearing, so you can tell
-"not downloaded" from "not registered".
+Requires authentication. Every registered engine is listed, with its own capacity limits under
+the `decis` key (extra fields are namespaced so the official SDK can ignore them). An engine
+whose upstream package is not installed is still listed, and reports `version: "not-installed"`
+— so you can tell "dependencies missing" from "not registered".
 
 ```bash
 curl -s -w '\n%{http_code}\n' "$BASE/v1/models" -H "authorization: Bearer $TOKEN"
@@ -75,16 +75,21 @@ curl -s -w '\n%{http_code}\n' "$BASE/v1/models" -H "authorization: Bearer $TOKEN
 {"models": [
   {"name": "decis/<engine>@<version>", "description": "…", "release_date": "…",
    "decis": {"engine": "<engine>", "version": "<version>",
+             "aliases": [],
              "primitives": ["choice", "noul", "score"],
-             "max_sequence_tokens": "<n>", "device": "<cpu|cuda|mps|unloaded>",
-             "dtype": "<fp32|fp16|bf16|none>"}}
+             "max_sequence_tokens": "<n>", "languages": "<languages the checkpoint declares>",
+             "device": "<cpu|cuda|mps|unloaded>",
+             "dtype": "<float32|float16|bfloat16|unloaded>"}}
 ]}
 ```
 
-> Note the difference between `device`/`dtype` for a loaded engine and an unloaded one
-> (`"unloaded"`). A `/v1/models` entry saying `unloaded` is installed but idle;
-> `not-installed` in the version means the weights are missing. The numeric capacities are
-> engine-specific; `uv run decis models` prints them for the machine you are on.
+> `dtype` is `"unloaded"` until the engine has loaded. Do not use `device` as a load test:
+> Laya reports `unloaded` while it is idle, kev reports the device it will use before it
+> loads. `version: "not-installed"` means the engine's upstream package is missing, not that
+> its weights are. The numeric capacities are engine-specific, and `uv run decis models` does
+> not print them — it reports whether each engine can run on this machine. `aliases` is part
+> of the payload but empty for the engines that ship today; `uv run decis models` lists the
+> names a server actually answers to.
 
 ## 3. The smallest possible call
 
@@ -171,8 +176,7 @@ How to read the three answers:
 need calibration; use `confidence` to threshold "should a human look at this".
 
 `decis.batch_size` is `3` — all three questions went through one forward pass. That number
-is how you can verify batching is happening rather than taking it on faith:
-`docs/design-review.md §4-M5` explains why it is exposed.
+is how you can verify batching is happening rather than taking it on faith.
 
 > Keys in `score.probabilities` and `legend` are **strings** (`"0"`, `"1"`) on the wire,
 > because JSON object keys are always strings. The official SDK converts them back to
@@ -214,8 +218,8 @@ larger batch share the same forward pass (see [`python_sdk.py`](python_sdk.py)).
 > `"no"`, which is the natural thing to guess. The contract permits unknown properties, so
 > mistyping them currently changes the answer **without an error**: the rubric text is
 > dropped, the model answers the bare question, and the response is HTTP 200 either way.
-> Recorded as D13 in [`docs/design-review.md`](../docs/design-review.md); **the wire
-> contract allows the extras, so tightening it is a product decision, not a bug fix.**
+> **The wire contract allows the extras, so tightening it is a product decision, not a bug
+> fix.**
 
 ## 6. The error contract
 

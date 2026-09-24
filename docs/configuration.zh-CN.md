@@ -8,8 +8,9 @@ Decis 从 `.env` 和环境变量读取配置。**shell 里已经设好的变量�
 `DECIS_PORT=9000 decis serve` 的行为和它看起来一样。`.env.example` 是带注释的模板；
 `decis doctor` 会打印实际解析出的值，以及哪些变量被设过。
 
-本页的每个变量都只在一个模块里读取：
-[`src/decis/config.py`](../src/decis/config.py)。包里的其他任何地方都不碰环境变量。
+本页**服务端**的每个变量都只在一个模块里读取：
+[`src/decis/config.py`](../src/decis/config.py)。包里的其他任何地方都不碰环境变量。playground 是
+另一个进程，有它自己的一组变量；Compose 文件也有几个自己的变量——两者都列在本页末尾。
 
 ## 认证
 
@@ -72,8 +73,7 @@ DECIS_MODEL_DIR=./models uv run decis serve
 > 注册任何东西，于是被静默忽略。请改用 `DECIS_MODEL_DIR` 加一个 `kev-0.8b/` 子目录。那个目录
 > 是**适配器**（LoRA 加 pointer head），也正是你会去微调的部分；Qwen3.5 **基座**模型在适配器的
 > checkpoint 元数据里是以 Hub repo id 的形式被引用的，所以单独挂载一份基座不会被读到。
-> `decis download` 会把基座放进 Hugging Face 缓存，之后引擎就能离线运行。见
-> [`design-review.md §2-D11`](design-review.md)。
+> `decis download` 会把基座放进 Hugging Face 缓存，之后引擎就能离线运行。
 
 ## 计算
 
@@ -110,16 +110,34 @@ dtype 按引擎**和**设备分别选择，因为同一个选择在不同硬件�
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `DECIS_LOG_LEVEL` | `info` | 标准的 Python 日志级别。 |
-| `DECIS_LOG_PAYLOADS` | `0` | 记录完整的请求体和响应体。默认关闭：它们包含你的数据。 |
 
 每个请求都记一行日志，包含 method、path、status、耗时、引擎以及它返回的
-`x-typesafe-request-id`，这样客户端报出的 id 就能在服务端日志里查到。
+`x-typesafe-request-id`，这样客户端报出的 id 就能在服务端日志里查到。请求体与响应体不记入日志：
+它们包含你的数据。
 
 ## 文件
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `DECIS_ENV_FILE` | `.env` | 加载哪个 env 文件。`--env-file` 会按命令覆盖它。 |
+
+## Playground 变量
+
+playground 是独立的进程，它直接读 `os.environ`
+（[`playground/server.py`](../playground/server.py)），不经过 `config.py`。在 Compose 下它刻意
+**不**继承引擎的 `env_file`——那些值描述的是引擎，而这个容器什么都不跑——所以传进去的只有下面
+这些变量。
+
+| 变量 | 默认值 | 含义 |
+|---|---|---|
+| `DECIS_PLAYGROUND_HOST` | `0.0.0.0` | playground 的绑定地址。 |
+| `DECIS_PLAYGROUND_PORT` | `8080` | 容器内的绑定端口，由 Compose 钉住。这不是宿主端口——宿主端口是下面的 `DECIS_PLAYGROUND_HOST_PORT`。 |
+| `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | 一次经代理的 `/v1/systemone` 调用最多允许多久。故意给得宽：代理超时如果在引擎还在算的时候触发，就会把一个即将到达的答案报成错误。 |
+| `DECIS_PLAYGROUND_PROBE_TIMEOUT_S` | `2` | 探测某个候选引擎的 `/readyz` 最多允许多久。 |
+| `DECIS_PLAYGROUND_UPSTREAM` | 未设置 | 直接指定一个先试的引擎，跳过搜索。它仍然要被探测，不是无条件信任。 |
+| `DECIS_PLAYGROUND_CANDIDATES` | 内置列表 | 逗号分隔的 `/readyz` 候选，按顺序尝试。Compose 把它设成两个引擎服务名加 `host.docker.internal`。 |
+
+探测会绕开环境里的任何代理：走代理的探测会去问代理 `127.0.0.1`，问不出关于引擎的任何事情。
 
 ## 仅 Compose 的变量
 
@@ -130,6 +148,4 @@ dtype 按引擎**和**设备分别选择，因为同一个选择在不同硬件�
 | `COMPOSE_PROFILES` | `laya-multilingual` | `docker compose up` 启动哪个引擎容器。 |
 | `DECIS_HOST_PORT` | `8000` | 默认引擎的宿主端口。 |
 | `DECIS_KEV_HOST_PORT` | `8001` | kev 引擎的宿主端口。 |
-| `DECIS_PLAYGROUND_HOST_PORT` | `8080` | playground 的宿主端口。 |
-| `DECIS_PLAYGROUND_UPSTREAM` | 未设置 | 直接指定引擎，不让 playground 自己搜索。 |
-| `DECIS_PLAYGROUND_CANDIDATES` | 内置列表 | 逗号分隔的 `/readyz` 候选，供 playground 依次尝试。 |
+| `DECIS_PLAYGROUND_HOST_PORT` | `8080` | playground 的宿主端口，发布到容器内的 `DECIS_PLAYGROUND_PORT`。 |

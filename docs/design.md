@@ -14,7 +14,7 @@
 |---|---|---|
 | G1 | **一套稳定的 API**，与 jev / TypeSafe System One 一致 | 官方 `typesafe-sdk` 不改一行代码即可指向 Decis；官方文档示例原样跑通 |
 | G2 | **多引擎**，同一 API 背后可换模型 | 新增一个引擎 = 新增一个实现 `DecisionEngine` 的模块 + 一行注册，不改动 HTTP 层 |
-| G3 | **高性能**，面向高频小请求 | 支持跨请求动态批处理；给出可复现的 latency/throughput 基准，数字由脚本生成而非手写 |
+| G3 | **高性能**，面向高频小请求 | 给出可复现的 latency/throughput 基准（数字由脚本生成而非手写）。跨请求动态批处理**已实测为负收益**，不再是目标：见 [`design-review.md §4-M5`](design-review.md) |
 | G4 | **开箱即用**，权重默认打进镜像，也支持挂载 | `docker run` 一条命令起服务；`DECIS_MODEL_DIR` 指向挂载卷即可用外部权重 |
 | G5 | **工程化质量** | 契约测试进 CI；无权重也能跑完整测试（`tests/fixture_engine.py` 的测试替身 + tiny-fixture）；README 面向人类、AGENTS.md 面向 AI |
 
@@ -93,7 +93,8 @@ ProbDist = list[float]
 
 ### 3.1 HTTP 层：认证、限流、错误映射
 
-初版设计**完全漏掉了鉴权**——这是一个真实的安全缺口：Decis 的 Docker 镜像监听 `0.0.0.0:8000`，而 kev 上游之所以把 `host` 硬编码成 `127.0.0.1`，正是为了不让一个无鉴权的推理服务暴露在网络上。Decis 把服务开放出去，就必须自己把这件事做对。
+初版设计**完全没有鉴权**，而镜像是监听 `0.0.0.0:8000` 的推理服务——缺口的经过见
+[`design-review.md §2-D2`](design-review.md)。以下是现行设计。
 
 **认证**：
 
@@ -121,6 +122,11 @@ ProbDist = list[float]
 
 **CORS**：默认**关闭**。它是一个 API，不是给浏览器直接调用的；开 `*` 会让任意网页拿着用户浏览器里的 key 打你的服务。需要时用 `DECIS_CORS_ORIGINS` 显式列出。
 
+> **本节有一部分目前没有实现处**：`DECIS_RATE_LIMIT_RPM`、`DECIS_RATE_LIMIT_TOKENS_PER_S`、
+> `DECIS_MAX_STATE_CHARS`、`DECIS_MAX_QUESTIONS`、`DECIS_CORS_ORIGINS` 在 `src/decis/config.py`
+> 里都不存在，没有任何代码读它们（`DECIS_MAX_REQUEST_BYTES` 已实现）。
+> 上面记的是设计意图，落地前不要照着它们写用户文档（`AGENTS.md` 的"未实现"清单）。
+
 ---
 
 ## 4. 归一化层：三个"唯一事实来源"
@@ -142,22 +148,13 @@ def render(value, indent=0) -> str:
 
 > `render.py` 是**契约的一部分**，改动会改变所有引擎的行为。CI 必须有一组冻结的 `(input, rendered_text)` 快照。
 
-**Stage 1 修正：`render.py` 的边界在哪。** 上面写的"唯一"需要更精确。接 Laya 时发现的实际情况是：
-
-- **Laya 自己会渲染选项文本**。`build_sequence` 内部调用它自己的 `render_options`
-  （`laya/common.py:33-46`），给每个 choice 选项加 `"name: "` 前缀、给每个 score level 加
-  `"level N: "` 前缀、给 noul 补上默认的 false/true 描述。这些是 **Laya 序列格式的一部分**，
-  重写一份放在 `render.py` 里既是对上游内部的复制，也保证会漂移。
-- 所以正确的分工是：**`render.py` 拥有"任意 JSON → 可读文本"这一步**（`state` 整体、
-  `instructions`、每个 criterion 的值），这是所有引擎共用的、也是"同一个请求在不同引擎上看到的
-  文本一致"这条要求的落点；**每个引擎拥有"把这些片段排成它自己的序列"这一步**，因为那是模型
-  特有的，而且由模型自己的库提供。
-- 这个修正**没有动 `answers.py`，也没有动路由层**——`AGENTS.md §5` 说"如果接一个引擎要改这两处，
-  说明抽象错了"，这条通过了；要修正的是 `render` 契约的表述，不是它的实现。
-- 一个直接的后果：`noul` 的两个选项名 `"false"/"true"` 必须有一个渲染侧的家，供"只想构造一个
-  合法 noul"的调用方（例如引擎的 warmup）使用。它是 `render.noul_options`
-  （`AGENTS.md §2`），而不是各处的字面量；`tests/test_conventions.py` 断言只有 `render.py`
-  里出现 `Option("false"`。
+**`render.py` 的边界（Stage 1 修正）**：它拥有"任意 JSON → 可读文本"这一步（`state` 整体、
+`instructions`、每个 criterion 的值）——这是所有引擎共用的，也是"同一个请求在不同引擎上看到的文本
+一致"这条要求的落点；**每个引擎拥有"把这些片段排成它自己的序列"这一步**，因为那由模型自己的库提供
+（Laya 的 `build_sequence` 自己给选项加 `"name: "` / `"level N: "` 前缀，重写一份就是复制上游内部）。
+修正的经过见 [`design-review.md §2-D9`](design-review.md)。一个直接的后果：`noul` 的两个选项名
+`"false"/"true"` 的家是 `render.noul_options`（`AGENTS.md §2`），`tests/test_conventions.py`
+断言只有 `render.py` 里出现 `Option("false"`；引擎不得各自拼选项文本。
 
 **还有一条 Stage 1 才变得具体的要求：引擎必须能报告"我到底会吃掉多少 token"。**
 初版把容量校验设计成"引擎提供一个 `count_tokens(texts)`，`schema.py` 拿预算去比"。用 Laya 一测
@@ -247,58 +244,24 @@ class PreparedRequest:
 
 ### 5.1 协议
 
-```python
-@dataclass(frozen=True)
-class EngineInfo:
-    id: str  # "laya-multilingual" / "kev-0.8b"
-    version: str  # 上游包/权重版本，用于拼响应 model 字段
-    primitives: frozenset[str]  # {"noul","choice","score"}
-    max_options: int  # 单问选项上限
-    max_state_tokens: int
-    max_question_tokens: int
-    languages: str  # "en" / "100+" / "multilingual"
-    device: str  # "cpu" / "cuda" / "mps"
-    dtype: str
-    description: str  # 用于 GET /v1/models
-    release_date: str  # YYYY-MM-DD
+协议本身很小，**定义在 `src/decis/engines/base.py`**（`EngineInfo` / `WorkItem` / `Prediction` /
+`DecisionEngine`），本节**不复制它**——抄写就是第二处实现（§9），而且这份摘要已经漂移过一次：
+字段名、返回类型与方法集合都和代码对不上了。形状只需要记三条：
 
+- `predict(items) -> Prediction`：入参是**扁平的工作项列表**，每项自带 `state_text` 与一个
+  `PreparedQuestion`，返回值与入参逐位对应。批处理**不按 state 分组**（`AGENTS.md §3-18`）。
+- 一次 `predict` 调用只做一次前向（有测试钉住）。所以"能不能跨 state 批"由引擎自己决定：
+  Laya 与 kev 的 `rows` 模式全量喂，kev 的 `prefix` 模式（⬜ **未实现**，见 §6.3）在引擎内部按 state 分组再拼回。
+- `info()` 是静态描述、**不得加载权重**；`load()` 幂等；`measure(request) -> MeasuredTokens`
+  报真实的 token 数（§4.1）；`close()` 释放。容量用 `EngineInfo.max_sequence_tokens`（state 与一个
+  问题共享的预算）、`max_question_tokens`、`max_state_tokens`（默认 `0` = 没有独立上限）表达，
+  别名在 `aliases` 里。
 
-@dataclass(frozen=True)
-class WorkItem:
-    """一个 state 上的一个问题。调度器的最小工作单位。"""
-
-    request_id: str  # 回填用；不发给模型
-    state_text: str  # 已完成渲染（render.py）
-    question: PreparedQuestion  # 已完成渲染
-
-
-class DecisionEngine(Protocol):
-    def info(self) -> EngineInfo: ...
-    def load(self) -> None: ...  # 幂等；冷启动在服务就绪前完成
-    def predict(self, items: Sequence[WorkItem]) -> list[ProbDist]: ...
-    def close(self) -> None: ...
-```
-
-**`predict` 的签名是关键，初版把它设计错了。** 初版是：
-
-```python
-# 初版（错误）：整批共享一个 state_text
-def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) -> list[list[ProbDist]]: ...
-```
-
-它假设"一批问题共享同一个 state"。但真实流量里**每个请求的 state 都不同**（不同的工单、不同的邮件），按 state 分组会让组大小退化成 1，**跨请求批处理——整个吞吐论点的基石——就永远不会发生**。这是初版最严重的缺陷。
-
-现在改成**扁平的工作项列表，每项自带 `state_text`**，返回与之逐位对应的 `list[ProbDist]`。这个签名严格更一般：
-
-| 引擎批处理形态 | 如何实现 `predict(items)` |
-|---|---|
-| **Laya**（每 item 独立构序列，state 嵌在序列里） | 直接全量喂给 `collate_items`，一次前向 |
-| **kev `rows` 模式**（每行是独立序列） | 同上，全量一次前向 |
-| **kev `prefix` 模式**（同一 state 共享 KV 前缀） | 引擎内部按 `state_text` 自行分组，每组一次前向，最后按原顺序拼回 |
-
-关键点：**"能不能跨 state 批"是引擎的实现细节，不是协议的约束**。协议只要求"给我一批工作项，还我一串等长的概率分布"。能跨 state 批的引擎自然拿到大 batch；不能的引擎自己退化，且退化代价被限制在引擎内部。
-
-`scheduler/pool.py` 因此可以把**任何**请求的问题合并成一批（只受 token 预算与引擎容量约束），不需要按 state 分组。这同时消掉了"谁来负责 state 一致性"这个原本被推给调度器的问题。
+**初版的签名是错的**：它要求整批共享一个 `state_text`，并规定攒批器按 state 分组——而真实流量里每个
+请求的 state 都不同，按 state 分组会让组大小恒为 1，跨请求批处理永不触发（经过见
+[`design-review.md §2-D1`](design-review.md)）。现在的签名严格更一般：**"能不能跨 state 批"是引擎的
+实现细节，不是协议的约束**，所以调度器可以把任何请求的问题合并成一批（只受 token 预算与引擎容量约束），
+"谁来负责 state 一致性"这个问题也一并消失。
 
 
 ### 5.2 三个引擎的正确性边界
@@ -327,22 +290,13 @@ def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) 
 - 上游 `serve.py:147` 硬编码 `host="127.0.0.1"`——Decis 自己的 HTTP 层完全绕开它，不存在这个坑。
 - 必须遵守的上游不变量（`kev/AGENTS.md` 的 parity 要求）：merged/unmerged LoRA、prefix cache 命中/未命中、shape bucket padding 三条路径结果一致。Decis 的引擎测试要覆盖这三条。
 - **dtype 默认值必须按「引擎 × 设备」决定，不能全局统一**。实测（见 [feasibility.md §4](feasibility.md)）：kev-0.8b 在 CPU 上 `bf16` 比 `fp32` **慢 83 倍**（137s vs 1.66s），而两者概率几乎相同（差 ≤0.01）。原因是 Qwen3.5 的 Gated DeltaNet 在缺少 `flash-linear-attention` 时会回落到参考实现，而该路径在 CPU 上的 bf16 表现病态。
-  因此 `registry.py` 要为每个引擎声明 `default_dtype` 与「已知劣化组合」表：
+  因此 dtype 策略归 `registry.py`，**唯一事实来源是 `src/decis/engines/registry.py` 的
+  `DTYPE_DEFAULTS` / `DEGRADED`**，这里不抄一份——那份抄本已经漂移过（它给 `laya` 也列了 dtype，
+  而 Laya 的精度由它自己的 `Agent` 决定，`DECIS_DTYPE` 对它无效，`AGENTS.md §7`）。
+  取值规则：未列出的组合用 `cuda → fp16`、其余 `fp32`；用户显式覆盖成一个已知劣化组合时，
+  **启动日志必须大声告警**，而不是安静地慢 83 倍。
 
-  ```python
-  # (engine, device) -> dtype；未列出的组合用引擎默认值
-  DTYPE_DEFAULTS = {
-      ("kev", "cpu"): "fp32",  # bf16 on CPU is ~83x slower (measured)
-      ("kev", "cuda"): "bf16",
-      ("laya", "cpu"): "fp32",  # 上游 Agent 自身也会在 cpu/mps 上强制 fp32
-      ("laya", "cuda"): "fp16",
-  }
-  DEGRADED = {("kev", "cpu", "bf16"): "kev bf16 on CPU is ~83x slower than fp32 (measured); use fp32"}
-  ```
-
-  当用户显式覆盖成一个已知劣化组合时，**启动日志必须大声告警**，而不是安静地慢 83 倍。
-
-**`engines/remote.py`** —— 转发到真 `api.typesafe.ai`。
+**`engines/remote.py`（⬜ 未实现，见 §11）** —— 转发到真 `api.typesafe.ai`。
 
 - 价值有三：用户可以同一套 API 在本地/托管之间切换；**它是差分测试的 oracle**（见 §9）；成本极低（一个 httpx 客户端）。
 - 需要 `TYPESAFE_API_KEY`；`EngineInfo` 的能力来自配置或 `GET /v1/models`。
@@ -354,25 +308,15 @@ def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) 
 
 ### 5.3 引擎的加载必须是惰性的
 
-```python
-# registry.py
-ENGINES: dict[str, tuple[str, str]] = {
-    "laya": ("decis.engines.laya:LayaEngine", "laya"),
-    "laya-multilingual": ("decis.engines.laya:LayaEngine", "laya"),
-    "kev-0.8b": ("decis.engines.kev:KevEngine", "kev"),
-    "remote": ("decis.engines.remote:RemoteEngine", None),
-}
-```
+引擎注册表是 `src/decis/engines/registry.py` 里的 `SPECS`：id → `"module:ClassName"` + 可选依赖
+extra，**字符串路径、用时才 import**。出厂四个：`laya`、`laya-multilingual`、`laya-typed-decisions`、
+`kev-0.8b`（每个 Laya checkpoint 各一条，因为它们的权重与容量不同，`GET /v1/models` 要能分别描述）。
+**注册表里没有假引擎**：测试替身住在 `tests/fixture_engine.py`，只在测试进程里注册（§5.2 末尾）。
 
-字符串路径 + 用时 import。理由：一个只装 `decis[laya]` 的镜像里**没有 torch 版的 peft**，反之亦然；`GET /v1/models` 和 `/healthz` 必须在只加载了所选引擎的情况下可用。可选依赖 extras：
-
-```toml
-[project.optional-dependencies]
-server = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.9"]
-laya   = ["laya>=0.3.5,<0.4"]
-kev    = ["torch>=2.6,<3", "transformers>=5.17,<6", "peft>=0.21", "accelerate>=1.15"]
-all    = ["decis[laya,kev]"]
-```
+惰性 import 的理由：一个只装 `decis[laya]` 的镜像里**没有 peft**，反之亦然；`/healthz`、`/readyz`、
+`GET /v1/models` 必须在只装了所选引擎依赖的情况下可用（`AGENTS.md §6`）。可选的 extras 以
+`pyproject.toml` 为准（`laya` / `kev` / `remote` / `metrics` / `dev` / `download` / `all`；`remote` 与
+`metrics` 目前只登记了依赖，没有实现），这里不抄版本号——一个下界就是一个兼容性承诺，抄一份保证会漂移。
 
 ---
 
@@ -389,7 +333,7 @@ all    = ["decis[laya,kev]"]
 > - 固定总线程预算（24）下，1/2/4 进程吞吐差 1.18x，即**加进程也不增加吞吐**：单个前向已用满 24 线程。
 >
 > **因此**：按本节原设计实现的攒批器在真实流量下是 3–5 倍回归，比不实现更差。**本节以下内容保留为设计记录，但
-> §6.1 的收益推断与 §6.2 的攒批器方案均已失效**；是否彻底放弃待决（见 §12.1 的待决策项）。
+> §6.1 的收益推断与 §6.2 的攒批器方案均已失效**；§12.2 第 1 项的决定是**不做**（除非将来在 GPU 上重测）。
 > **本结论只适用于 CPU，且只测了 Laya**——GPU 上批处理通常是提升利用率的标准手段，M6 之前不得反推 GPU 行为。
 >
 > 仍然成立的部分：§6.3 的引擎形态差异、§6.5 的背压与超时、§6.6 的数值不确定性（后者与是否攒批无关，已是事实）。
@@ -428,6 +372,10 @@ all    = ["decis[laya,kev]"]
 
 > `auto` 的判据必须是"批内 state 重复度"，不是"队列里出现过相同 state"。在真实流量（state 各不相同）下 `auto` 应当稳定地选 `rows`；只有"固定文档 + 多变问题"这类场景才切 `prefix`。**`prefix` 模式的适用面比初版设想的窄**——初版把"同 state 分组"当成主路径，那是错的。这一点需要 Stage 3 实测确认，**在实测前不得写进 README 的性能承诺**。
 
+> **现状**：实现出来的只有 `rows` 这一条路径——`src/decis/engines/kev.py` 走的是上游的
+> `forward_batch`，没有 prefix cache 的调用点（vendored 的 `model.py` 里有这套代码，Decis 没用）。
+> 所以打包 + prefix cache 这一列是设计意图，`DECIS_BATCH_MODE` 也没有实现处（§6.4）。
+
 ### 6.4 进程模型
 
 ```
@@ -440,8 +388,13 @@ engine workers × N_engine   (每个进程一份权重，跑攒批循环)
 - 默认 `DECIS_HTTP_WORKERS=1`、`DECIS_ENGINE_WORKERS=1`，用小机器也能跑。
 - 机器上量后推荐 `N_engine = 加速器数` 或 `= min(cpu/4, 4)`（CPU）。
 - **内存要按实测 RSS 算，不是按权重体积算**。CPU 实测（见 [feasibility.md §4](feasibility.md)）：`laya-multilingual` 峰值 RSS **4.84 GB**、`laya` **2.80 GB**，而权重只有 644 MB / 804 MB —— 差额是 PyTorch 运行时加长序列 × 大批次的激活。所以 `N_engine × 5 GB` 才是容量规划公式。
-- **冷启动实测 73–76 s**（同一环境）。这直接决定 §10 的 `/healthz` 与 `/readyz` 必须分离，以及 §8 里 `HEALTHCHECK --start-period` 取 120 s。
+- **冷启动实测 73–76 s**（同一环境）。这直接决定 §10 的 `/healthz` 与 `/readyz` 必须分离，以及 §8.1 里 `HEALTHCHECK --start-period` 取 **180 s**（镜像里就是 180 s）。
 - 单机不引入 Redis/Celery 等外部依赖；跨机扩展留给 Stage 4。
+
+> **本节有一部分目前没有实现处**：`DECIS_HTTP_WORKERS`、`DECIS_ENGINE_WORKERS`、`DECIS_MAX_QUEUE`、
+> `DECIS_BATCH_MAX_WAIT_MS`、`DECIS_BATCH_MAX_SIZE`、`DECIS_BATCH_MODE` 在 `src/decis/config.py` 里
+> 都不存在，没有任何代码读它们。现在的进程模型就是"单进程 + 一把锁"（`InProcessScheduler`）。
+> 上面记的是设计意图，落地前不要照着它们写用户文档（`AGENTS.md` 的"未实现"清单）。
 
 **并发不变量（必须写进代码注释与测试）**：
 
@@ -462,28 +415,29 @@ engine workers × N_engine   (每个进程一份权重，跑攒批循环)
   - `DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量）；
   - 队列等待时间计入这个预算，不允许"排队 30 s 然后正常处理"；
 
-**Stage 2 修正：这个预算只能加在"进入引擎之前"。** 初版写"预算耗尽返回 504"、"单次 `predict`
-也要有上限"，实现时发现后者做不到：**同步的 `torch` 前向一旦开始就无法中断**，Python 里没有安全的
-办法把线程从一次 forward 里拉出来。能强制执行的只有**取锁**这一步，那也恰好是唯一属于 Decis 责任
-而非模型责任的部分。于是：
+**这个预算只能加在"进入引擎之前"**：同步的 `torch` 前向一旦开始就无法中断，Python 里没有安全的
+办法把一个线程从一次 forward 里拉出来，所以能强制执行的只有**取锁**这一步——那也恰好是唯一属于
+Decis 责任而非模型责任的部分。于是：
 
   - `InProcessScheduler.run` 用 `acquire(timeout=DECIS_REQUEST_TIMEOUT_MS)` 取锁；
   - 取不到就返回 **429 + `retry-after-ms`**，而**不是 504**。两者都在官方 SDK 的重试集合里，
     但 504 不带退避指令，SDK 会退回指数退避继续砸一个已经饱和的服务（§3-16）；429 才能告诉它等多久。
     这个请求**根本没有被启动**，所以它不消耗算力，也不会有"算完了但客户端已走"的浪费；
   - 已经在算的工作不受预算约束——这是必须如实说明的局限，不是可以悄悄略过的细节。
-  - **前提条件**：阻塞路由**不得**写成 `async def`，否则序列化发生在事件循环上，锁和预算都形同虚设
-    （`design-review.md §2-D8` 记录了踩到的这个坑）。
+  - **前提条件**：阻塞路由**不得**写成 `async def`，否则序列化发生在事件循环上，锁和预算都形同虚设。
+
+两处经过见 [`design-review.md §2-D6`](design-review.md) 与
+[`§2-D8`](design-review.md)。
 
 守卫：`tests/test_request_budget.py`。
-- 攒批窗口 `DECIS_BATCH_MAX_WAIT_MS`（默认 2–5ms，需实测）：太小失去批处理收益，太大增加尾延迟。**窗口必须有上限**，否则低流量时每个请求都会等到窗口结束才开始算——这会把 p50 延迟凭空抬高一个窗口长度。
-- **必须暴露的指标**：`queue_depth`、`batch_size_histogram`、`engine_infer_ms`、`prefix_cache_hit_ratio`、`rejected_total{reason}`。没有这些就无法调参，也无法区分"慢"是因为排队、算力还是 tokenization。
+- 攒批窗口 `DECIS_BATCH_MAX_WAIT_MS`（**未实现**，见 §6.4 的说明；默认 2–5ms，需实测）：太小失去批处理收益，太大增加尾延迟。**窗口必须有上限**，否则低流量时每个请求都会等到窗口结束才开始算——这会把 p50 延迟凭空抬高一个窗口长度。
+- **必须暴露的指标**（⬜ 同样没有实现处：`/metrics` 不存在，见 §10）：`queue_depth`、`batch_size_histogram`、`engine_infer_ms`、`prefix_cache_hit_ratio`、`rejected_total{reason}`。没有这些就无法调参，也无法区分"慢"是因为排队、算力还是 tokenization。
 
 ### 6.6 批处理会改变数值结果（必须显式面对）
 
 这是一个容易被忽略、但会影响正确性主张的事实：**批处理会改变浮点结果**。
 
-- padding 改变归约顺序；不同 batch 组成导致 GEMM 的 tiling 不同；Laya 的 option 预算还会随问题数变化（`head_max_len=192` 是按批内最长项截断的）。
+- padding 改变归约顺序；不同 batch 组成导致 GEMM 的 tiling 不同。原稿还写了“Laya 的 option 预算随批内最长项变化”——**实测不成立**：`build_sequence` 逐项算 head 预算，`collate_items` 只做 padding，批组成不改变任何一项的文本（`design-review.md §2-D3`）。
 - 因此同一个 `(state, question)` 在 `batch=1` 与 `batch=32` 下**可能得到不同概率**，极端情况下 `noul` 会跨过 0.5 或 `choice` 的 argmax 翻转。
 
 这与契约直接相关：官方 SDK **会对 POST 重试**，所以"同一个请求重发两次拿到不同答案"是可观测的行为，会被用户当成 bug 报告。
@@ -492,7 +446,7 @@ engine workers × N_engine   (每个进程一份权重，跑攒批循环)
 
 1. **承认并在文档里写明**：`/v1/systemone` 是**纯函数级**的（相同输入 + 相同批组成 → 相同输出），但**不承诺跨批组成的逐位一致**。这是所有批处理推理服务的共同性质，不是 Decis 的缺陷。
 2. **加测试把偏差钉住**：`tests/test_batch_invariance.py` 用固定权重、固定输入，比较 `batch=1/8/32` 的 `noul` 与概率向量，断言最大绝对偏差小于一个阈值（初值 0.02），并断言 **argmax 不变**。argmax 翻转必须视为测试失败——那是用户能感知的错误，而概率的微小抖动不是。
-3. **给用户一个逃生门**：`DECIS_BATCH_MAX_SIZE=1` 关闭批处理，换取逐位可复现（代价是吞吐）。需要审计/回归对比的场景可以用它。
+3. **给用户一个逃生门**：一次前向只放一个 item（`predict([item])`），换取逐位可复现（代价是吞吐）。需要审计/回归对比的场景可以用它——这不需要新旋钮，`WorkItem` 每项自带 `state_text`；原稿写的 `DECIS_BATCH_MAX_SIZE` 没有实现处（见 §6.4）。
 4. 这条也是 Stage 1 就要做的，不是优化项的附属品——因为如果偏差大到会翻转 argmax，整个批处理设计的价值就要重新评估。
 
 ---
@@ -566,68 +520,32 @@ kev 是"小 adapter + 大基座"。因此：
 
 ### 8.1 单 Dockerfile + 构建参数
 
-```dockerfile
-# ---------- builder ----------
-FROM python:3.12-slim-bookworm AS builder
-ARG DECIS_ENGINE=laya-multilingual
-ARG DECIS_EXTRAS=laya
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy HF_HOME=/tmp/hf
-WORKDIR /app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --extra ${DECIS_EXTRAS}
-COPY . /app
-RUN uv sync --frozen --extra ${DECIS_EXTRAS}
-# 权重在构建期落地：镜像自包含、冷启动可预测、离线可跑
-RUN uv run decis download --engine ${DECIS_ENGINE} --dest /app/models
-# 构建期 smoke test：缺内核/权重坏/精度不兼容都在这里失败，而不是发布后
-RUN uv run decis doctor --engine ${DECIS_ENGINE} --smoke-test
+只维护一份 `docker/Dockerfile`，**它是镜像定义的唯一事实来源**，本节不复制它。这里曾贴着一份早期
+草稿，写着 `python:3.12-slim-bookworm`、一个 builder 阶段、`/app/models`，还有一个并不存在的
+`decis doctor --smoke-test`——抄写就是第二处实现（§9），而它已经漂移过一次。形状只需要记两条：
 
-# ---------- final ----------
-FROM python:3.12-slim-bookworm AS final
-ARG DECIS_ENGINE=laya-multilingual
-ARG DECIS_VERSION=0.0.0
-ARG DECIS_REVISION=unknown
-ARG DECIS_CREATED=1970-01-01T00:00:00Z
-LABEL org.opencontainers.image.title="Decis" \
-      org.opencontainers.image.description="One API to run all light-weight decision models." \
-      org.opencontainers.image.source="https://github.com/chaitin/Decis" \
-      org.opencontainers.image.url="https://github.com/chaitin/Decis" \
-      org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.version="${DECIS_VERSION}" \
-      org.opencontainers.image.revision="${DECIS_REVISION}" \
-      org.opencontainers.image.created="${DECIS_CREATED}" \
-      org.opencontainers.image.base.name="docker.io/library/python:3.12-slim-bookworm" \
-      ai.decis.engine="${DECIS_ENGINE}"
-ENV DECIS_MODEL_DIR=/app/models HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-    DECIS_DEFAULT_ENGINE=${DECIS_ENGINE} PYTHONUNBUFFERED=1
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/models /app/models
-COPY --from=builder /app/src /app/src
-COPY --from=builder /app/README.md /app/README.md
-ENV PATH="/app/.venv/bin:$PATH"
+- 一个 `base` 阶段：`ARG DECIS_EXTRAS` 决定装哪些 extra，`ARG DECIS_PREDOWNLOAD` 决定要不要在构建期
+  把权重落到 `DECIS_MODEL_DIR`（= `/models`）。两个都为空时得到的是能起、能列模型、但不会 ready 的
+  纯 API 镜像——PR 构建的就是这一档，用来验证 Dockerfile 本身。
+- 发布用的镜像两个都填，于是权重在构建期落地：镜像自包含、冷启动可预测、离线可跑（§2-D20）。
+  构建期只跑 `decis doctor`（Dockerfile 里带 `|| true`），它是"装错了要早发现"，不是准入检查；
+  真会在客户机上炸的问题由那套真实权重的测试在 CI 里挡（§8.2）。
 
-# 非 root 运行。权重目录与缓存目录都要可写或显式只读
-RUN useradd --create-home --uid 10001 decis && chown -R decis:decis /app
-USER 10001:10001
+要点（这些理由在 Dockerfile 本身里看不到）：
 
-EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=3s --start-period=120s --retries=3 \
-  CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
-# 不用 exec 形式之外的花样：SIGTERM 必须直达 decis，优雅退出才生效
-CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-要点：
-
-- final 阶段只有 venv + 权重 + 代码，**不带编译器/git**；`HF_HOME` 指向 `/tmp` 所以在 builder 里不污染最终镜像；`DECIS_MODEL_DIR` 可被挂载卷覆盖。
-- **构建期 smoke test 是硬要求**（`decis doctor --smoke-test`），不是可选优化。kev 在 CPU 上缺内核、Laya 在 numpy 2.x 上的兼容问题，都必须在**构建期**暴露。见 [feasibility.md §5](feasibility.md) 的 R1。
-- **OCI 标签**（`org.opencontainers.image.*`）是供应链的基本要求：能追溯版本、revision、构建时间与基镜像。`ai.decis.engine` 用自有命名空间，不与 OCI 保留键冲突。
-- **非 root 运行**（`USER 10001:10001`）。只监听 8000 端口，不需要特权。这同时是很多集群的准入要求（pod security standards 的 `restricted` 档禁止 root）。
-- **SIGTERM 必须能到达进程**，所以 `CMD` 用 exec 形式且不套 shell 包装，否则容器编排的优雅下线失效（见 §10.3）。
-- `--start-period=120s` 是实测冷启动 73–76 s 的直接结论，不是拍脑袋的余量。
+- **OCI 标签**（`org.opencontainers.image.*`）是供应链的基本要求：能追溯版本、revision、构建时间与
+  基镜像。`ai.decis.engine` 用自有命名空间，不与 OCI 保留键冲突。
+- **非 root 运行**（`USER 10001:10001`），只监听 8000，不需要特权；这同时是很多集群的准入要求
+  （pod security standards 的 `restricted` 档禁止 root）。
+- **SIGTERM 必须能到达进程**，所以 `CMD` 用 exec 形式且不套 shell 包装，否则编排的优雅下线失效
+  （见 §10.3）。
+- **探针命令必须 `env -u` 掉代理变量**：`urllib` 读 `HTTP_PROXY`，于是探针去问代理要
+  `http://127.0.0.1:8000/healthz`、拿到 502，一个已经 ready 的服务被判成 unhealthy（§2-D19）。
+- **`HEALTHCHECK` 打 `/healthz`、`start-period` 取 180 s**（加载期间它也答 200），"能不能作答"则由
+  编排层的 `/readyz` 探针负责（§10.1、§2-D22）。
+- **`/models` 上不许挂任何卷**：命名卷会用镜像内容初始化一次然后自己留一份，bind mount 直接盖掉整个
+  目录，于是"离线镜像"变成"启动就联网下载"，而且不报任何错（§2-D21）。要把权重放卷，就用 `-runtime`
+  变体先 `decis download` 填一次。
 
 ### 8.2 CI 三段式（GitHub Actions）
 
@@ -687,12 +605,11 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 
 ## 10. 可观测性
 
-- 每个响应带 `x-typesafe-request-id`（契约要求），同一条结构化日志里输出：`request_id`、`engine`、`batch_size`、`queue_ms`、`infer_ms`、`total_ms`、`input_tokens`、`prefix_cache_hit`。
-- 必须额外记录的两个字段：
-  - **`X-TypeSafe-Retry-Count`**（SDK 重试时带上）——非零意味着客户端认为我们在失败，需要单独计数并告警；
-  - **`client_disconnect`**——SDK 10 s 超时后客户端会走掉。**必须能在日志里区分"我们慢"和"客户端先走了"**，否则会误判成服务端超时。
-- `/metrics` 暴露 Prometheus 指标（可选依赖 `decis[metrics]`）：队列深度、批大小直方图、推理耗时、引擎缓存命中率、各引擎请求计数、`rejected_total{reason}`。
-- 日志里的 `state`/`instructions` 内容**默认不打**（可能含用户隐私数据），只打 token 数与 hash；需要排障时用 `DECIS_LOG_PAYLOADS=1` 显式打开。
+- 每个响应带 `x-typesafe-request-id`（契约要求），同一条结构化日志里输出 `observability.py: log_request` 真正记录的字段：`request_id`、`method`、`path`、`status`、`duration_ms`，以及有值时的 `engine`、`batch_size`、`input_tokens`、`retry_count`、`error`。**没有** `queue_ms` / `infer_ms` / `prefix_cache_hit` 这类细分字段——要等 `/metrics` 与攒批器存在才有来源。
+- **`X-TypeSafe-Retry-Count`**（SDK 重试时带上）已经在日志里（字段名 `retry_count`）：非零意味着客户端认为我们在失败，值得单独计数并告警。
+- ⬜ **`client_disconnect` 未实现**。SDK 10 s 超时后客户端会走掉，**必须能在日志里区分"我们慢"和"客户端先走了"**，否则会误判成服务端超时；这个字段目前没有任何代码在写。
+- ⬜ **`/metrics` 未实现**。计划暴露 Prometheus 指标：队列深度、批大小直方图、推理耗时、引擎缓存命中率、各引擎请求计数、`rejected_total{reason}`；`decis[metrics]` extra 已登记，但没有代码用它。
+- 日志里的 `state`/`instructions` 内容**一律不打**（可能含用户隐私数据），只打 token 数与 hash。没有打开 payload 日志的开关。
 
 ### 10.1 健康检查三分离
 
@@ -739,6 +656,10 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 
 ```
 Decis/
+├── .dockerignore                 # ✅ 构建上下文排除（权重、.venv、缓存、docs/benchmarks/tests）
+├── .env.example                  # ✅ 部署与编排的环境变量样例（COMPOSE_PROFILES、DECIS_API_KEY…）
+├── .gitignore                    # ✅ 挡住 models/、*.safetensors、*.pt（§9）
+├── Makefile                      # ✅ compose 的快捷方式，不重写任何 tag/引擎 id（tests/test_makefile.py）
 ├── README.md                     # ✅ 面向人类：项目价值、快速开始、引擎表、性能头条、文档索引（英文，默认）
 ├── README.zh-CN.md               # ✅ 中文 README（与英文互链切换）
 ├── AGENTS.md                     # ✅ 面向 AI agent：约束、唯一事实来源、命令、禁区
@@ -748,15 +669,15 @@ Decis/
 ├── CHANGELOG.md                  # ✅ Keep a Changelog
 ├── LICENSE                       # ✅ Apache-2.0
 ├── NOTICE                        # ✅ 第三方署名（kev vendored 代码、Laya 等）
-├── pyproject.toml                # ✅ uv / hatchling，extras: server,laya,kev,all
+├── pyproject.toml                # ✅ uv / hatchling，extras: laya,kev,remote,metrics,dev,download,all
 ├── uv.lock                       # ✅
-├── docker-compose.yml            # ✅ 部署文件：profile = 引擎 id，一个引擎一个容器（权重在镜像里，§12.1 第 3 条）
+├── docker-compose.yml            # ✅ 部署文件：profile = 引擎 id，一个引擎一个容器（权重在镜像里，§2-D20/D21）
 ├── docker-compose.override.yml   # ✅ 靠文件名被 Compose 自动加载：源码目录里构建 `decis-local:*`
 ├── docker/
 │   └── Dockerfile                # ✅ 单文件 + ARG DECIS_ENGINE / DECIS_EXTRAS / DECIS_PREDOWNLOAD
 ├── .github/workflows/
-│   ├── ci.yml                    # ✅ lint + 无权重测试 + report.py --check + export.py --check
-│   └── docker-build.yml          # 🟡 test → plan → build(matrix) → merge → Docker Hub
+│   ├── ci.yml                    # ✅ test（lint + 无权重测试 + report.py --check + export.py --check）/ upstream / contract / docker（compose config + 起镜像）
+│   └── docker-build.yml          # ✅ test → plan → build(matrix) → merge → playground → release → Docker Hub
 ├── docs/
 │   ├── api-compatibility.md      # ✅ jev 契约（唯一事实来源，中文）
 │   ├── design.md                 # ✅ 本文（中文）
@@ -791,39 +712,58 @@ Decis/
 │   ├── answers.py                # ✅ ProbDist → Answer + confidence（唯一）
 │   ├── domain.py                 # ✅ 各层共享的领域类型（唯一，不依赖包内任何模块）
 │   ├── service.py                # ✅ 编排：解析模型、归一化、校验、组装响应
-│   ├── batch.py                  # ⬜ 攒批器（Stage 3）
-│   ├── scheduler.py              # ✅ Scheduler 协议 + 进程内实现（Stage 3 起负责攒批）
+│   ├── batch.py                  # ⬜ 攒批器（M5 之后很可能不做）
+│   ├── scheduler.py              # ✅ Scheduler 协议 + 进程内实现（串行化 + 取锁预算）
 │   ├── config.py                 # ✅ 环境变量（DECIS_*）集中处
 │   ├── paths.py                  # ✅ 权重解析（唯一）
 │   ├── cli.py                    # ✅ decis serve|download|models|doctor|bench
 │   ├── engines/
-│   │   ├── base.py               # ✅ DecisionEngine / EngineInfo / WorkItem
+│   │   ├── base.py               # ✅ DecisionEngine / EngineInfo / WorkItem / Prediction
 │   │   ├── registry.py           # ✅ id → 引擎类、别名表、惰性 import、dtype 策略
-│   │   ├── laya.py               # ✅
+│   │   ├── laya.py               # ✅ 三个 Laya checkpoint 三个类
 │   │   ├── kev.py                # ✅
 │   │   ├── remote.py             # ⬜ 把请求转发给另一个 Decis/jev
 │   │   └── _kev_vendor/          # ✅ pinned subset + NOTICE
 │   └── observability.py          # ✅
-├── tests/
-│   ├── conftest.py               # ✅ 无权重测试替身（fixture_engine.py）+ tiny fixtures
-│   ├── test_contract_openapi.py  # ✅ L0：schema 与官方 OpenAPI 快照同源
-│   ├── test_contract_shape.py    # ✅ L1/L2
-│   ├── test_contract_errors.py   # ✅ L3b：403/401/422/404/405 + request-id
-│   ├── test_contract_sdk.py      # ✅ L3/线上差分（由 TYPESAFE_LIVE_API_KEY 门控）
-│   ├── test_auth.py              # ✅ 认证顺序、常数时间、拒绝不安全的默认启动
+├── tests/                        # ✅ 28 个 test_*.py，全部可无权重跑；带真实权重的那两个用 -m weights 门控
+│   ├── conftest.py               # ✅ 无权重测试替身 + tiny fixtures；把 fixture_engine 注册成 stub
+│   ├── fixture_engine.py         # ✅ 确定性的测试替身引擎（不进出厂注册表）
+│   ├── test_answers.py           # ✅ answers.py：线格式决策的唯一实现处
+│   ├── test_api_schema.py        # ✅ 生成的 Schema 与运行中的应用一致，手改会被发现
 │   ├── test_batch_invariance.py  # ✅ batch=1/8/32 的偏差与 argmax 稳定性（含负向对照）
 │   ├── test_benchmark_report.py  # ✅ 吃住 §8：文档表格必须与原始 JSON 一致
-│   ├── test_api_schema.py        # ✅ 吃住生成的 Schema：手改会被发现，OpenAPI 与运行中的应用一致
-│   ├── test_docs.py              # ✅ 双语指南成对、互链、相对链接可解析、两侧结构一致
-│   ├── test_conventions.py       # ✅ "唯一事实来源"的守卫（照抄 kev 的思路）
-│   ├── test_engines_shape.py     # ✅
-│   └── test_upstream_contract.py # ✅ laya / kev 上游 API 未变
+│   ├── test_compose.py           # ✅ compose 与工作流/Dockerfile 对得上（不用 docker daemon）
+│   ├── test_config.py            # ✅ 环境变量处理与"拒绝暴露一个开放服务"
+│   ├── test_contract_errors.py   # ✅ L3b：403/401/422/404/405 + request-id
+│   ├── test_contract_openapi.py  # ✅ L0：schema 与官方 OpenAPI 快照同源
+│   ├── test_contract_shape.py    # ✅ L1/L2：成功响应的不变量
+│   ├── test_contract_sdk.py      # ✅ L3/线上差分（由 TYPESAFE_LIVE_API_KEY 门控）
+│   ├── test_conventions.py       # ✅ AST 守卫"唯一事实来源"与惰性 import
+│   ├── test_docker_workflow.py   # ✅ 从 YAML 里抠出 plan 脚本，按每种触发事件真跑一遍
+│   ├── test_docs.py              # ✅ 双语指南成对、互链、相对链接与锚点可解析、两侧结构一致
+│   ├── test_engines.py           # ✅ 注册表、惰性 import、stub 引擎的契约
+│   ├── test_engines_kev.py       # ✅ kev 引擎的归一化与容量算术（无权重）
+│   ├── test_engines_laya.py      # ✅ Laya 引擎的归一化与容量算术（无 torch）
+│   ├── test_examples.py          # ✅ examples/ 里的每条命令都真跑
+│   ├── test_kev_inference.py     # ✅ kev 真实权重：record 与上游逐字段相等、概率与上游一致（-m weights）
+│   ├── test_kev_vendor.py        # ✅ vendored kev 的 sha256 未被改动
+│   ├── test_laya_inference.py    # ✅ Laya 真实权重 + 批不变性 + 一次 predict 一次前向（-m weights）
+│   ├── test_makefile.py          # ✅ 用假 docker 真跑 make，并断言文档里的每个 make 目标存在
+│   ├── test_paths.py             # ✅ 权重定位：空卷/缺文件必须回退到网络
+│   ├── test_playground.py        # ✅ 游戏页面、代理、主题与 i18n 的唯一实现处
+│   ├── test_readiness.py         # ✅ 启动、就绪与下线（loading/ready/failed）
+│   ├── test_render.py            # ✅ render.py：确定性的 JSON → 文本
+│   ├── test_request_budget.py    # ✅ AGENTS.md §3-17 的取锁预算与 429
+│   ├── test_status.py            # ✅ decis models 不得夸大这台机器能跑什么
+│   └── test_upstream_contract.py # ✅ laya / kev 上游 API 与所依赖的行为未变
 ├── playground/
 │   ├── Dockerfile                # ✅ 无 RUN：纯标准库镜像，秒级构建
 │   ├── server.py                 # ✅ 静态文件 + 只转发 /v1/systemone 的代理（token 只在服务端）
 │   └── web/                      # ✅ index + snake/dino/tetris；theme.css 与 i18n.js 是共享的唯一实现
 ├── benchmarks/
+│   ├── README.md                 # ✅ 采集命令、方法学与每份数据的已知局限
 │   ├── run.py                    # ✅ 逐样本 JSON + 输入 sha256 + 全部维度
+│   ├── batch_gain.py             # ✅ 跨请求批处理：串行 vs 合成批 vs 多进程，带正对照（M5）
 │   ├── report.py                 # ✅ 由 JSON 生成 docs 与 README 的表格（--check 进 CI）
 │   ├── RESULTS.md                # ✅ report.py 的生成物（勿手改）
 │   ├── probe/                    # ✅ 实现前的引擎探测脚本（已 checked in）
@@ -838,177 +778,9 @@ Decis/
 
 ## 12. 里程碑
 
-**Stage 0 — 契约冻结（2–3 天）— ✅ 已完成**
-
-交付 `docs/api-compatibility.md`（含 L 级证据）与 `schema.py`、`auth.py`、`errors.py`；不接任何模型，用无权重的测试替身跑通官方 SDK。结束标志与实际结果：
-
-1. ✅ `typesafe_sdk` 的 `TypeSafeClient` 对着 Decis 跑通三种原语（`tests/test_contract_sdk.py`，走真实 uvicorn socket）。
-2. ✅ **L3b 错误契约测试全绿**（403/401 分工、认证先于校验、request-id 格式、422 形状；`tests/test_contract_errors.py`）。
-3. ✅ **L0 同源测试**：`test_contract_openapi.py` 断言 `schema.py` 的键集合/required/`const`/`minItems`/`minProperties` 与 `docs/contract/typesafe-openapi-0.2.0.json` 一致；CI 另有一个 job 校验快照版本未被无意 bump。
-4. ✅ 认证与不安全默认值的测试全绿（未配 key + 非回环地址 → 拒绝启动）。
-
-实现时新增/偏离设计的两点，均已回写文档：
-
-- 为打破 `schema ↔ render` 的循环依赖，抽出 `domain.py` 作为各层共享的领域类型（`Option`/`PreparedQuestion`/`PreparedRequest`/`ProbDist`）。分层见 `AGENTS.md §4`。
-- 加入 `service.py` 作为 HTTP 与引擎之间的编排层，使全部业务判断可以脱离 HTTP 测试；`routes.py` 因此没有分支逻辑。
-- 请求容量校验落在 `schema.validate_capacity`，接受一个 `count_tokens` 回调，从而不必 import 引擎层（`AGENTS.md §2` 已同步）。
-- 认证放在 ASGI 中间件而非 FastAPI 依赖，使"认证先于请求体校验"成为结构性质而非框架内部顺序的副产品。
-- `score` 的 `confidence` 由 kev 的"到众数平均距离"改为归一化熵，理由见 `api-compatibility.md §7`。
-
-**Stage 1 — Laya 引擎闭环** — ✅ 已完成
-
-四个验收标准全部达成：
-
-1. ✅ **`decis serve --engine laya-multilingual` 用真实权重回答真实请求**。三个原语
-   （`noul`/`choice`/`score`）都产出合法分布；`tests/test_laya_inference.py` 用真实权重验证，
-   共 14 个用例，CPU 上约 90 秒。
-2. ⚠️ **`/readyz` 在 warmup 完成后才转绿，但冷启动期间服务完全不响应**——这条与初版设计不符，
-   实测记录在 `design-review.md §2-D7`。冷启动实测 **79.7 秒**（CPU）：引擎在 lifespan 里同步加载，
-   而 uvicorn 是在 lifespan 跑完之后才进入协议循环的，所以这期间 `/healthz` 也是挂起的，
-   不是返回 503。镜像的 HEALTHCHECK 因此必须给足 `start-period`（现为 180 秒）。
-3. ✅ **`decis download` 可用**，且**只**拉目标 checkpoint 的文件（三个 checkpoint 共用一个
-   仓库，`allow_patterns` 保证不互相牵连）。
-4. ✅ **带权重的镜像可用**：`DECIS_PREDOWNLOAD=<engine>` 在构建期落地权重，
-   镜像因此可以无出口网络运行。
-
-实现时暴露的三个问题（前两个改的是设计，不只是代码）：
-
-- **`render.py` 的"唯一"边界写得过宽**。Laya 自己渲染选项文本（`"name: "`、
-  `"level N: "`、noul 的默认描述），那些是它序列格式的一部分。正确的分工是
-  "`render.py` 拥有任意 JSON → 可读文本，引擎拥有把片段排成自己的序列"，
-  见 §4.1 的 Stage 1 修正。**这处修正没有触碰 `answers.py` 或路由层**，
-  所以 §2 的抽象通过了它的第一次检验。
-- **容量校验的接口错了**。初版设计成"引擎给一个 `count_tokens`，`schema.py` 拿预算去比"。
-  `build_sequence` 会静默截断，而它的 head 预算包含 `render.py` 看不到的东西
-  （选项名前缀、每个选项一个 `[MASK]`、分隔符），所以任何基于"渲染后文本"的估算都会**低报**，
-  结果是请求通过校验然后被悄悄截断。改成 `DecisionEngine.measure() -> MeasuredTokens`
-  ——**引擎测量，`schema.py` 决定怎么办**；`EngineInfo.max_state_tokens` 随之改名为
-  `max_sequence_tokens`，因为 state 与 head 共享同一条序列。upstream 的不截断条件被压成
-  一个表达式（`engines/laya.py: budgeted_head`），并由 11 种形状 × 6 个预算的**双向**断言钉住。
-- **Laya 的 `Agent` 会和官方 manifest 打架**。上游 `Agent.__init__` 在加载失败时会**静默回落到
-  CPU**。Decis 不跟：那会在一次请求中间改变设备，破坏 §3-11 的"POST 是纯函数"，
-  并让此后每个请求的延迟变 10 倍。改为抛 `EngineUnavailableError`（503）。
-
-顺带记录一条对 §7 的独立佐证：**Laya 的 `confidence_from_probs` 就是 `1 − H(p)/log k`**，
-正是 Decis 为 `choice` 选的归一化熵口径。`source: laya/common.py`。对 Laya 而言
-`decis.native_confidence == confidence`；两个字段仍然分开，因为 kev 的 `noul` 口径不同。
-
-**Stage 2 — kev 引擎 + 抽象验证（3–5 天）** — ✅ 完成
-
-**已完成的先行项**（都是接 kev 之前必须先修的地基，详见 `design-review.md §2-D7/D8`）：
-
-1. ✅ **引擎改为后台加载**（D7 方案 B）。冷启动期间 `/healthz` 立即可用、`/readyz` 报
-   `loading`/`ready`/`failed`。实测：修正前第一条 HTTP 响应在 **79.7 秒**，修正后 **0.5 秒**。
-2. ✅ **修掉阻塞路由**（D8）。`/v1/systemone` 原本是 `async def` 却调用同步推理，一次推理会堵死
-   事件循环——连 `/healthz` 一起堵。改成普通 `def` 后由 Starlette 的线程池执行，
-   序列化交回给调度器的锁。
-3. ✅ **§3-17 的请求预算真正实现**。取锁设 `DECIS_REQUEST_TIMEOUT_MS`（默认 8000）上限，
-   超时返回 429 + `retry-after-ms`；见 `docs/design.md §6.5` 与 `tests/test_request_budget.py`。
-
-4. ✅ **kev 引擎落地**。vendor 了 `model.py`/`checkpoint.py`（pin `90990a5`，逐字节 + sha256 守卫），
-   实现了 `engines/kev.py`，注册为 `kev-0.8b`（别名 `kev`/`kev-latest`）。**`answers.py`、`render.py`
-   与路由层一行未改**——抽象成立。
-5. ✅ **抽象验证的实测结论**：Decis 构造的 record 与 kev 自己的 `api.to_record` 逐字段相等；`encode`
-   的 `ids/seg/pos/opt/decide_idx/opt_idx` 全等；概率与上游 `model.probs()` 差 `0.00e+00`；
-   官方 `typesafe-sdk` 通过 HTTP 拿到 `decis/kev-0.8b@vendored-90990a5` 的完整答案（20/20）。
-6. ✅ **新发现两处接口缺口并修掉**：选项文本必须由引擎自己决定（`design-review.md §2-D9`），
-   以及容量接口原本没有"state 单独上限"的位置（`§2-D10`，`EngineInfo.max_state_tokens`）。
-
-**未做**：`prefix` 缓存路径（`probs_and_prefix`/`probs_with_prefix`）尚未接进引擎——当前只走
-`forward_batch` 的批处理路径。多问题请求里 state 会被每行重复计算，属 Stage 3 的优化，
-已记录在 §5.1。kev-4b/9b 未注册（超出"轻量"定位）。
-vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是证伪/证实 §2 的抽象**：如果接 kev 需要改动 `answers.py` 或路由层，说明抽象错了，必须回去改。同时验证 §5.1 的 `WorkItem` 签名对 `rows` 与 `prefix` 两种模式都成立。
-
-**Stage 3 — 性能（5–7 天）** — 🟡 进行中
-
-已完成的部分（都不依赖攒批器）：
-
-- ✅ `tests/test_batch_invariance.py`：CI 可跑的批不变性。无权重、无依赖，靠一个真会 padding
-  的 fixture 引擎，带负向对照证明断言有效。
-- ✅ `benchmarks/run.py`：逐样本延迟 + `input_sha256` + 完整维度（引擎/设备/dtype/线程/进程/
-  批大小/state 长度/问题数）的原始 JSON。**线程数在子进程里测**，因为 torch 的线程数初始化后
-  改不了，同进程测两个会静默报错一个。
-- ✅ `benchmarks/report.py`：由原始 JSON 生成 README 与 `docs/feasibility.md` 的表格，
-  **生成前断言同组各配置处理同一个输入**（`input_sha256` + token 数），不一致拒绝生成；
-  `--check` 已进 CI。它第一次运行就抓到了 `design-review.md §2-D12`。
-- ✅ `decis bench`：`benchmarks/run.py` 的薄包装（不是第二份实现）。
-- ✅ `benchmarks/batch_gain.py` + `results/laya-multilingual-batch-gain.json`：**跨请求批处理的收益，
-  在实现它之前先测**（详下）。
-- ✅ `benchmarks/report.py` 现在也生成 `README.zh-CN.md` 与 `docs/design-review.md` 的批处理段，
-  并拒绝渲染**没有正对照**的攒批数据。
-- ✅ `docker-compose.yml`（+ 自动加载的 `docker-compose.override.yml`）：**profile 名 == 引擎 id ==
-  image tag == `--engine` == `DECIS_DEFAULT_ENGINE`**，**一个引擎一个容器**——权重烤在镜像里，
-  所以既没有预取服务也没有卷（§2-D20/D21）。默认只起 `.env.example` 里 `COMPOSE_PROFILES` 指定的那一个引擎
-  （两个引擎同时驻留要好几 GB 内存）。compose 层的探针打 `/readyz`，所以 `--wait` 真的等到能作答
-  （§2-D22）；镜像自带的探针仍是 `/healthz`。`tests/test_compose.py` 不用 docker daemon，把 image tag、
-  profile、端口、鉴权、两条探针、构建覆盖层与工作流 `plan` 脚本、Dockerfile 对起来；
-  CI 的 docker job 另跑 `docker compose [-f docker-compose.yml] config -q` 并断言两种解析方式的服务集合一致。
-
-未做：攒批器（**很可能不该做**，见下）、进程池、`/metrics`、
-各引擎 × 设备 × 批大小的完整表。**本阶段有三个必须先做的验证**：
-
-1. ✅ **跨请求批处理的真实收益**（§6.2）——**已测，结论为否定**，见 `design-review.md §4-M5`：
-   短序列正对照 1.92x，393 token 时降到 1.10x，真实流量形状（不同 state、长度倾斜）下**每个批大小都比串行慢**；
-   固定线程预算下 1/2/4 进程吞吐差 1.18x。**所以本阶段的第一件事从"实现攒批器"变成"不要实现它"**，
-   或者先决定 `§12.2` 的待决策项。
-   Stage 1 只证明了"引擎层能正确地把不同 state 的问题合成一次前向"（
-   `tests/test_laya_inference.py: test_one_predict_call_handles_every_state_in_one_forward_pass`），
-   那是必要条件，不是收益证据——事实证明收益也不存在。
-2. ✅ **批不变性**（§6.6）——已在 Stage 1 用真实权重测过（它是阶段 1 的前置，因为若 argmax
-   会翻转，整个批处理设计要重估）：16 条不同 state、三种原语、batch=2/4/8/16 共 12 组配置下，
-   **最大绝对偏差 8.345e-07，argmax 翻转 0 次**（原始记录
-   `docs/contract/stage1-batch-invariance.json`，设备/精度/runtime 均记在文件内）。
-   `tests/test_laya_inference.py` 以 `1e-5` 为界——比实测宽一个量级，但比"什么都不测"紧得多，
-   足以在 mask 出问题时变红。注意这只覆盖了"同一进程内、
-   不同 batch 组成"，**不覆盖**多进程/多 worker 之间的一致性。
-   **已补 CI 版本**：`tests/test_batch_invariance.py` 不再依赖权重——它用一个真的会 padding
-   并按 padding 宽度累加的 fixture 引擎，在 `batch=1/8/32` 上断言偏差上界与 argmax 稳定，
-   并且带一个**负向对照**（故意忽略 mask 的引擎必须让同一个断言失败），保证这个断言不是空转。
-   实测：正确引擎在 batch=32 上偏差 1.1e-16、0 次翻转；坏引擎偏差 2.3e-02 且翻转 1 次。
-3. ⬜ `DECIS_BATCH_MODE=rows|prefix|auto` 的默认值与判据。**但攒批器若不做，这个开关也没有实现处**——
-   先决定第 1 项，不要为一个可能不存在的机制先加配置项。
-
-**Stage 4 — 发布工程（3–5 天）** — 🟡 已开始
-
-- ✅ 三段式多引擎镜像工作流 `.github/workflows/docker-build.yml`：`test → plan → build(matrix) → merge`，
-  按引擎分镜像（`decis-<engine>`，**权重就烤在这个默认变体里**；不带权重的 `-runtime` 变体只在 release
-  与手动 dispatch 时构建，§2-D20），
-  多架构用**原生** `ubuntu-24.04-arm` 而不是 QEMU（QEMU 装 torch 太慢），
-  合并成多架构 manifest，push 时带 SBOM 与 provenance；PR 只构建 amd64 的 **engine-free 基础镜像**验证 Dockerfile。
-  矩阵生成逻辑是纯 bash，因此可以**离线执行测试**：`tests/test_docker_workflow.py` 把 `plan` 步骤的脚本
-  从 YAML 里抠出来，按每种触发事件真跑一遍。
-- ✅ **在真实 runner 上跑通一次**：2026-09-22 push 到 master 触发
-  [run 35742701211](https://github.com/chaitin/Decis/actions/runs/35742701211)，6 个构建腿 + 3 个 merge 全绿，
-  彼时镜像在 GHCR（现已只推 Docker Hub，见下条）。
-- ✅ **改为只推 Docker Hub 单仓库**：`chaitin/decis`，引擎进 tag，`laya-multilingual` 另外拿裸 `latest`。
-  理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
-- ✅ **2026-09-23 推 Docker Hub 成功**（run 35807645301，commit `574c0ac`），仓库公开。
-- ✅ **tag 方案定型**：引擎名即 tag（`chaitin/decis:laya-multilingual`），它是**烤权重**的那个变体；
-  只有 release tag 追加版本（`laya-multilingual-v1.2.0`），并同时发布瘦身的
-  `laya-multilingual-runtime-v1.2.0`；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
-  方案在 `plan` 步骤里算，有测试真跑（含"默认 tag 必须烤权重"和"不许给没装 extra 的腿烤权重"两条断言）。
-- ✅ **体积量过一次**（registry API 逐层求和，压缩后下载量）：烤权重的 `laya-multilingual`（= `latest`）
-  4401 MB amd64 / 4543-4544 MB arm64，`kev-0.8b` 6045 / 6188 MB；不带权重的 `-runtime` 变体是
-  3203 / 3346 MB 与 3206 / 3349 MB。体积由引擎与 checkpoint 决定而不是由源码决定（源码只改最上层的
-  那点字节），所以这些数字对当前工作流发布的镜像同样成立；下一次发布后可以用 registry API 复量。
-  历史上还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
-  装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，
-  那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
-  容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
-- ✅ **release 路径跑通**（8 条构建腿 + 4 个 merge）：烤权重那个发布镜像在容器里跑过（冷启动到
-  `/readyz` 122.3 s，常驻 2.87 GiB），体积逐层量过。**`-runtime` 变体没拉下来跑过**；
-  `kev-0.8b` 的容器内冷启动仍然没测（只在容器里起过 laya）；engine-free 基础镜像的体积与冷启动未测。
-
-**§12.2 待决策：权重层的代价**。默认镜像烤权重（§2-D20）之后，权重的 `RUN` 层会被**任何**源码改动
-作废（下载器要读引擎的权重声明，而那是代码），于是每次 master 推送都要重新下载 647 MiB（laya）
-或 1.7 GiB + 1.65 GiB 基座（kev），每架构各一次。省这笔钱的做法是把权重放进一个单独发布、
-很少变化的"模型层"镜像（例如 `chaitin/decis-models:<engine>-<weights-rev>`），引擎镜像改成
-`COPY --from=` 它：`COPY` 的缓存键是源镜像的 digest，所以源码改动不再触碰权重层。
-代价是多一类需要自己版本化的产物，以及"模型层与引擎镜像的权重版本会不会漂移"这个新问题。
-**没有实现**；在 CI 时长成为问题之前不要做。
-
-**Stage 5（可选）— 扩展** — ⬜ 未开始
-ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用 laya-mlx）；`Router` 式按语言自动选 checkpoint；shortlist 支持高基数 choice。
+**Stage 0–5 的逐阶段记账已删除。** 每个阶段交付了什么、偏离了什么、还剩什么，都在
+[`design-review.md`](design-review.md)（缺陷、方法论问题与尚未验证的清单）与下面的 §12.1
+（按"能对外承诺什么"排的三档账）里；按阶段再复述一遍是第二处记录（§9）。**当前状态只看 §12.1 与 §12.2。**
 
 ### 12.1 进度账（按"已经能对外承诺什么"排）
 
@@ -1026,7 +798,7 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 冷启动期间服务不"假死" | `/healthz` 立即 200，`/readyz` 报 loading/failed（D7 选 B） |
 | 超长请求被拒而不是被静默截断 | 容量校验 + `measure()` 报真实长度（D10） |
 | 文档里的性能数字来自原始 JSON | `report.py --check` 在 CI 里，`test_benchmark_report.py` 守着检查器本身 |
-| **跨请求批处理的收益有一个带正对照的实测结论** | `benchmarks/batch_gain.py` + `results/laya-multilingual-batch-gain.json`；正对照达标（1.92x）才允许出结论，`verify_batch_gains` 拒绝没有正对照的文件 |
+| **跨请求批处理的收益有一个带正对照的实测结论（否定）** | `benchmarks/batch_gain.py` + `results/laya-multilingual-batch-gain.json`；正对照达标（1.92x）才允许出结论，`verify_batch_gains` 拒绝没有正对照的文件。结论是 CPU 上不提升吞吐（[`design-review.md §4-M5`](design-review.md)） |
 | **镜像按引擎自动构建、多架构、可校验** | `.github/workflows/docker-build.yml`；矩阵逻辑由 `tests/test_docker_workflow.py` 真跑（引擎名、extra 映射、build-arg、PR 不推送） |
 
 **B 档 — 能跑，但缺一维证据（可以说，必须带保留）**
@@ -1041,10 +813,10 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
   （三个引擎 tag × amd64 / arm64，单腿 7m51s–15m52s），3 个 merge 任务成功，
   合成多架构 manifest（amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了
   "能构建、能推送、能合并"**；当时镜像在 GHCR，现已只推 Docker Hub。 |
-| 镜像体积与容器内冷启动 | **已量**：体积见上面的体积 bullet；容器内冷启动从起了容器到 `/readyz` 变 200 是 **122.3 s**（`compose --wait` 131 s），常驻 2.87 GiB。上面那次 2026-09-22 的运行本身没有记录体积、也没有在容器里起过服务。 |
+| 镜像体积与容器内冷启动 | **已量**：体积的权威表在 [`deployment.md`](deployment.md)（registry API 逐层求和）；容器内冷启动从起了容器到 `/readyz` 变 200 是 **122.3 s**（`compose --wait` 131 s），常驻 2.87 GiB。这两个数字来自本机 aarch64 CPU，**不来自 `benchmarks/results/`**，按 §8 不进 README 的性能表 |
 | release tag 路径与 `-runtime` 变体 | **已构建并推送**（[run 35830071254](https://github.com/chaitin/Decis/actions/runs/35830071254)：8 条腿 + 4 个 merge 全绿，产出 `<engine>-<version>` 与 `<engine>-runtime-<version>`）。**拉下来跑过的是烤权重那个**；`-runtime` 只验证了"能构建、能合并、体积对" |
 | 默认镜像里确实有权重 | **已验证**（aarch64，本地自建与发布镜像两版）：冷启动 **0 条下载**，容器内 `/v1/systemone` 真的作答且两版结果逐位相同；见 `AGENTS.md` 的镜像段落 |
-| Docker Hub 的发布路径 | **已验证的是迁移前那个命名空间**：2026-09-24 的 master 推送（[run 35956102642](https://github.com/chaitin/Decis/actions/runs/35956102642)）6 条构建腿 + 2 个 merge 全绿；更早一次还验证了匿名 token 能读到 manifest 与逐层体积、发布镜像能直接拉取。迁到 `chaitin` 命名空间后的第一次推送**被 registry 拒了**（`insufficient_scope`：`chaitin/decis` 这个仓库还不存在，而工作流用的凭据是自己的命名空间，对组织没有写权限），所以"能发布到 `chaitin/decis`"这一条**目前没有证据** |
+| Docker Hub 的发布路径 | **已跑通**：release tag 那次（[run 35968539793](https://github.com/chaitin/Decis/actions/runs/35968539793) attempt 2，10 条构建腿 + 4 个 merge 全绿）与随后的 master 推送（[run 35970758250](https://github.com/chaitin/Decis/actions/runs/35970758250)、[run 35976294418](https://github.com/chaitin/Decis/actions/runs/35976294418)）都成功，`chaitin/decis` 由第一次推送自动创建并公开。`docs/deployment.md` 里记的十个镜像引用都能解析；`laya-multilingual` 与裸 `latest` 是同一个 digest（`sha256:3186b350…`），release 的 `laya-multilingual-v0.3.0` 是 `sha256:44af82a1…`（解包 7.24 GB）。**未验证**：`-runtime` 变体只验到"能构建、能合并、体积对" |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 
@@ -1055,8 +827,7 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 多进程 / 多 worker 的扩展性 | **已测且为负**：固定总线程预算下 1/2/4 进程吞吐差 1.18x，加进程不增加吞吐。见 §4-M5 |
 | 429 在真实限流下的行为 | 无 API key，无法触发 |
 | 生产可用性（SLO、内存上限、并发数） | 无压测，无长时间运行观测 |
-| 镜像可移植性 | 工作流已就位（多架构、Docker Hub、SBOM/provenance），并已在真实 runner 上跑通过多架构构建、合并与推送（迁移前那个命名空间）；
-  **`chaitin/decis` 这个仓库至今没有任何一次成功发布**（见上面 B 档那一行），所以"照着文档 `docker pull chaitin/decis:...` 就能用"现在还不成立 |
+| 镜像可移植性 | 工作流已就位（多架构、只有一个 registry、SBOM/provenance），而且**发布出去的镜像已经拉下来跑过**：烤权重的引擎镜像在 `HTTP_PROXY`/`HTTPS_PROXY` 指向死端口时**零下载**、从 `/models/laya-multilingual/multilingual` 加载并作出完整契约响应（无凭证 403、错 key 401）。**未验证**：`-runtime` 变体（只验到能构建、能合并、体积对）、kev 的容器内冷启动、kev 的 compose 路径 |
 
 **剩余工作，按"挡住对外承诺的程度"排序**
 
@@ -1075,6 +846,10 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 4. **镜像的实测记录**——在真实 runner 上跑一次工作流，把镜像体积与容器内冷启动记进 `benchmarks/`。
 5. **GPU 上的同一组测量**（M6）——本结论**不适用于 GPU**，而 GPU 是 kev 的目标场景。
    在 GPU 上重跑 `batch_gain.py` 之前，不得对 GPU 的吞吐做任何承诺。
+6. **其余已知未做项**（都记在各自的段落里，这里不重复）：Laya 的**端到端**重采（现在 B 档那两份是
+   引擎本身的测量，`run.py` 才是服务端到端的采集器）、`remote.py` 转发（§5.2、§11）、kev 的
+   `prefix` 缓存路径（§5.2）、D11 的基座挂载（`design-review.md §2-D11`），以及可选的扩展
+   （ONNX Runtime 引擎、MLX 引擎、`Router` 自动选 checkpoint、高基数 choice）。
 
 ### 12.2 待决策项（需要产品判断）
 
@@ -1084,20 +859,13 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 2 | `DECIS_BATCH_MAX_WAIT_MS` 初值 | 攒批器不存在，该配置项也没有实现处 | 随第 1 项一起推迟；**不要**先加一个没有实现处的配置项 |
 | 3 | D13：`noul.criteria` 里的未知 key 静默忽略 | 仍为宽松行为；官方 SDK 会抛错，裸 JSON 不会 | 接受但报告（记日志 + 响应里 `decis.ignored_fields`）。理由见 `design-review.md §2-D13` |
 | 4 | 部署内存预算 → 进程数的关系 | 实测 `laya-multilingual` 峰值 RSS 4.83 GB/进程；本机 33.5 GB | 单进程用满线程即可（M5），容量按 `1 × 5 GB` 而不是 `N × 5 GB` 规划 |
-4. **用 `run.py` 重采 Laya**（端到端，而不是引擎本身）——把 B 档的延迟升到 A 档。
-5. **`docker-compose.yml` + `docker-build.yml`（多架构矩阵 + GHCR + SBOM）**（Stage 4）。
-6. ~~`examples/`（`curl.md`、`python_sdk.py`）~~ ✅ 已完成：三个文件，且**由
-   `tests/test_examples.py` 逐条执行**（`curl.md` 里 12 条命令的状态码、文档写出的响应字段形状、
-   官方 SDK 脚本的端到端运行都进 CI）。写它的过程发现 D13。
-7. `remote.py`——把请求转发给另一个 Decis/真 jev；需要先确认用户自有 key 的 ToS。
-8. `kev` 的 prefix 缓存路径——同一 state 多问题时的重复 prefill 优化（kev 是 prefill-only 架构，收益可能不小）。
-9. D11（挂载的 kev **基座**不被尊重）——只能靠上游 PR + re-vendor，不是本地补丁。
-10. ONNX / MLX 引擎、`Router`、高基数 choice（Stage 5，可选）。
 
-**一句话**：**契约层和引擎抽象已经完成并且有证据；性能层只有一个未经检验的假设。**
-现在的 Decis 是一个"格式正确、抽象正确、单请求正确"的服务，还不是一个"高吞吐"的服务。
-第 1 项不做完，README 里那句"one API to run all light-weight decision models"是对的，
-但"调用量会比较大"这个前提**没有答案**。
+**一句话**：**契约层与引擎抽象已经完成并且有证据；性能层现在有一条明确的负结论和一个实测上界。**
+跨请求批处理在 CPU 上不增加吞吐（[`design-review.md §4-M5`](design-review.md)），能报的只是
+"单进程 24 线程、`laya-multilingual`、CPU，约 1.2 项/秒"这个上界。
+现在的 Decis 是一个"格式正确、抽象正确、单请求正确"的服务，还不是一个"高吞吐"的服务：
+README 里那句 "one API to run all light-weight decision models" 是对的，但**"调用量会比较大"这个前提
+目前没有数据**——CPU 上没有可用的吞吐手段，GPU 与 kev 都还没测。
 
 ---
 
@@ -1106,14 +874,14 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | # | 问题 | 影响 | 计划 |
 |---|---|---|---|
 | Q1 | CPU-only 容器上两个引擎的真实延迟与内存 | 决定 README 的期望管理与默认并发 | **已完成**，见 [feasibility.md §4](feasibility.md) |
-| Q2 | 跨请求批处理的实际收益曲线（batch 1→8→32） | 决定 `batch.py` 的复杂度是否值得。**这是全设计最大的未验证假设** | Stage 3 实测，且是 Stage 3 的第一件事 |
-| Q3 | kev 的 `rows` vs `prefix` 模式在不同 state 分布下的权衡 | 决定默认 `DECIS_BATCH_MODE`。注意 §6.3 的修正：`prefix` 的适用面比初版设想的窄 | Stage 3 实测 |
-| Q4 | CPU 上 `torch.set_num_threads` 与进程数的组合 | 影响吞吐 2–3× | 部分完成（单进程线程扫描已完成）；多进程组合 Stage 3 实测 |
+| Q2 | 跨请求批处理的实际收益曲线（batch 1→8→32） | 决定 `batch.py` 的复杂度是否值得 | **已实测（M5），结论为否定**：正对照短序列 1.92x、393 token 1.10x；真实流量形状下最高 1.09x，长度倾斜时慢 3–5 倍；固定线程预算下加进程也不增加吞吐。见 [`design-review.md §4-M5`](design-review.md) |
+| Q3 | kev 的 `rows` vs `prefix` 模式在不同 state 分布下的权衡 | 决定默认 `DECIS_BATCH_MODE` | **随 Q2 一起关闭**：攒批器不做，这个开关就没有实现处（§12.2 第 2 项）。§6.3 的修正仍然成立：`prefix` 的适用面比初版设想的窄 |
+| Q4 | CPU 上 `torch.set_num_threads` 与进程数的组合 | 影响吞吐 | **已实测（M5）**：固定总线程预算（24）下 1/2/4 进程的吞吐差 1.18x，即加进程不增加吞吐（单个前向已经用满 24 线程） |
 | Q5 | 是否需要支持 Qwen3 世代的 kev 模型作为回退 | Qwen3.5 混合架构在 CUDA 上需要 `flash-linear-attention`+triton，是部署脆弱点；**CPU 上实测 1.66 s/请求（fp32）**，已不适合"轻量高频"定位 | 先支持 0.8b；CPU 镜像把它标为"功能可用、性能不达标"；CUDA 实测后再定 |
 | Q6 | README 用英文还是中文 | 影响受众 | **已决定**：英文为默认 + `README.zh-CN.md`，互链切换 |
 | Q7 | 认证方案（单 key / 多 key / 是否需要 JWT 或按 key 的配额） | 影响多租户可用性 | ✅ Stage 0 已做 `DECIS_API_KEY`/`DECIS_API_KEYS`（常数时间比较、401/403 分工）；多租户配额留到有真实需求时 |
 | Q8 | `confidence` 是否要提供"引擎原生"与"统一"两个可选口径 | 影响可移植性与标定准确性（api-compatibility §7） | ✅ Stage 0 固定统一口径 + 始终暴露 `decis.native_confidence`；若用户反馈强烈再加开关 |
-| Q7 | 是否接受 `laya` 作为硬依赖（而非 vendor） | 上游 API 稳定性 | 先用 PyPI + 契约测试守卫 |
+| Q9 | 是否接受 `laya` 作为硬依赖（而非 vendor） | 上游 API 稳定性 | 先用 PyPI + 契约测试守卫 |
 
 ---
 
@@ -1126,7 +894,7 @@ kev 已经实现了 jev 兼容的 `/v1/systemone`，Decis 与它的关系必须�
 | 定位 | 一个模型家族的**研究项目** | 多模型家族的**服务框架** |
 | 引擎数 | 1（自己的 checkpoint） | N（可插拔） |
 | 契约 | 兼容，但有 §7 表中的若干偏差 | 严格按 OpenAPI 生成物对齐 |
-| 批处理 | 单请求串行（一个 `threading.Lock`） | 跨请求攒批 |
+| 批处理 | 单请求串行（一个 `threading.Lock`） | 同一实例串行化（`InProcessScheduler`，一次一个 `predict`）；跨请求攒批经 M5 实测后**没有实现** |
 | 打包 | 无 Dockerfile、无镜像 CI | 多引擎多架构镜像矩阵 |
 | 引擎来源 | 自训练 | 复用社区权重（kev、Laya），并可转发真 jev |
 

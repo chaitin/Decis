@@ -1,5 +1,5 @@
 {
-  "_comment": "Stage 1 evidence for docs/design-review.md D3: does batch composition change an answer? Each item's probability vector computed alone is compared against the same item's vector when it is row i of a padded batch of size N. Produced by .scratch/batch_deviation.py. This is a numerical-accuracy record, not a latency benchmark; see benchmarks/results/ (Stage 3) for performance.",
+  "_comment": "Stage 1 evidence for docs/design-review.md D3: does batch composition change an answer? Each item's probability vector computed alone is compared against the same item's vector when it is row i of a padded batch of size N. The property is asserted by tests/test_batch_invariance.py (weight-free, CI) and against real weights by tests/test_laya_inference.py. This is a numerical-accuracy record, not a latency benchmark; see benchmarks/results/ (Stage 3) for performance.",
   "method": {
     "reference": "each item predicted alone (batch of 1)",
     "comparison": "the same item as row i of a batch of N items with N distinct states",

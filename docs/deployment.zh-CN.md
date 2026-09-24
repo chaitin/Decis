@@ -19,7 +19,8 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 
 `chaitin/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
 以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。`make build-playground`
-会在几秒内从当前 checkout 构建出同一个 tag，源码目录里的 Compose 覆盖层走的就是这条路。
+会在几秒内从当前 checkout 构建出 `decis-local:playground`；源码目录里的 Compose 覆盖层用的就是
+这个名字，它绝不会复用发布用的 tag，所以本地构建不会把它覆盖掉。
 
 体积是压缩后的下载体积，由上面这些 tag 的 registry manifest 逐层求和得出。它们不属于
 `benchmarks/results/`，`report.py` 也不会重新生成它们，所以把体积当成拉取大小的参考，而不是
@@ -34,9 +35,10 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
 release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会生成
-`laya-multilingual-<version>` 与 `kev-0.8b-<version>`、下面说的不带权重的
-`-runtime-<version>` 变体，以及该 tag 对应的 GitHub Release。引擎名那些 tag 正好相反——
-它们随每次推送到 `master` 移动，所以要钉住的是带版本的 tag。
+`laya-multilingual-v<version>` 与 `kev-0.8b-v<version>`——当前 release 是
+`laya-multilingual-v0.3.0`——以及下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
+对应的 GitHub Release。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，所以要钉住的
+是带版本的 tag。
 
 ### 自带权重
 
@@ -54,7 +56,7 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaiti
 ### 不带权重的镜像
 
 如果部署要把权重只留一份放在共享卷上，或者必须让每个节点的镜像尽量小，release 还会发布不带
-权重的变体，名为 `<engine>-runtime-<version>`（3.2 GB amd64 / 3.3 GB arm64）。先把卷填一次，
+权重的变体，名为 `<engine>-runtime-v<version>`（3.2 GB amd64 / 3.3 GB arm64）。先把卷填一次，
 然后运行：
 
 ```bash
@@ -65,8 +67,10 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
   chaitin/decis:laya-multilingual-runtime-v0.3.0
 ```
 
-卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。`v0.3.0` 是当前版本，
-而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master` 移动。
+要在离线环境服务，就得先把卷填好：卷为空时 `paths.resolve` 会退回 Hub，容器在加载时下载权重。
+这个 runtime 镜像确实装了引擎的依赖，所以那次下载能成功——它只是需要网络，而气隙部署没有网络。
+`v0.3.0` 是当前版本，而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master`
+移动。
 
 ## Docker Compose
 
@@ -104,13 +108,17 @@ until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 ```bash
 make help                    # 目标清单，以及本目录解析到的引擎
 
-make up                      # 用本仓库源码构建 decis-local:*，起一个引擎 + 游戏页面
+make up                      # 用本仓库源码跑 decis-local:*；缺什么才构建什么
+make up-local                # 同上，但先重建：引擎那一层要重新烤权重
 make down                    # 停止；镜像保留
 
-make build-playground        # 几秒：那个 Dockerfile 没有 RUN
-make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
+make build                   # 当前 profile 要跑的每个镜像
 make build-engine ENGINE=kev-0.8b
+make build-engines           # 所有引擎镜像，不论当前是哪个 profile
+make build-playground        # 几秒：那个 Dockerfile 没有 RUN
 make up-engine    ENGINE=kev-0.8b
+make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
+make restart                 # 重启正在运行的东西
 
 make ps / logs / images / config   # 正在运行的东西，以及它们来自哪些镜像
 make pull                    # 部署路径：拉发布的 chaitin/decis:* 镜像
@@ -174,9 +182,6 @@ terminationGracePeriodSeconds: 30   # > DECIS_SHUTDOWN_GRACE_MS
 - 上面的内存值是占位示例。引擎加载后是常驻的，峰值是权重文件的数倍，所以要按
   [性能](performance.zh-CN.md)里的实测表、按引擎分别定 request 与 limit。
 
-峰值内存是权重文件的数倍（见[性能](performance.zh-CN.md)）；内存上限要按实测来定，而不是按
-下载体积。
-
 ## 安全说明
 
 - 没配 token 时，服务在非回环地址上拒绝启动，除非显式设置 `DECIS_ALLOW_NO_AUTH=1`。见
@@ -185,4 +190,6 @@ terminationGracePeriodSeconds: 30   # > DECIS_SHUTDOWN_GRACE_MS
   用这个模型**。这和把引擎端口直接发布出去是同一个决定，而且连 token 都不用问。在你不信任的
   主机上把它绑到回环：`DECIS_PLAYGROUND_HOST_PORT=127.0.0.1:8080`。
 - 每个镜像 tag 都由 [`.github/workflows/docker-build.yml`](../.github/workflows/docker-build.yml)
-  里的工作流构建，并带 SBOM 与 provenance 证明。
+  里的工作流构建。会推送的构建——推送到 `master`、发布 release tag、或手动 dispatch 时要求
+  推送——还会带上 SBOM 与 provenance 证明；只构建不推送的运行（例如 pull request）两者都不
+  请求，因为证明本身就要求推送。

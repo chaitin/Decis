@@ -19,8 +19,9 @@ send, what comes back, and what the errors mean. The machine-readable definition
 | Auth | `Authorization: Bearer <token>` |
 
 There is one API version, `v1`, and it is the contract Decis shares with the hosted API. The
-server's own version is in `/healthz` and in the `decis` namespace of every response; it
-never changes the wire shape.
+server's own version is in `/healthz` only. The `decis` namespace of a response carries
+`engine_version`, which is the upstream model package's version and moves independently of
+Decis's own. Neither ever changes the wire shape.
 
 ## Authentication
 
@@ -144,8 +145,7 @@ All three can be mixed in one request and are evaluated against the same `state`
 
 - `criteria` is optional; both halves are optional. If you send it, the keys must be exactly
   `"true"` and `"false"` — **any other key is ignored silently** and the answer is computed
-  without it. That is the underlying schema's behaviour, not a Decis choice; see
-  [`design-review.md §2-D13`](design-review.md).
+  without it. That is the underlying schema's behaviour, not a Decis choice.
 - The answer is a single scalar `noul` = P(true), with no `confidence` and no
   `probabilities`.
 
@@ -238,10 +238,21 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 }
 ```
 
-- An engine whose *dependencies* are not installed in this image is left out of the list
-  entirely; an engine whose weights are missing is still listed. `version` is the version of
-  the upstream package that will run the forward pass, or `not-installed` when that package
-  is absent. `device` is `unloaded` while the engine is idle.
+- Every registered engine is listed, whether or not this image can run it. `version` is the
+  version of the upstream package that will run the forward pass, or `not-installed` when
+  that package is missing — a missing *package* does not hide an engine, and neither does a
+  missing *checkpoint*.
+- `dtype` is `unloaded` until the engine has loaded, and `device` is not a load test: some
+  engines report their device before loading (`kev-0.8b` reports `cpu`), others report
+  `unloaded` while they are idle (Laya).
+- `max_question_tokens` and `max_sequence_tokens` here are the fallbacks Laya declares for a
+  checkpoint that names no limits (`DEFAULT_HEAD_MAX_LEN`, `DEFAULT_MAX_LEN` in
+  `src/decis/engines/laya.py`) — which is what an engine that has not loaded reports. Once it
+  has loaded, the entry is replaced with the limits its checkpoint declares, so read this row
+  after `/readyz` turns green.
+- `languages` is the language coverage the checkpoint declares. `aliases` is part of the
+  payload, but the engines that ship today report an empty list; the names a server actually
+  answers to are the ones `uv run decis models` prints.
 - Extra fields are allowed in the `decis` namespace only, which is why the capacities are
   there and not at the top level.
 - `max_state_tokens: 0` means the sequence limit is the only one. `kev-0.8b` sets it (384),
@@ -270,7 +281,7 @@ the process is replaced, which is why it does not invite a retry.
 
 ## Errors
 
-Two body shapes exist, and clients must handle both.
+Three body shapes exist, and clients must handle all three.
 
 **Everything except validation** — auth, overload, faults:
 
@@ -284,20 +295,30 @@ Two body shapes exist, and clients must handle both.
 {"detail": [{"loc": ["body", "questions", "department"], "msg": "…", "type": "too_long"}]}
 ```
 
+**Unknown path or wrong method**, answered by the router before any Decis code runs, so
+`detail` is a plain string. The request id header is still set.
+
+```jsonc
+// GET /nope -> 404
+{"detail": "Not Found"}
+// GET /v1/systemone, POST /v1/models -> 405
+{"detail": "Method Not Allowed"}
+```
+
 | Status | `error_type` | When |
 |---|---|---|
 | **401** | `authentication_error` | The bearer token is not valid. |
 | **403** | `authentication_error` | No credential, or a scheme other than `Bearer`. |
-| **404** | — | Unknown path. |
-| **405** | — | Known path, wrong method. |
+| **404** | — (`detail` is a string) | Unknown path, answered by the router. |
+| **405** | — (`detail` is a string) | Known path, wrong method, answered by the router. |
 | **413** | `request_too_large` | Body over `DECIS_MAX_REQUEST_BYTES` (2 MiB by default). |
-| **422** | validation | Bad JSON shape, or a request the engine cannot honour: too many options, an over-long question, `state` over the engine's budget, an empty `criteria`, an unknown `model`. |
+| **422** | — (`detail` is a list) | Bad JSON shape, or a request Decis cannot honour: too many options, an over-long question, `state` over the engine's budget, an empty `criteria`, an unknown `model`. |
 | **429** | `rate_limit_error` | Waiting for the engine exceeded `DECIS_REQUEST_TIMEOUT_MS`. Carries `retry-after-ms`. A forward pass that has already started cannot be interrupted, so this covers queueing only — there is no separate 504. |
-| **500** | `engine_error` | The engine raised. The message includes the request id. |
+| **500** | `engine_error` | The engine raised. The message names the engine and the exception; the request id is in the header and the log. |
 | **503** | `engine_unavailable` | The engine is not loaded, or the load failed. |
 
 A 422 for capacity names the field and the limit, for example
-`Question 'placement' is about 207 tokens, over this model's limit of 192 per question.`
+`Question 'placement' is about 207 tokens, over this model's limit of 192 per question. Shorten the instructions or the criteria descriptions.`
 Decis rejects an over-budget request rather than truncating it, because a truncated input
 produces a confident wrong answer instead of an error.
 
@@ -311,6 +332,10 @@ The `model` field is required. Two kinds of value are accepted:
   substitution off and get a 422 instead.
 - **A versioned id** such as `decis/laya-multilingual@0.3.6`, as returned by `/v1/models`.
   A server running that engine answers it; a server running a different engine returns 422.
+
+A server also answers each engine's aliases: `laya-multi` for `laya-multilingual`, `kev` or
+`kev-latest` for `kev-0.8b`, `laya-english` for `laya`. `uv run decis models` prints the full
+list of names a server accepts.
 
 ## Retries and idempotency
 

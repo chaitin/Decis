@@ -16,7 +16,7 @@
 |---|---|---|
 | **核心抽象是否站得住** | ✅ **扎实** | 两个架构完全不同的模型（BERT 系 vs 自回归 LM 系）各自独立收敛到同一中间表示。这不是类比，是两条独立实现路径的实证 |
 | **契约对齐** | ✅ **现在扎实，初版不扎实** | 初版只看服务端的 schema 声明；补做线上观测后**发现了一处真错误**（§2.2） |
-| **性能论证** | ⚠️ **部分未验证** | 最核心的断言（跨请求批处理带来吞吐）**完全没测过**；已测的部分方法上有序效应 |
+| **性能论证** | ✅ **已测，结论为否定** | 最核心的断言（跨请求批处理带来吞吐）由 M5 实测否定：CPU 上真实流量形状下不提升吞吐。已测的部分方法上有序效应（M2） |
 | **标准符合性** | ⚠️ **多数尊重，少数有意偏离且已记录** | 见 §3。最关键的一点：**契约兼容与标准符合在这一个点上冲突，我们选了兼容，并把它写下来** |
 | **安全** | ❌ **初版有硬缺口，已补** | 初版**完全没有鉴权设计**，而镜像监听 `0.0.0.0` |
 | **可运维性** | ❌ **初版有硬缺口，已补** | 缺少优雅下线、启动顺序；而冷启动是 75 秒 |
@@ -91,11 +91,11 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 - `DECIS_API_KEY` / `DECIS_API_KEYS`，用 `hmac.compare_digest` 常数时间比较。
 - **先认证、再校验请求体**——线上实测确认真 jev 就是这个顺序（无 key + 非法 body → 403 而非 422）。反过来的实现会向未认证调用方泄露校验细节。
 - **默认安全**：未配 key 且 `--host` 非回环地址时**拒绝启动**，需 `DECIS_ALLOW_NO_AUTH=1` 显式承担风险。从 kev 学到的教训是：**不安全的默认值会被原样部署到生产**。
-- 同时补了请求体上限（`DECIS_MAX_REQUEST_BYTES`，在读取 body 前用 `Content-Length` 拒绝）、限流、以及 **CORS 默认关闭**（它是 API，不是给浏览器直接调的；开 `*` 会让任意网页用用户浏览器里的 key 打你的服务）。
+- 同时补了请求体上限（`DECIS_MAX_REQUEST_BYTES`，在读取 body 前用 `Content-Length` 拒绝）与 **CORS 默认关闭**（它是 API，不是给浏览器直接调的；开 `*` 会让任意网页用用户浏览器里的 key 打你的服务）。**限流没有实现**：`DECIS_RATE_LIMIT_RPM` / `DECIS_RATE_LIMIT_TOKENS_PER_S` 没有任何代码读（见 `design.md §6.4` 的未实现清单）；过载时唯一能做的是取锁预算返回 429（`AGENTS.md §3-17`）。
 
 ### D3（中）没处理"批处理会改变数值结果" — 已补
 
-批处理会改变浮点归约顺序、GEMM tiling，Laya 的 option 预算还按批内最长项截断。所以**同一个 `(state, question)` 在 `batch=1` 与 `batch=32` 下可能得到不同概率**，极端情况下 argmax 会翻转。
+初版的判断是：批处理会改变浮点归约顺序、GEMM tiling，Laya 的 option 预算还按批内最长项截断（**这最后一条后来被实测否定，见下**）。所以**同一个 `(state, question)` 在 `batch=1` 与 `batch=32` 下可能得到不同概率**，极端情况下 argmax 会翻转。
 
 这与契约直接冲突：官方 SDK **会自动重试 POST**，所以"重发同一请求拿到不同答案"是可观测行为，会被当成 bug 报上来。初版对此**完全沉默**。
 
@@ -103,7 +103,7 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 1. 文档写明：承诺"相同输入 + 相同批组成"下确定，**不承诺跨批组成逐位一致**。这是所有批处理推理服务的共同性质。
 2. 加 `tests/test_batch_invariance.py`：`batch=1/8/32` 比较概率向量，断言最大偏差 < 阈值，且 **argmax 必须不变**。argmax 翻转视为测试失败——那是用户能感知的错误。
-3. 提供 `DECIS_BATCH_MAX_SIZE=1` 逃生门，换取逐位可复现。
+3. 逃生门是**一次前向只放一个 item**（`predict([item])`），不需要任何新旋钮：`WorkItem` 每项自带 `state_text`，所以“一项一算”永远是合法的调用。原稿在这里写的 `DECIS_BATCH_MAX_SIZE=1` **不存在**——`config.py` 不读它，见 `design.md §6.4` 的未实现清单。
 4. 列入 Stage 3 的**前置**验证，不是优化项的附属品。
 
 **Stage 1 的实测（部分完成，比预期乐观）。** 原判断有两处过度悲观，一处仍然成立：
@@ -145,16 +145,10 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 实测冷启动 **73–76 秒**，而初版只写了"`/healthz` 与 `/readyz` 分开"一句话。缺的是：
 
-- **必须先加载、后监听**。先 bind 端口再加载，编排器会看到端口通了就送流量，请求排在加载后面直到超时。
-- **`/readyz` 必须包含一次 warmup 前向**。Laya 首次前向会做惰性初始化，把它算进"就绪"会导致第一个真实用户请求特别慢。
-- **加载失败要进程退出非零**，不能"起来了但没引擎"。
-- **优雅下线**：`SIGTERM` → 停止接受新连接 → 排空在途 → 释放引擎。**并且 `terminationGracePeriodSeconds` 必须大于冷启动时间**，否则滚动更新永远健康不了（新 Pod 还没 ready，旧 Pod 已被杀）。这是 75 秒冷启动的直接推论。
-
-已写入 `design.md §10.1–10.3`。
-
-> **Stage 1 补充**：上面第一条"必须先加载、后监听"实现之后，代价才显现出来——
-> 它意味着冷启动的 80 秒里**服务完全不响应**，`/healthz` 也挂起。这不是本条写错了，
-> 而是当时只算了"先 bind 会让流量排在加载后面"这一侧的风险。完整记录与两个选项见 **D7**。
+- **监听与加载的顺序**。初版要求"**先加载、后监听**"（理由是先 bind 会让编排器看到端口通了就送流量）。
+  实现之后代价才显现：冷启动的 80 秒里**服务完全不响应**，`/healthz` 也挂起，编排器无法区分"还在加载"
+  和"崩了"。**现行契约是"先监听、后台加载"**：端口立刻可服务、`/healthz` 立即 200，加载状态由
+  `/readyz` 的三态（`loading`/`ready`/`failed`）报告——见 **D7** 与 `design.md §10.2`。
 
 ### D6（轻）单请求超时预算与官方 SDK 不匹配 — 已修正
 
@@ -163,7 +157,7 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 - 服务端算 30 s 才返回 → 客户端 10 s 就放弃并**重发** → 客户端还在算的时候服务端又多了一份活 → 负载被放大 2–3 倍；
 - 529 不在 SDK 的"已知状态码"表里（表里只有 400/401/403/404/422/429），会落到 `TypeSafeInternalServerError` 并被重试。
 
-已改为：`DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量），超时返回 **504**；**队列等待计入这个预算**；过载优先用 **429 + `retry-after-ms`**（在重试集合内且语义准确）。`design.md §6.5`。
+已改为：`DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量）给**取锁**设上限，取不到就返回 **429 + `retry-after-ms`**——**不是 504**：504 不带退避指令，会按 §3-16 退化成指数退避，把已经饱和的服务打得更狠，而 429 能告诉 SDK 等多久。**队列等待计入这个预算**；已经开始的前向无法中断，这是 §3-17 明确写出来做不到的部分。`design.md §6.5`。
 
 ### D7（中）冷启动期间服务完全不响应，且文档说的是反的 — 已修正（方案 B）
 
@@ -266,7 +260,7 @@ CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
 
 **证据（不是推断）**：kev 的 `data.py:395 materialize()` 明确写着 "Labelled request -> internal record **via the serving path (api.to_record)**"——训练数据与线上服务走的是同一个函数。所以 `api.py` 的渲染约定**就是**模型学到的约定。
 
-**结论：抽象是对的，不需要改 `render.py` 或 `answers.py`。** 需要的是承认"选项文本"属于引擎的序列格式（`AGENTS.md §2` 已按 Stage 1 的结论这么规定），因此 kev 引擎自己把 `PreparedQuestion` 映射成 kev 的文本。已实测验证：用 Decis 的 `PreparedRequest` 构造出的 record 与 kev 自己的 `api.to_record` **逐字段相等**，`encode` 出来的 `ids/seg/pos/opt/decide_idx/opt_idx` 全等，概率与上游 `model.probs()` **差 0.00e+00**（kev-0.8b，CPU fp32，`.scratch/kev_probe.py`）。
+**结论：抽象是对的，不需要改 `render.py` 或 `answers.py`。** 需要的是承认"选项文本"属于引擎的序列格式（`AGENTS.md §2` 已按 Stage 1 的结论这么规定），因此 kev 引擎自己把 `PreparedQuestion` 映射成 kev 的文本。已实测验证：用 Decis 的 `PreparedRequest` 构造出的 record 与 kev 自己的 `api.to_record` **逐字段相等**，`encode` 出来的 `ids/seg/pos/opt/decide_idx/opt_idx` 全等，概率与上游 `model.probs()` **差 0.00e+00**（kev-0.8b，CPU fp32）。这两条现在是 `tests/test_kev_inference.py` 的 `test_the_record_matches_upstreams_serving_path` 与 `test_probabilities_match_upstreams_own_path`（`-m weights` 跑）。
 
 顺带得到两条独立佐证（与 Laya 的一样，属"未计划的一致性"）：kev 的 `question_keys`（`api.py:94`）与 Decis 的 `answers.py: question_keys` **逐字相同**；kev 的 `choice_confidence`（`api.py:120`）与 Decis 的 choice confidence **公式相同**。kev 的 `score_confidence`（`api.py:125`，"距离众数层级"）与 Decis 的归一化熵**不同**，且它自称是"未公开公式的近似"——这正好是 `decis.native_confidence` 存在的理由；但它在 `noul` 上没有定义，而 `native_confidences` 是按 item 对齐的列表，混合请求里没有连贯的值可报，所以 kev 引擎不填这个字段（`answers.py` 的 `confidence` 三个 primitive 都覆盖）。
 
@@ -279,7 +273,7 @@ kev 的 `encode(strict=True)` 同时施加两条**不同**的限制（`model.py:
 1. `len(state) + 1 <= MAX_STATE`（384）
 2. 每个问题 `len(state) + len(branch) <= MAX_BRANCH`（1024）
 
-而 `validate_capacity` 只有两个比较位：`sequence_tokens <= max_sequence_tokens` 和每个问题 `head_tokens[qid] <= max_question_tokens`（`schema.py:222,260`）。`MeasuredTokens.state_tokens` **只被报告、从不校验**。
+而 `validate_capacity` 只有两个比较位：`sequence_tokens <= max_sequence_tokens` 和每个问题 `head_tokens[qid] <= max_question_tokens`（`schema.py:241,279`）。`MeasuredTokens.state_tokens` **只被报告、从不校验**。
 
 于是 (2) 可以落在 `sequence_tokens` 上，而 (1) 无处安放：state 500 token、问题 10 token 的请求 `sequence_tokens = 510 <= 1024` 会通过校验，然后被 `encode` 截断（`strict=False` 时它静默 `state_tokens[:max_state-1]`，并在 `state_truncated` 里留一个没人看的标记）。
 
@@ -567,7 +561,9 @@ loader 能不能找到**。D14 是"表达式 vs 抄本"，这里是"请求参数
 `find` 得到 `<dir>/<engine id>/multilingual/rl_agent_config.json`。
 随后 commit `e8b6bd2` 构建的镜像在**空卷**上完整跑通：`docker compose up -d --wait` 里那个一次性
 预取把 646.8 MiB 下进卷、exit 0，服务端起容器后 `/v1/systemone` 正常作答（74 s 内 `--wait` 返回，
-引擎 101.0 s 后就绪）。
+引擎 101.0 s 后就绪）。**注意**：这次验证用的是**当时那版 compose**——它有一个一次性预取容器，把权重下进命名卷。
+现行的 `docker-compose.yml` 没有预取容器、也没有卷：权重烤在镜像里，`--wait` 等的是 `/readyz`。
+上面这段记录的是**下载器**的行为，那个预取容器已经不存在了。
 
 ### D18（中，已修正）compose 的 `command:` 覆盖了镜像的 `CMD`，容器去找一个叫 `download` 的程序
 
@@ -752,8 +748,8 @@ BuildKit 的缓存键——这次重建复用了上一次的依赖层，只重�
 | **PEP 8 / 484 / 561** | ✅ 遵守 | ruff 强制；公开 API 全部类型标注 |
 | **12-Factor（配置来自环境）** | ✅ 遵守 | 所有配置集中在 `config.py`，`os.environ` 不得出现在其他模块（`AGENTS.md §2` 已列为唯一事实来源） |
 | **SPDX / Apache-2.0** | ✅ 遵守 | `LICENSE` + `NOTICE` 记录 kev vendoring 与 Laya 署名；不复制 laya-mlx 代码 |
-| **供应链：SBOM + provenance** | ⚠️ 计划中 | Stage 4 用 buildx `--provenance`/`--sbom`。**尚未实现，不假装已有** |
-| **Prometheus 暴露格式** | ✅ 遵守（计划） | `/metrics` 用标准 exposition format，不从零发明指标名 |
+| **供应链：SBOM + provenance** | ✅ 已实现 | `docker-build.yml` 在**推送**的构建腿上打开 `sbom=true` 与 `provenance=mode=max`（只有 PR 那种 build-only 的腿关掉，因为对不推送的构建请求 attestation 会失败） |
+| **Prometheus 暴露格式** | ⬜ 未实现 | `/metrics` 不存在（`decis[metrics]` 这个 extra 只登记了依赖）。计划是用标准 exposition format、不从零发明指标名 |
 | **模型卡 / 可复现性规范** | ⚠️ 无正式标准 | 没有 IETF/ISO 级的规范。我们采用社区惯例：报告必须同时给出引擎、设备、dtype、线程/进程数、批大小、state 长度、问题数（`AGENTS.md §8`） |
 
 **这一节里最值得注意的一点**：RFC 9457 那一行。一个"尊重标准"的项目在这里**故意不遵守标准**——因为遵守它就会破坏与 jev 的线格式兼容，而那正是项目的全部价值。**正确的做法不是假装没有冲突，而是把冲突显式写下来并说明选择理由。** 这也是我把 §5 从"推断"改写成"实测 + 有意偏离记录"的原因。
@@ -934,7 +930,7 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 
 所有实测都在无 GPU 的 aarch64 机器上。但文档里已经出现了 GPU 相关的判断（kev 定位为 GPU 引擎、CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是推断，不是实测。**
 
-**未修正的原因**：没有 GPU 机器。已在 `feasibility.md §5` R1 与 §7 明确标注为"需要 GPU 机器验证"，并且**没有把任何 GPU 性能数字写进 README**。这条纪律必须守住。
+**未修正的原因**：没有 GPU 机器。已在 `feasibility.md §5` R1 明确标注为"需要 GPU 机器验证"，并且**没有把任何 GPU 性能数字写进 README**。这条纪律必须守住。
 
 ---
 
@@ -942,14 +938,14 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 
 | # | 问题 | 状态 |
 |---|---|---|
-| 1 | 跨请求批处理的收益 | **未测**，Stage 3 第一件事。可能推翻 §6 的收益预期 |
+| 1 | 跨请求批处理的收益 | **已测（M5），结论为否定**：CPU 上不提升吞吐，长度倾斜时慢 3–5 倍。§6 的收益预期已被推翻，见那里的更正框 |
 | 2 | GPU 上的真实延迟、CUDA 镜像能否装成 | **未测**，需 GPU 机器 |
 | 3 | 429 / `Retry-After` 的真实行为 | **未观测**（无 API key，无法触发限流） |
 | 4 | 真实 200 响应体的取值 | **未观测**（无 key）。形状由 OpenAPI + SDK + kev 三方交叉确认，但取值没有对照样本 |
-| 5 | 性能测量的顺序效应与样本量 | **未重做**，属 Stage 3 正式基准 |
-| 6 | 多进程 × 线程数的最优点 | **未测** |
+| 5 | 性能测量的顺序效应与样本量 | **Laya 线程扫描未重做**（它的定位本就是可行性证据，M2）；M5 的攒批 harness 已按**交错轮次**跑，并报分布而不只是中位数 |
+| 6 | 多进程 × 线程数的最优点 | **已测（M5）**：固定总线程预算（24）下 1/2/4 进程吞吐差 1.18x，加进程不增加吞吐 |
 | 7 | Qwen3 世代 kev 在 CPU 上是否可用 | **未测**。若可用，可能是 CPU 镜像更好的默认选择 |
-| 8 | SBOM / provenance | **计划中**，Stage 4 |
+| 8 | SBOM / provenance | **已实现**：推送的构建腿带 `sbom=true` + `provenance=mode=max`（§3） |
 | 9 | `remote` 引擎转发真 jev 的合规性（用户自有 key） | **未评估**，需要时再确认 ToS |
 
 ---
@@ -964,19 +960,3 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 加进程也不增加吞吐。**因此 `design.md §6` 的吞吐论证需要改写**，而不是继续等一个会兑现它的实现。
 "对外材料不许出现 QPS"这条纪律的**理由**消失了（数字已经有了），但**新的理由**接上了：
 现在能报的是一条明确的负结论和一个测得的单进程吞吐上界，不是"批处理带来的高 QPS"。
-
----
-
-## 附：本次审查产生的改动
-
-| 文件 | 改动 |
-|---|---|
-| `docs/api-compatibility.md` | 新增 L/S 证据等级与 §5 错误契约（重写）、§3.2 空 criteria、§4.3 usage 非空、§4.5 容错边界、§7 confidence 改写、§8 新增 L0 与 L3b |
-| `docs/contract/typesafe-openapi-0.2.0.json` | **新增**：官方 OpenAPI 快照（L0 测试基准） |
-| `docs/contract/observations-2026-09-22.md` | **新增**：线上观测原始记录（命令 + 原始输出） |
-| `docs/design.md` | §3.1 认证与安全（新增）、§5.1 `WorkItem` 协议（重写）、§6.2/6.3 攒批与模式修正、§6.4 并发不变量、§6.5 背压与超时、§6.6 批不变性（新增）、§8.1 Dockerfile 硬化、§9 测试表、§10.1–10.3 健康检查/启动/下线、§11 仓库结构、§12 里程碑、§13 待定问题 |
-| `docs/design-review.md` | **新增**：本文 |
-| `README.md` / `README.zh-CN.md` | 语言切换；性能节保留实测数字并标注来源 |
-| `benchmarks/README.md` | `single_caller_questions_per_second` 命名说明与局限 |
-| `benchmarks/probe/` | **新增**：探测脚本 checked in，使数字可复现 |
-| `AGENTS.md` | 新增契约不变量（认证顺序、状态码分工、request-id 格式、`Retry-After`、不得按 state 分组） |

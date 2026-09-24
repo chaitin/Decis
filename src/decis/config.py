@@ -112,7 +112,6 @@ class Settings:
     #: the defaults exist because some combinations are far worse than others.
     dtype: str | None = None
     log_level: str = "info"
-    log_payloads: bool = False
     env_file: str = DEFAULT_ENV_FILE
     # Names of the DECIS_* variables that were actually set, for `decis doctor`.
     sources: tuple[str, ...] = field(default=())
@@ -169,7 +168,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         device=_str("DECIS_DEVICE") or None,
         dtype=_str("DECIS_DTYPE") or None,
         log_level=_str("DECIS_LOG_LEVEL", "info"),
-        log_payloads=_bool("DECIS_LOG_PAYLOADS"),
         env_file=path,
         sources=tuple(sorted(name for name in os.environ if name.startswith("DECIS_"))),
     )

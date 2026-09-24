@@ -2,15 +2,15 @@
 
 [English](performance.md) · **简体中文**
 
-[文档索引](../README.zh-CN.md#文档) · [部署](deployment.zh-CN.md) · [设计审查](design-review.md)
+[文档索引](../README.zh-CN.md#文档) · [部署](deployment.zh-CN.md)
 
 Decis 跑的是决策模型——每个请求只有一次前向，不生成文本——所以真正重要的数字是单题延迟、
 冷启动时间和内存。本页收集项目引用的全部实测数字。这里没有手写的东西：每张表都由
 [`benchmarks/report.py`](../benchmarks/report.py) 从 [`benchmarks/results/`](../benchmarks/results/)
 里的原始 JSON 生成，仓库里的表与数据不一致时 CI 会失败。
 
-测量是在**一台 24 vCPU、没有 GPU 的 aarch64 机器**上做的。决策模型在 Apple 芯片上用 MLX 也很快
-——上游为那种配置发布的数字要低得多——但只有 CPU 的容器做不到。
+测量是在**一台 24 vCPU、没有 GPU 的 aarch64 机器**上做的——没有 GPU 的读者本机就是这种机器。
+本仓库里**没有 GPU 或 Apple 芯片上的数字**：本页的任何结论都不适用于那两种硬件。
 
 ## 延迟
 
@@ -23,7 +23,7 @@ Decis 跑的是决策模型——每个请求只有一次前向，不生成文�
 
 由 [`benchmarks/report.py`](../benchmarks/report.py) 从 [`benchmarks/results/`](../benchmarks/results/) 的原始 JSON 生成；**整行取自同一个配置**（torch 在本机的默认线程数，每个 vCPU 一个），样本 p50，单进程，仅请求内批处理。
 
-**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理此后也测过，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 [`docs/design-review.md`](design-review.md) §4-M5）。
+**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 [`docs/design-review.md`](design-review.md) §4-M5）。
 
 <!-- LATENCY:END -->
 
@@ -71,18 +71,25 @@ Triton/CUDA。在 CPU 上它比 Laya 慢一个数量级，它的 `bf16` 路径�
 
 <!-- BATCHING:END -->
 
-完整表格——每个批大小、padding 比例、盈亏平衡等待时间，以及多进程对比——见
-[`design-review.md §4-M5`](design-review.md)。跨请求批处理只有在序列短到"每次调用的固定开销
-占主导"时才划算；真实 state 长度下已经没有开销可摊，而长度一倾斜，padding 会让它慢好几倍。
-每个响应里仍然会报 `decis.batch_size`，因为无法观测的机制就无法被检验。
-
 ## 复现这些数字
 
 ```bash
-uv run decis bench --engine laya-multilingual --batch 1,3,10,30   # 采集
-uv run python benchmarks/report.py --write                        # 生成
+# 延迟表（`decis bench` 转调 benchmarks/run.py）
+uv run decis bench --engine laya-multilingual --batch 1,3,10,30   # 写入 benchmarks/results/laya-multilingual-thread-sweep.json
+uv run decis bench --engine laya --batch 1,3,10,30
+
+# 跨请求批处理表（`--cross-request` 转调 benchmarks/batch_gain.py）
+uv run decis bench --engine laya-multilingual --cross-request --threads 24 --processes 4
+
+uv run python benchmarks/report.py --write                        # 生成全部表格
 uv run python benchmarks/report.py --check                        # CI 跑这个
 ```
 
+仓库里这些文件早于 `decis bench`，所以名字与现在跑出来的不同：两份 Laya 延迟扫描是
+`laya-multilingual-sweep.json` 与 `laya-english-sweep.json`，dtype 表来自
+`kev-0.8b-cpu-dtype.json`（每个 dtype 一次观测），批处理结果是
+`laya-multilingual-batch-gain.json` 与两份 `laya-multilingual-multiprocess-p*.json`。
+
 采集方法、主机规格与每份数据的已知局限见 [`benchmarks/README.md`](../benchmarks/README.md)。
 不要引用任何不在 `benchmarks/results/` 里的数字；见 [`AGENTS.md §8`](../AGENTS.md)。
+本页每条结论的理由、以及还没有测的东西，见 [`design-review.md`](design-review.md)。

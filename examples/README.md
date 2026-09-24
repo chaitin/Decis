@@ -16,8 +16,9 @@ uv run decis download --engine laya-multilingual   # ~647 MiB
 uv run decis serve --host 127.0.0.1 --port 8000 --engine laya-multilingual
 ```
 
-`laya-multilingual` is the server's default engine. On CPU it takes 75–90 seconds to load
-before `/readyz` turns green; poll it before sending traffic:
+`laya-multilingual` is the server's default engine. It loads the checkpoint before `/readyz`
+turns green — the measured cold start is in the [latency
+table](../docs/performance.md#latency) — so poll it before sending traffic:
 
 ```bash
 curl -s localhost:8000/readyz          # {"status":"ready","engine":"laya-multilingual"}
@@ -25,7 +26,7 @@ curl -s localhost:8000/readyz          # {"status":"ready","engine":"laya-multil
 
 Every example below sends `Authorization: Bearer local` and does not name a model, so it is
 answered by whichever engine the server runs. If you did not set `DECIS_API_KEY`, a server on
-a loopback address accepts no token at all — see [`docs/design.md §12`](../docs/design.md)
+a loopback address accepts no token at all — see [`SECURITY.md`](../SECURITY.md)
 for why that is the safe default and why it is refused on a public interface.
 
 ## These examples are tested

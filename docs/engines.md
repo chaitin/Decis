@@ -19,17 +19,9 @@ layer.
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | `laya` | The typed-decisions checkpoint from the same repository |
 | `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | `kev` | Prefill-only, no text generation; wants a GPU |
 
-`kev-4b` and `kev-9b` are not registered: they are no longer light-weight. A `remote`
-engine that forwards to the hosted API is planned but not implemented.
-
 ```bash
 uv run decis models     # what is registered, and what this machine can actually run
 ```
-
-Every registered engine is a real checkpoint. The wire-contract test suite runs against a
-weight-free test double that lives in [`tests/fixture_engine.py`](../tests/fixture_engine.py)
-and is deliberately **not** registered by the server, so `decis serve` can never answer from
-a fake model.
 
 ## Capacity
 
@@ -69,16 +61,6 @@ the abstraction is wrong — that is the test the second engine was added to pas
 5. Add both test suites: a weight-free one for `measure()`'s arithmetic and the engine's
    internal shapes, and a `-m weights` one for batch invariance and over-long rejection.
 
-[`AGENTS.md §5`](../AGENTS.md) is the normative step-by-step contract, including the traps
-each step exists to avoid. Two of them are worth repeating here:
-
-- **Heavy imports belong in `load()`.** The core package must not import `torch` on any
-  path, so `/healthz`, `/readyz` and `/v1/models` keep working in an image that has no
-  engine installed.
-- **`measure()` must use the real tokenizer and the real sequence layout.** Estimating from
-  `len(text) // 4` under-reports the option decoration an engine actually pays for, and an
-  engine that truncates would otherwise report a number equal to its own limit forever.
-
 ## dtype and device
 
 `DECIS_DEVICE` selects `cpu`, `cuda` or `mps`; unset picks the best available.
@@ -91,6 +73,10 @@ Without it, the dtype comes from the engine and device:
 |---|---|---|---|
 | `laya*` | decided by Laya's own `Agent` | same | same |
 | `kev-0.8b` | `fp32` | `bf16` | `fp32` |
+
+The table is written in `DECIS_DTYPE` spelling. A response reports the wire value instead:
+`float32`, `float16` or `bfloat16`, and `unloaded` before the engine has loaded — in
+`/v1/models` and in the `decis` namespace of every answer.
 
 `kev-0.8b` on CPU in `bf16` is **83× slower** than `fp32`. Forcing it logs a warning rather
 than refusing to start. The measurement is in
@@ -105,5 +91,4 @@ Resolution order is described in
   `max_len` is served with the right budget automatically.
 - **kev** references its Qwen3.5 base by Hub repo id inside the adapter's checkpoint
   metadata, so a separately mounted copy of the base is not picked up. `decis download`
-  places the base in the Hugging Face cache, and the engine runs offline from there. See
-  [`design-review.md §2-D11`](design-review.md).
+  places the base in the Hugging Face cache, and the engine runs offline from there.

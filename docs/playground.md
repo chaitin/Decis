@@ -44,17 +44,20 @@ deliberate:
 
 ### Finding the engine
 
-The playground needs no configuration to find an engine. It asks `/readyz` on a list of
-candidates and connects to the first that answers:
+The playground needs no configuration to find an engine. It probes `/readyz` on a list of
+candidates, in order, and connects to the first that answers:
 
 1. `http://laya-multilingual:8000`
 2. `http://kev-0.8b:8000`
 3. `http://host.docker.internal:8000`
+4. `http://127.0.0.1:8000`
 
-So the same service works under `--profile kev-0.8b` and next to a `decis serve` running on
-the host. While the engine is still loading, the playground reports `searching` and the
-games say so instead of failing. Set `DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip
-the search, or `DECIS_PLAYGROUND_CANDIDATES` to replace the list.
+Under Compose the candidate list is set explicitly to the first three (`docker-compose.yml`),
+so `127.0.0.1` is only tried when the playground runs on the host — which is what makes the
+same service work under `--profile kev-0.8b` and next to a `decis serve`. While the engine is
+still loading, the playground reports `searching` and the games say so instead of failing. Set
+`DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip the search, or
+`DECIS_PLAYGROUND_CANDIDATES` to replace the list.
 
 It does not `depends_on` an engine: a Compose profile that is not active does not resolve
 the service name at all, so a dependency on a stopped engine would fail to start.
@@ -66,14 +69,13 @@ one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)) and o
 ([`playground/web/game.js`](../playground/web/game.js)). A page carries its own strings, its own
 board and its own options; the manual/AI switch, the inference panel, the console for the last
 call, the engine chip and the keyboard shortcuts come from the shell, so no page restates the
-palette or re-implements a mode control. Four of the five are games; `/api`
-([`playground/web/api.html`](../playground/web/api.html)) is the human-facing reference for the
-call they make — the endpoint, the three primitives, a real request/response pair captured from the
-snake page, a box that sends one of your own, the parameters, the limits and the errors. The index
-also carries one short recording per game ([`playground/web/media/`](../playground/web/media/)),
-taken from these pages in AI mode. The recorder (`.scratch/record_gif.py`) drops frames in which
-nothing changed and outlines the Start button on the one frame where it is held down — that
-outline is drawn by the recording tool, not by the page.
+palette or re-implements a mode control. Three of the five pages are games; the other two are
+the index and `/api` ([`playground/web/api.html`](../playground/web/api.html)), the human-facing
+reference for the call they make — the endpoint, the three primitives, a real request/response
+pair captured from the snake page, a box that sends one of your own, the parameters, the limits
+and the errors. The index also carries one short recording per game
+([`playground/web/media/`](../playground/web/media/)), taken from these pages in AI mode;
+frames in which nothing changed are dropped.
 
 The reading order is the same on all three games: the game bar carries the title, the live status,
 the score and the controls; under it the board, the model's readout and the inference panel; below
@@ -110,33 +112,10 @@ be localised, but the value on the wire is not.
 
 ## The placement shortlist
 
-Which placements Tetris asks about is a capacity question, not a taste one, and both halves of it
-are measurements.
-
-**How many.** Laya charges a whole question against its `head_max_len` and rejects an over-budget
-one instead of truncating it, so the page asks with the number that fits the smallest budget a
-checkpoint can fall back to. Measured through the engine's own `measure()`: the placement question
-is **178 tokens at five options** on an empty board and **185 at worst** once the board fills up
-(45 real questions from two AI sessions — a filled board makes the option lines longer), and the
-whole request goes from **415 to 475** of the 512-token `state + question` budget a checkpoint that
-declares no limits falls back to. Six options would be about 207 and would get a 422. If an engine
-still says no the page drops to its own heuristic, rather than showing a guess as an answer.
-
-**Which ones.** Sorting the legal placements by the page's own heuristic and taking the top five
-does not give five decisions: on a flat board the heuristic prefers one orientation at five
-columns, and the first request this page sent had five options that were all `rot2`. The model was
-choosing a column, not a placement — which is what a person watching the page sees as "it never
-rotates". The page now puts the best placement of **each rotation** on the list first and fills the
-remaining slots with the best of the rest. A piece with one distinct rotation (`O`) simply gets
-five placements of that orientation. Measured over the first 26 real questions after the change: 23
-offered two or more distinct rotations, 11 offered all four, and every question that offered one
-was an `O`. Each option's key says which rotation it is (`rot<R>_col<C>`, `R` = the piece turned 90
-degrees clockwise `R` times) and the panel shows the same rotation beside the option's bar.
-
-Re-measuring after changing a page's questions does not need a tokenizer: an over-budget question
-comes back as ``Question 'placement' is about N tokens, over this model's limit of M per
-question``, and a successful response reports the same figures under `usage.input_tokens` and the
-`decis` namespace. Send the page's own payload and read them off the console.
+**Five placements, not six.** Laya charges a whole question against its `head_max_len`, so the
+option list has to fit the smallest question budget Decis supports (192 tokens, the fallback when
+a checkpoint declares no limits). Five placements fit with room to spare; six do not. Every
+rotation is represented in the shortlist, so the model chooses a rotation as well as a column.
 
 ## Credits
 
@@ -173,12 +152,3 @@ Or through Compose, beside an engine that is already running anywhere:
 make build-playground
 make up-playground
 ```
-
-## Tests
-
-[`tests/test_playground.py`](../tests/test_playground.py) stands up the playground and a
-fake engine on loopback and checks the proxy without importing `decis`, because the
-playground's image does not contain it. It asserts the pages are self-contained, that every
-string a page asks for is declared, that the three games mount the same shell instead of their
-own mode switch or engine poll, that the proxied request carries the playground's token and the
-rewritten model id, and that the repository URL has one home.

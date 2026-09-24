@@ -9,9 +9,10 @@ in the shell wins over `.env`**, so `DECIS_PORT=9000 decis serve` does what it l
 `.env.example` is the commented template; `decis doctor` prints what was actually resolved
 and which variables were set.
 
-Every variable in this page is read in one module,
+Every server variable on this page is read in one module,
 [`src/decis/config.py`](../src/decis/config.py). Nothing else in the package touches the
-environment.
+environment. The playground is a separate process with variables of its own, and the Compose
+file has several more; both are listed at the end of this page.
 
 ## Authentication
 
@@ -81,8 +82,7 @@ DECIS_MODEL_DIR=./models uv run decis serve
 > instead. That directory is the **adapter** (the LoRA and pointer head), which is the part you
 > fine-tune; the Qwen3.5 **base** model is referenced by the adapter's checkpoint metadata as a
 > Hub repo id, so a separately mounted copy of the base is not picked up. `decis download`
-> places the base in the Hugging Face cache, and the engine works offline from there. See
-> [`design-review.md §2-D11`](design-review.md).
+> places the base in the Hugging Face cache, and the engine works offline from there.
 
 ## Compute
 
@@ -122,16 +122,35 @@ pass that has already started; the budget covers queueing, not computation.
 | Variable | Default | Meaning |
 |---|---|---|
 | `DECIS_LOG_LEVEL` | `info` | Standard Python log levels. |
-| `DECIS_LOG_PAYLOADS` | `0` | Log full request and response bodies. Off by default: they contain your data. |
 
 Every request logs one line with method, path, status, duration, engine and the
 `x-typesafe-request-id` it returned, so a client-reported id can be found in the server log.
+Request and response bodies are not logged: they contain your data.
 
 ## Files
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `DECIS_ENV_FILE` | `.env` | Which env file to load. `--env-file` overrides it per command. |
+
+## Playground variables
+
+The playground is its own process, and it reads `os.environ` directly
+([`playground/server.py`](../playground/server.py)) rather than going through `config.py`.
+Under Compose it deliberately does **not** get the engine's `env_file` — those values describe
+the engine, and this container runs none of it — so only the variables below are passed in.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DECIS_PLAYGROUND_HOST` | `0.0.0.0` | Bind address of the playground. |
+| `DECIS_PLAYGROUND_PORT` | `8080` | Bind port inside the container; Compose pins it. This is not the host port — that is `DECIS_PLAYGROUND_HOST_PORT` below. |
+| `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | How long one proxied `/v1/systemone` call may take. Generous on purpose: a proxy timeout that fires while the engine is still thinking reports an error for an answer that was about to arrive. |
+| `DECIS_PLAYGROUND_PROBE_TIMEOUT_S` | `2` | How long a `/readyz` probe of one candidate engine may take. |
+| `DECIS_PLAYGROUND_UPSTREAM` | unset | Name one engine to try first instead of searching. It is still probed, not trusted. |
+| `DECIS_PLAYGROUND_CANDIDATES` | built-in list | Comma-separated `/readyz` candidates, tried in order. Compose sets it to the two engine service names plus `host.docker.internal`. |
+
+The probes bypass any proxy in the environment: a proxied probe would ask the proxy about
+`127.0.0.1` and learn nothing about the engine.
 
 ## Compose-only variables
 
@@ -142,6 +161,4 @@ These are read by `docker-compose.yml`, not by the server. See [Deployment](depl
 | `COMPOSE_PROFILES` | `laya-multilingual` | Which engine container `docker compose up` starts. |
 | `DECIS_HOST_PORT` | `8000` | Host port for the default engine. |
 | `DECIS_KEV_HOST_PORT` | `8001` | Host port for the kev engine. |
-| `DECIS_PLAYGROUND_HOST_PORT` | `8080` | Host port for the playground. |
-| `DECIS_PLAYGROUND_UPSTREAM` | unset | Name the engine for the playground instead of letting it search. |
-| `DECIS_PLAYGROUND_CANDIDATES` | built-in list | Comma-separated `/readyz` candidates for the playground to try. |
+| `DECIS_PLAYGROUND_HOST_PORT` | `8080` | Host port for the playground, published to `DECIS_PLAYGROUND_PORT` in the container. |

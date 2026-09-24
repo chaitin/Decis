@@ -18,16 +18,9 @@
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | `laya` | 同仓库的 typed-decisions checkpoint |
 | `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | `kev` | 只有 prefill，不生成文本；建议用 GPU |
 
-`kev-4b` 与 `kev-9b` 没有注册：它们已经不再轻量。转发到托管 API 的 `remote` 引擎有计划，
-但尚未实现。
-
 ```bash
 uv run decis models     # 本机注册了哪些引擎、每个是否真的能跑
 ```
-
-注册表里的每个引擎都是带真实权重的 checkpoint。契约测试套件跑的是一个无权重的测试替身，它住在
-[`tests/fixture_engine.py`](../tests/fixture_engine.py)，并且刻意**不**由服务注册，所以
-`decis serve` 永远不会用假模型作答。
 
 ## 容量
 
@@ -63,13 +56,6 @@ Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加
 5. 两套测试都要加：一套无权重，覆盖 `measure()` 的算术和引擎的内部形状；一套 `-m weights`，
    覆盖批不变性与超长拒绝。
 
-[`AGENTS.md §5`](../AGENTS.md) 是规范的分步契约，包含每一步要避开的坑。其中两条值得在这里重复：
-
-- **重型 import 放在 `load()` 里。** 核心包不得在任何路径上 import `torch`，这样在没装引擎的
-  镜像里 `/healthz`、`/readyz` 和 `/v1/models` 仍然可用。
-- **`measure()` 必须用真实 tokenizer 和真实序列布局。** 用 `len(text) // 4` 估算会漏报引擎
-  真正付出的选项装饰开销；而一个会截断的引擎，反推出来的数字会永远等于它自己的上限。
-
 ## dtype 与设备
 
 `DECIS_DEVICE` 选择 `cpu`、`cuda` 或 `mps`；不设置则挑可用的最好的那个。
@@ -82,6 +68,9 @@ Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加
 | `laya*` | 由 Laya 自己的 `Agent` 决定 | 同上 | 同上 |
 | `kev-0.8b` | `fp32` | `bf16` | `fp32` |
 
+表里用的是 `DECIS_DTYPE` 的写法。响应里报的是线格式的值：`float32`、`float16` 或
+`bfloat16`，引擎加载前则是 `unloaded`——`/v1/models` 与每个答案的 `decis` 命名空间都是如此。
+
 `kev-0.8b` 在 CPU 上用 `bf16` 比 `fp32` **慢 83 倍**。强制指定它只会记一条警告，而不是拒绝
 启动。测量见[性能](performance.zh-CN.md#每种引擎每种设备的-dtype)。
 
@@ -91,5 +80,4 @@ Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加
 
 - **Laya** 的 checkpoint 自带容量，所以 `max_len` 不同的微调模型会自动按正确的预算提供服务。
 - **kev** 在适配器的 checkpoint 元数据里用 Hub repo id 引用它的 Qwen3.5 基座，所以另外挂载的
-  基座副本不会被采用。`decis download` 把基座放进 Hugging Face 缓存，引擎从那里离线运行。见
-  [`design-review.md §2-D11`](design-review.md)。
+  基座副本不会被采用。`decis download` 把基座放进 Hugging Face 缓存，引擎从那里离线运行。

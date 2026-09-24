@@ -17,8 +17,8 @@ Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 
 跑在一起，也快到可以放进请求路径。Decis 就是这些模型缺的那层服务：一套稳定契约，多种引擎，
 一个引擎一个容器。
 
-> **状态：pre-1.0，当前 `v0.3.0`。** 线格式契约（`v1`）稳定，只增字段；运行中的服务版本由
-> `/healthz` 与每个响应的 `decis` 命名空间给出。
+> **状态：pre-1.0，当前 `v0.3.0`。** 线格式契约（`v1`）稳定，只增字段；运行中的服务在
+> `/healthz` 报告自己的版本。
 
 ## 快速开始
 
@@ -91,7 +91,7 @@ print(response.nouls["churn_risk"].noul)  # P(true)，0..1
 
 由 [`benchmarks/report.py`](benchmarks/report.py) 从 [`benchmarks/results/`](benchmarks/results/) 的原始 JSON 生成；**整行取自同一个配置**（torch 在本机的默认线程数，每个 vCPU 一个），样本 p50，单进程，仅请求内批处理。
 
-**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理此后也测过，结论是在 CPU 上**不提升吞吐**（见 [`docs/performance.zh-CN.md`](docs/performance.zh-CN.md) 与 [`docs/design-review.md`](docs/design-review.md) §4-M5）。
+**这是延迟，不是吞吐。** 每个请求的问题共享同一个 `state`，这是容易的情况。跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见 [`docs/performance.zh-CN.md`](docs/performance.zh-CN.md) 与 [`docs/design-review.md`](docs/design-review.md) §4-M5）。
 
 <!-- LATENCY:END -->
 

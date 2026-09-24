@@ -665,11 +665,11 @@ def render_latency_table(
     if chinese:
         if docs_prefix:
             batching_ref = (
-                "跨请求批处理此后也测过，结论是在 CPU 上**不提升吞吐**（见 "
+                "跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见 "
                 f"[`docs/performance.zh-CN.md`]({docs_prefix}performance.zh-CN.md) 与 "
             )
         else:
-            batching_ref = "跨请求批处理此后也测过，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 "
+            batching_ref = "跨请求批处理已实测，结论是在 CPU 上**不提升吞吐**（见下面的批处理一节与 "
         lines.append(
             f"由 [`benchmarks/report.py`]({benchmark_prefix}benchmarks/report.py) 从 "
             f"[`benchmarks/results/`]({benchmark_prefix}benchmarks/results/) 的原始 JSON 生成；"
@@ -696,7 +696,7 @@ def render_latency_table(
         )
         lines.append(
             "**These are latencies, not throughput.** Every question in a row shares one `state`, which "
-            "is the easy case. Cross-request batching has since been measured and does **not** raise "
+            "is the easy case. Cross-request batching was measured and does **not** raise "
             + batching_ref
             + f"[`docs/design-review.md §4-M5`]({docs_prefix}design-review.md)."
         )

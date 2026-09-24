@@ -1,22 +1,14 @@
 # Decis 可行性分析与调查报告
 
-本文回答三个问题：**这条路走得通吗？**、**我原来的假设对吗？**、**最大的坑在哪？**
+## 1. 这份调查的定位
 
-调查时间：2026-09-22。所有结论都标注了证据来源；未实测的地方明确写"未实测"，不推断。
+这是**实现 Decis 之前**的调查报告，调查时间 2026-09-22，回答三个问题：这条路走得通吗、当时的假设对不对、
+最大的坑在哪。**它现在只保留证据本身**：§2 的上游调查、§3 的逐条对照、§4 的实测数据与复现路径、
+§5 的风险登记册。
 
----
-
-## 1. 结论摘要
-
-**可行，且抽象已经被两个独立实现验证过。** 三条主要判断：
-
-1. **统一 API 的抽象成立。** kev（自回归 LM + LoRA + pointer head）和 Laya（双向编码器 + option marker head）是两种完全不同的架构，但它们**各自独立地收敛到同一个中间表示**：`(state, instructions, [option…]) → 每个 option 一个概率`。kev 的 `api.py` 头注释和 Laya 的 `common.py:QTYPES` 就是同一条设计。这不是巧合，是这类"非生成式决策模型"的必然形状。Decis 的核心抽象因此是被验证过的，而不是猜的。
-
-2. **契约是确定的，不需要猜。** `typesafe-sdk` 0.7.1 的 wheel 里带 `_schemas/models.py`，文件头写明它由 `https://api.typesafe.ai/openapi.json` 生成。这是线格式的权威来源，比文档散文更硬。**"与 jev 一致"因此是一个有明确验收标准的工程问题，不是模糊目标。**
-
-3. **性能预期需要按硬件分层，不能笼统说"20ms"。** 20ms 量级在"M3 Max + MLX + 短输入"下成立（实测 P50 17.75ms）。在无 GPU 的容器里，Laya 官方给的 CPU 数字是 **193–464 ms**。Decis 的 README 必须给分层的、有出处的数字，否则会误导用户。
-
-**主要风险不在抽象，而在部署**：kev 的 Qwen3.5 基座是混合架构（Gated DeltaNet），在 CUDA 上需要 `flash-linear-attention` + `triton`，这是真正的脆弱点。Laya 侧风险小得多。
+从这些证据推出的结论已经分别写进 [`design.md`](design.md)（§12.1 按"能对外承诺什么"排的三档账）、
+[`design-review.md`](design-review.md)（缺陷与方法论问题）与 [`performance.md`](performance.md)
+（由 checked-in JSON 生成的表）。在这里再复述一遍就是第二处记录（`AGENTS.md §2`）。
 
 ---
 
@@ -91,7 +83,7 @@ items = [it for group in batch for it in group]  # 展平多组问题
 |---|---|---|
 | 1. Python 栈即可 | ✅ | 两个引擎都是纯 Python；无编译型扩展需要自己写 |
 | 2. 现代化构建/发布（uv） | ✅ | uv 已是 kev / laya-mlx 的实际选择；PyPI 发布路径成熟 |
-| 3. 高性能 API server | ⚠️ **可行但有条件** | 单次推理确实快，但"高 QPS"靠的是**跨请求批处理 + 多进程**，不是换 server 框架。实测：CPU-only 单问 201 ms（多语）/ 446 ms（英文）；同请求内批处理把每问成本降到 99–234 ms。要低延迟必须上 GPU。见 §4 |
+| 3. 高性能 API server | ⚠️ **可行，但 CPU 上没有高吞吐手段** | 单次推理确实快，但"高 QPS"**不成立**：跨请求批处理实测为负收益（`design-review.md` §4-M5），加进程也不增加吞吐。实测：CPU-only 单问 201 ms（多语）/ 446 ms（英文）；同请求内批处理把每问成本降到 99–234 ms。要低延迟必须上 GPU，而 GPU 侧没有数据。见 §4 |
 | 4. 高质量抽象、易扩展 | ✅ | 抽象已被两个独立实现验证（§1）；新增引擎 = 1 个模块 + 1 行注册 |
 | 5. 按模型分别打 Docker + GitHub Actions | ✅ | 已验证可直接套用 |
 
@@ -113,7 +105,7 @@ items = [it for group in batch for it in group]  # 展平多组问题
 | transformers | 5.17.0 |
 | laya | 0.3.5 |
 
-请求体：1 个 `choice`（4 选项）+ 1 个 `score`（3 档）+ 1 个 `noul`，state 约 40 词的英文工单。Laya 用 `laya.load(...)` 直接调用；kev 用其自带 `kev.serve` 走完整 HTTP 路径。脚本见 `.scratch/probe/`。
+请求体：1 个 `choice`（4 选项）+ 1 个 `score`（3 档）+ 1 个 `noul`，state 约 40 词的英文工单。Laya 用 `laya.load(...)` 直接调用；kev 用其自带 `kev.serve` 走完整 HTTP 路径。脚本见 [`benchmarks/probe/`](../benchmarks/probe/)。
 
 > **口径声明**：这些数字来自一次单机测量，**不是** `AGENTS.md §8` 要求的"由 `benchmarks/report.py` 从 checked-in 原始 JSON 生成的正式基准"。它们是可行性判断的依据，不应直接写进 README 当作产品性能。
 
@@ -214,34 +206,14 @@ device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 
 <!-- MEASUREMENTS:END -->
 
-### 4.4 解读
+### 4.4 线程数
 
-实测把几个原本模糊的问题变成了确定的设计输入。
+实测（§4.2 的两张表）：1 问场景 **16 线程（201 ms）快于 24 线程（231 ms）**；大 batch 下 24 线程才占优。
+所以默认线程数取 8–16 而不是 `os.cpu_count()`，并且必须可配（`DECIS_TORCH_THREADS`）。
 
-**① 批处理确实有效，但收益在高并发场景才能兑现。** 单请求内多问题已经把每问成本从 201 ms 压到 99–112 ms（约 2×）。注意这是**同一个请求内**的批处理 —— 上游 `system_one` 已经能做的部分。真正未兑现的是**跨请求**批处理（`design.md §6`），那才是高 QPS 的来源。这也说明"每个请求 1 个问题"的调用模式下，单进程上限只有约 4–5 req/s。
-
-**② 加载时间 73–76 秒，这是容器编排的硬约束。** 远超默认的 readiness 探测窗口。设计含义：
-
-- `HEALTHCHECK --start-period` 必须 ≥120 s
-- `/healthz`（进程活着）与 `/readyz`（权重就绪）必须分开，否则编排器会在加载期间反复杀 Pod
-- 权重必须烘进镜像或预挂载到本地盘；冷启动现场下载会在此之上再叠加下载时间
-- 上游 `laya` 的 `Agent.__init__` 是同步阻塞的，加载期间不能接受流量 → 必须在 `serve` 启动序列里先加载、后监听
-
-**③ 内存必须按 3–5 GB/进程规划，而不是按权重体积。** 多语峰值 RSS 4.84 GB、英文 2.80 GB，而权重本身只有 644 MB / 804 MB。差额来自 PyTorch 运行时 + 长序列（`max_len=1024`）× 大批次的激活。`design.md §6.4` 的 `N_engine` 相乘时要乘这个数，不是乘权重大小。
-
-**④ "bf16 更省内存所以更快"是错的，而且错得很贵。** kev-0.8b 在 CPU 上 bf16 比 fp32 **慢 83 倍**（137 s vs 1.66 s），概率几乎相同。这条已经写进设计：`registry.py` 必须按「引擎 × 设备」给 dtype 默认值，并对已知劣化组合告警（`design.md §5.2`）。
-
-**⑤ kev 在 CPU 上不适合"轻量高频"这个定位。** 1.66 s/请求（fp32，3 问题）比 Laya 慢 4–8 倍。原因是架构性的（混合 DeltaNet 基座 + 缺少 CPU 内核），不是配置问题。设计含义：
-
-- kev 应以 **CUDA 为主场**，CPU 镜像标为"功能可用、性能不达标"
-- 若必须 CPU 部署，考虑上代 Qwen3 基座的 kev（`jaredpalmer/kev-0.6b` / `kev-4b@qwen3`）—— 纯 attention，没有 DeltaNet 参考实现的问题，但需要实测确认
-- 这正是 `design.md §13-Q5` 需要 GPU 机器验证的事项
-
-**⑥ 线程数不是越多越好。** 1 问场景 16 线程（201 ms）优于 24 线程（231 ms）；大 batch 下 24 线程才占优。默认值应取 8–16 而不是 `os.cpu_count()`，并且必须可配（`DECIS_TORCH_THREADS`）。
-
-**⑦ 默认引擎建议 multilingual。** 在同一台机器上比英文版**快 2–4 倍**（987 ms vs 3222 ms @ 10 问），且覆盖 100+ 语言。用户原始设想里"laya 和 kev"的默认选择应该是 `laya-multilingual`，英文版只在明确需要英文最优精度时使用。
-
-**⑧ 与用户基准的关系。** 用户提到的 20 ms 级延迟对应的是 **M3 Max + MLX + 短输入**（laya-mlx checked-in 结果：EN P50 17.75 ms / 多语 10.91 ms）。本次 CPU 实测是 200–450 ms，与 Laya 官方给出的 CPU 数字（193–464 ms）一致，说明测量可信。**两者不矛盾，是不同硬件与不同运行时**。README 必须分层给数字，否则用户会以为 Decis 慢了两个数量级。
+其余的解读——跨请求批处理的收益、kev 在 CPU 上的定位、内存规划、20 ms 基准属于哪种硬件、
+默认引擎选谁——已经分别在 `design-review.md`（§4-M5、§4-M6）、`design.md`（§12.1）与
+`performance.md` 里，这里不再复述。
 
 ---
 
@@ -252,50 +224,18 @@ device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 | R1 | **kev 的 Qwen3.5 混合基座缺少 CPU/CUDA 优化内核**（`flash-linear-attention` / `causal_conv1d`），回落到参考实现 | **已发生（CPU）** | 高 | CPU 实测 1.66 s/请求（fp32）；**bf16 在 CPU 上慢 83 倍**。缓解：按「引擎×设备」设 dtype 默认值 + 劣化组合告警（`design.md §5.2`）；镜像构建期做真跑 smoke test；pin 全部版本；kev 定位为 GPU 引擎；提供 Qwen3 世代 kev 作回退（待实测） |
 | R2 | Laya 在 **>20 选项**的 choice 上准确率断崖式下降 | 高 | 中 | `EngineInfo.max_options` 诚实声明并在文档中明说；为高基数场景保留 `predict_shortlist` 扩展路径；不与 jev 的 255 选项能力做等价宣称 |
 | R3 | **CPU 上的延迟达不到用户预期**（用户基准是 M3 Pro 20 ms） | **已发生** | 中（预期管理） | 实测 200–450 ms/请求（单问），与 Laya 官方 CPU 数字一致。缓解：文档分层给数字；`decis bench` 让用户自测；提供 CUDA 镜像；README 首屏就说明"20 ms 属于 M3 Max+MLX，CPU 是百毫秒级" |
-| R4 | `laya` 包内部 API（`build_sequence`/`collate_items` 未被 `__all__` 导出）在 0.4 变更 | 中 | 中 | pin `<0.4`；加"上游契约测试"断言存在与签名；最坏情况退回 `system_one`（失去跨请求批处理但仍可服务） |
+| R4 | `laya` 包内部 API（`build_sequence`/`collate_items` 未被 `__all__` 导出）在 0.4 变更 | 中 | 中 | pin `<0.4`；加"上游契约测试"断言存在与签名；最坏情况退回 `system_one`（失去把多个问题组展平进一次前向的能力但仍可服务；跨请求攒批本来就没有实现，见 `design-review.md` §4-M5） |
 | R5 | **vendor kev 的推理内核**造成长期维护负担 | 中 | 中 | 只 vendor 最小子集（不含训练/评测）；pin commit；在 `NOTICE` 记录；上游若发布 serve-only extra 或 PyPI 包则切回依赖 |
 | R6 | 各引擎的 `confidence` 语义不同导致阈值不可移植 | 高（若不处理） | 高（统一 API 的价值受损） | 已在设计中收敛为**服务端统一定义**（`design.md §4.2`），引擎原生置信度放入扩展字段 |
 | R7 | 契约细节做错（尤其 `score` 字符串键、`noul` 无 confidence） | 中 | 高（SDK 直接解码失败） | 契约来自 OpenAPI 生成物而非推测；L1–L3 契约测试进 CI；官方 SDK 作为验收 |
-| R8 | **冷启动 73–76 s**（实测）导致编排器在加载期反复重启 Pod | **已发生** | 高 | `HEALTHCHECK --start-period` ≥120 s；`/healthz` 与 `/readyz` 分离；权重烘进镜像避免叠加下载时间；文档给出 readiness 配置示例 |
+| R8 | **冷启动 73–76 s**（实测）导致编排器在加载期反复重启 Pod | **已发生** | 高 | `HEALTHCHECK --start-period` 取 **180 s**（`docker/Dockerfile`）；`/healthz` 与 `/readyz` 分离（加载期间 `/healthz` 仍然 200，`/readyz` 报 `loading`）；权重烘进镜像避免叠加下载时间；文档给出 readiness 配置示例 |
 | R9 | **内存占用被低估**：峰值 RSS 4.84 GB（多语）/ 2.80 GB（英文），远高于权重 644/804 MB | **已发生** | 中 | 文档按实测 RSS 给容器内存建议；`N_engine × RSS`；提供 `decis doctor` 报告真实占用 |
 | R10 | 免费 HF 下载在 CI 中不稳定/限流 | 中 | 中（构建失败） | 构建期设 `HF_TOKEN`；缓存 HF 目录；digest artifact 保留更久以便重试 merge |
 | R11 | 模型许可证 | 低 | 高 | Laya 与 kev 均为 Apache-2.0，已确认；`NOTICE` 保留署名；不复制 laya-mlx 代码 |
 
 ---
 
-## 6. 对你原始假设的校正
-
-| 你的假设 | 实际情况 | 影响 |
-|---|---|---|
-| "laya 和 kev 模型很小，可以内置到 docker 中" | Laya 确实小（614–804 MiB）。**kev 只有 0.8B 算小**（adapter 113MB + 基座约 1.6GB）；4B/9B 分别是 ~8GB / ~18GB | 默认镜像只做 `kev-0.8b`；大模型做成可选镜像 |
-| "laya 是 bert 变种" | ✅ 正确。ModernBERT-large / mmBERT-base + 自定义决策头 | 无 |
-| "kev 是 transformers 的变种模型" | 更准确说：**Qwen3.5 因果 LM + LoRA + pointer head**，prefill-only 不做生成 | 决定了它不是"换个分类头"，而是需要 transformer 全量前向 |
-| "我本地测每次推理 20ms" | 与 laya-mlx 在 **M3 Max + MLX** 上的 checked-in 结果（EN P50 17.75ms / 多语 10.91ms）一致。但**不能外推到 CPU 或小机器**：本次 CPU 实测 201–446 ms/单问请求 | 预期管理 + 必须提供 GPU 镜像路径 |
-| "kev 可以内置进 docker 快速体验" | 技术可行（adapter 113MB + 基座 1.6GB），但 **CPU 上 fp32 就要 1.66 s/请求**，bf16 更是 137 s | kev 应以 CUDA 为主场；CPU 镜像明确标注性能不达标 |
-| "仅一套 api server，稳定接口与 jev 一致" | ✅ 完全可行，且契约有 OpenAPI 生成物可依 | 无 |
-| "方便后续增加更多推理方式" | ✅ 抽象已被两种异构架构验证 | 无 |
-| "用 GitHub Actions 按模型分别打镜像" | ✅ 已验证直接可用 | 无 |
-
-**需要认真调整的是两条**：（1）高性能来自**跨请求批处理 + 硬件**，不是换框架；（2）kev 的"轻量"只在 GPU 上成立，CPU 上它比 Laya 慢一个数量级。把这两点写清楚，比承诺一个达不到的数字重要。
-
----
-
-## 7. 下一步需要验证的事
-
-按优先级。标注 ✅ 的已在本次调查中完成。
-
-1. ✅ **单请求内的批处理收益曲线**：已测（§4.1）。每问成本 1 问 → 10 问降约 2×。
-2. ✅ **CPU 线程数**：已测（§4.1）。1 问场景 16 线程优于 24 线程；默认取 8–16。
-3. ⬜ **跨请求批处理的额外收益**（Stage 3）：本次只测了单请求内的批处理；`design.md §6` 的断言（跨请求攒批是 QPS 的主要来源）**尚未验证**，这是 Stage 3 的第一件事。
-4. ⬜ **多进程 × 线程数的最优点**（Stage 3）：本次是单进程。`N_engine × DECIS_TORCH_THREADS` 的组合需要实测，且要按 §4.4-③ 的 3–5 GB/进程核算内存。
-5. ⬜ **CUDA 可行性**（需 GPU 机器）：`flash-linear-attention` + `causal_conv1d` + triton 在目标镜像里能否装上并跑通 kev-0.8b，以及 kev 在 GPU 上的真实延迟。这是 R1 的另一半（本次只验证了 CPU 侧）。
-6. ⬜ **Qwen3 世代 kev 在 CPU 上的表现**：`jaredpalmer/kev-0.6b`（纯 attention）是否能在 CPU 上达到可用延迟。如果是，它可能是 CPU 镜像里比 kev-0.8b 更合适的选择。
-7. ⬜ **跨请求批处理在 kev 上的两条路径**（`rows` vs `prefix`）的权衡。
-8. ⬜ **差分测试**：有 `TYPESAFE_API_KEY` 时，同一请求打真 jev 与 Decis，比对 JSON schema。
-
----
-
-## 8. 参考来源
+## 6. 参考来源
 
 **第一方（TypeSafe）**
 - [Jev 介绍](https://docs.typesafe.ai/introduction)、[API 参考](https://docs.typesafe.ai/api)、[Choice 原语](https://docs.typesafe.ai/primitives/choice)、[Confidence](https://docs.typesafe.ai/confidence)

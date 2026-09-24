@@ -20,8 +20,9 @@ All engines share one Docker Hub repository; the engine is the tag:
 
 `chaitin/decis:playground` is the third image in the same repository, built and pushed by the
 same workflow: three browser games and the proxy that fronts them, with no model weights and
-no `RUN` in its Dockerfile. `make build-playground` builds the same tag from this checkout in
-seconds, which is what the source tree's Compose override does.
+no `RUN` in its Dockerfile. `make build-playground` builds `decis-local:playground` from this
+checkout in seconds; that is what the source tree's Compose override uses, and it never reuses
+the published tag, so a local build cannot overwrite it.
 
 Sizes are the compressed download size, summed from the registry manifests of the tags
 above. They are not part of `benchmarks/results/` and `report.py` does not regenerate them,
@@ -37,10 +38,10 @@ chaitin/decis` gives you the default engine. Every tag is a multi-arch manifest 
 have no image; run those from a source checkout.
 
 A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
-`laya-multilingual-<version>` and `kev-0.8b-<version>`, plus the weightless
-`-runtime-<version>` variants described below, and the GitHub Release for that tag. The
-engine-named tags are the opposite — they keep moving with every push to `master`, so a
-versioned tag is the one to pin.
+`laya-multilingual-v<version>` and `kev-0.8b-v<version>` — `laya-multilingual-v0.3.0` for the
+current release — plus the weightless `-runtime-v<version>` variants described below, and the
+GitHub Release for that tag. The engine-named tags are the opposite — they keep moving with
+every push to `master`, so a versioned tag is the one to pin.
 
 ### Bringing your own weights
 
@@ -61,7 +62,7 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaiti
 
 For a deployment that keeps one copy of the weights on a shared volume, or must keep every
 node's image small, releases also publish a weightless variant named
-`<engine>-runtime-<version>` (3.2 GB amd64 / 3.3 GB arm64). It has no weights baked in, so
+`<engine>-runtime-v<version>` (3.2 GB amd64 / 3.3 GB arm64). It has no weights baked in, so
 fill the volume once and mount it from then on:
 
 ```bash
@@ -72,9 +73,11 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
   chaitin/decis:laya-multilingual-runtime-v0.3.0
 ```
 
-The volume must be filled before the service starts: this image has nothing to fall back on.
-`v0.3.0` is the current version, and pinning it is the point of this variant — the
-engine-named tags move with every push to `master`.
+Fill the volume before you serve offline: with an empty volume, `paths.resolve` falls back to
+the Hub and the container downloads the weights at load time. The runtime image does ship the
+engine's dependencies, so that download works — it just needs the network, which an air-gapped
+deployment does not have. `v0.3.0` is the current version, and pinning it is the point of this
+variant — the engine-named tags move with every push to `master`.
 
 ## Docker Compose
 
@@ -117,13 +120,17 @@ memory, which is why the default profile starts only one.
 ```bash
 make help                    # every target, and the engine this checkout resolves to
 
-make up                      # build decis-local:* from this tree, run one engine + the games
+make up                      # run decis-local:* from this tree; builds only what is missing
+make up-local                # same, but rebuild first: the engine layer re-bakes the weights
 make down                    # stop; the images stay
 
-make build-playground        # seconds: that Dockerfile has no RUN
-make up-playground           # the games only, beside an engine already running anywhere
+make build                   # every image the current profile runs
 make build-engine ENGINE=kev-0.8b
+make build-engines           # every engine image, whichever profile is active
+make build-playground        # seconds: that Dockerfile has no RUN
 make up-engine    ENGINE=kev-0.8b
+make up-playground           # the games only, beside an engine already running anywhere
+make restart                 # restart what is running
 
 make ps / logs / images / config   # what is running, and the images it came from
 make pull                    # the deployment path: the published chaitin/decis:* images
@@ -191,9 +198,6 @@ terminationGracePeriodSeconds: 30   # > DECIS_SHUTDOWN_GRACE_MS
   several times the weight files, so size the request and limit from the measured table in
   [Performance](performance.md), per engine.
 
-Peak memory is several times the weight files (see [Performance](performance.md)); size the
-limit from measurement, not from the download size.
-
 ## Security notes
 
 - The server refuses to start on a non-loopback address with no token configured, unless
@@ -204,5 +208,7 @@ limit from measurement, not from the download size.
   engine's port, without even a token prompt. Bind it to loopback on a host you do not
   trust: `DECIS_PLAYGROUND_HOST_PORT=127.0.0.1:8080`.
 - Every image tag is built by the workflow in
-  [`.github/workflows/docker-build.yml`](../.github/workflows/docker-build.yml) and carries
-  an SBOM and provenance attestation.
+  [`.github/workflows/docker-build.yml`](../.github/workflows/docker-build.yml). Published
+  builds — a push to `master`, a release tag, or a dispatch that asks to push — also carry an
+  SBOM and a provenance attestation. A build-only run, such as a pull request, requests
+  neither, because attestation requires a push.

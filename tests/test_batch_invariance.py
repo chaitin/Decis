@@ -14,7 +14,7 @@ So Decis admits the property rather than hiding it:
   compositions;
 * probability drift is bounded and asserted here;
 * **an argmax flip is a failure**, not a wobble;
-* `DECIS_BATCH_MAX_SIZE=1` is the escape hatch for byte-reproducible runs.
+* one item per forward pass is the escape hatch for byte-reproducible runs.
 
 This file is the dependency-free half, so it runs in CI on every commit. It uses a
 fixture engine that genuinely pads to the widest row in the batch and genuinely
@@ -375,7 +375,7 @@ def test_real_engines_are_batch_invariant(engine_id: str) -> None:
 
 @pytest.mark.weights
 def test_real_engine_is_reproducible_for_one_item() -> None:
-    """Bit-for-bit reproducibility at batch=1, which is what `DECIS_BATCH_MAX_SIZE=1` buys."""
+    """Bit-for-bit reproducibility for one item, which is the escape hatch a caller has today."""
     pytest.importorskip("torch")
     if not _weights_present("laya-multilingual"):
         pytest.skip("laya-multilingual weights are not present")

@@ -33,7 +33,7 @@ uv run pytest -q              # the weight-free suite: no weights, no network
 uv run ruff check && uv run ruff format --check
 ```
 
-The weight-free suite is what CI runs. It takes about half a minute and needs no model.
+The weight-free suite is what CI runs. It needs no model and no network.
 
 ### The two environments
 
@@ -43,6 +43,18 @@ Two environments catch different bugs, and both are required before you call a c
 |---|---|---|
 | Weight-free | `uv sync --extra dev` | The API, the contract, and the engine-free paths |
 | Engine installed | `uv sync --extra dev --extra laya` | Dependency-gated branches of the engine code |
+
+Keep the two side by side under different prefixes, so running the second never replaces the
+first. `.scratch/` is git-ignored and holds the engine-installed one:
+
+```bash
+uv sync --extra dev                                   # .venv -- CI's environment
+uv run pytest -q
+
+uv venv .scratch/venv
+uv pip install --python .scratch/venv/bin/python -e '.[dev,laya]'
+.scratch/venv/bin/python -m pytest -q
+```
 
 The weight-free suite skips every branch that needs an engine's dependencies, so a real bug
 can hide in a class of code it never executes. The engine-installed environment has the
@@ -69,6 +81,12 @@ uv run python docs/schema/export.py --check    # checked-in JSON Schema matches 
 
 All four must pass. The last two exist because a number or a field that was edited by hand
 is a lie that no other test catches.
+
+The playground pages are guarded by `tests/test_playground.py`, which compares them with the
+sources they restate: the palette and typography in `playground/web/theme.css`, the shared
+shell in `playground/web/game.js`, the interface language in `playground/web/i18n.js`, and the
+error table on `/api` against `docs/api.md`. Run it alone with
+`uv run pytest -q tests/test_playground.py`; it needs no model and no browser.
 
 ## Pull-request rules
 
@@ -114,6 +132,27 @@ dependencies as a `pyproject.toml` extra, and declare its capacities honestly â€
 weight-free test suite and a `-m weights` suite. If you find yourself needing to change
 `render.py` or `answers.py`, stop and open an issue: the abstraction is wrong, not your
 engine.
+
+## Releasing
+
+A release is one tag. The workflow does the rest, and nothing else should be done by hand:
+
+```bash
+# `__version__` in src/decis/__init__.py and the matching `## [x.y.z]` section in
+# CHANGELOG.md are one change -- tests/test_docs.py compares them.
+git tag v0.4.0 && git push origin v0.4.0
+```
+
+Pushing a `v*` tag makes [`docker-build.yml`](.github/workflows/docker-build.yml) publish the
+versioned image tags ([Deployment](docs/deployment.md) describes the scheme) and then create
+the GitHub Release for that tag, with notes generated from the commits since the previous one.
+The release step waits for the images, so a Release never announces an image that failed to
+publish, and it is idempotent: re-running the workflow for a tag that already has a release
+does nothing rather than failing.
+
+`v<version>` appears in [`SECURITY.md`](SECURITY.md), both READMEs, and
+`docs/deployment.md`; `tests/test_docs.py` fails if any of those literals disagrees with
+`decis.__version__`, so the bump is the one edit that touches several files on purpose.
 
 ## Commit and review style
 

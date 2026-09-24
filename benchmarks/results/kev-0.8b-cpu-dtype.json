@@ -19,7 +19,7 @@
     "usage": {"input_tokens": 101, "output_tokens": 162}
   },
   "method": "two separate server processes (one per dtype), OMP_NUM_THREADS=16, KEV_DTYPE set explicitly. One warm-up request, then two measured requests; the figure below is kev's own server-side latency_ms from the final response, which excludes tokenization and HTTP overhead. Transcribed by hand from the response body: this is a single observation per dtype, not an aggregate, so it is recorded verbatim rather than summarised.",
-  "reproduce": "bash .scratch/run_kev_dtype.sh",
+  "reproduce": "bash benchmarks/probe/run_kev_dtype.sh",
   "results": [
     {
       "dtype": "fp32",

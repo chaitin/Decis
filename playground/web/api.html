@@ -13,9 +13,8 @@
     names, the status codes and `POST /v1/systemone` are values a caller types, so they are
     not translated. Only the prose around them is.
   * **The examples are captured, not invented.** The request/response pair in "A real call"
-    is the snake page's own call, taken from `.scratch/api_example_request.json` and
-    `.scratch/api_example_response.json` (see `.scratch/capture_api_example.py`); the
-    numbers in it are that call's.
+    is the snake page's own call, captured from a running server (the capture script was
+    throwaway and is not checked in); the numbers in it are that call's.
   * **No number here is a measurement of ours.** The engine limits are reported by the
     engine from `GET /v1/models`, so this page points at it instead of printing a value it
     has not measured (AGENTS.md §8).
@@ -492,7 +491,7 @@
             </tr>
             <tr>
               <td class="status"><span class="tag">422</span></td>
-              <td class="mono">validation</td>
+              <td class="mono">&mdash;</td>
               <td data-i18n="err.422">
                 Bad shape, or a request the engine cannot honour: too many options, an over-long
                 question, state over the budget, an empty criteria, an unknown model. The message

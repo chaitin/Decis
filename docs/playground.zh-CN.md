@@ -45,11 +45,13 @@ playground 找引擎不需要任何配置：它按候选清单依次打 `/readyz
 1. `http://laya-multilingual:8000`
 2. `http://kev-0.8b:8000`
 3. `http://host.docker.internal:8000`
+4. `http://127.0.0.1:8000`
 
-所以同一份服务在 `--profile kev-0.8b` 下、以及在宿主机上跑 `decis serve` 时都能用。引擎还在
-加载时，playground 报 `searching`，游戏也会如实显示而不是直接报错。设
-`DECIS_PLAYGROUND_UPSTREAM` 可以直接指定引擎、跳过搜索，设 `DECIS_PLAYGROUND_CANDIDATES`
-可以替换整个候选清单。
+在 Compose 下这份清单被显式设成前三个（`docker-compose.yml`），所以 `127.0.0.1` 只在 playground
+直接跑在宿主机上时才会被试到——这就是同一份服务在 `--profile kev-0.8b` 下、以及在宿主机上跑
+`decis serve` 时都能用的原因。引擎还在加载时，playground 报 `searching`，游戏也会如实显示而不是
+直接报错。设 `DECIS_PLAYGROUND_UPSTREAM` 可以直接指定引擎、跳过搜索，设
+`DECIS_PLAYGROUND_CANDIDATES` 可以替换整个候选清单。
 
 它不 `depends_on` 任何引擎：没启用的 Compose profile 其服务名根本不解析，所以依赖一个没在跑的
 引擎会直接起不来。
@@ -60,12 +62,12 @@ playground 找引擎不需要任何配置：它按候选清单依次打 `/readyz
 机制（[`playground/web/i18n.js`](../playground/web/i18n.js)）和一个外壳
 （[`playground/web/game.js`](../playground/web/game.js)）。页面只带自己的文案、自己的棋盘和自己的
 选项；手动/AI 开关、推理面板、"最近一次调用"的控制台、引擎状态灯和快捷键都来自外壳，所以没有任何
-一页重抄调色板，也没有任何一页自己再实现一遍模式开关。五个页面里四个是游戏，还有一个 `/api`
-（[`playground/web/api.html`](../playground/web/api.html)）是给人看的 API 参考：端点是哪个、三个
-原语分别长什么样、一对从贪吃蛇页面抓下来的真实请求/响应、一个可以自己发一次的输入框、参数、上限和
-错误。索引页还给每个游戏配了一段短录屏（[`playground/web/media/`](../playground/web/media/)），
-都是在这几个页面上以 AI 档实录的。录屏工具（`.scratch/record_gif.py`）会丢掉画面没变化的帧，
-并在按下 Start 的那一帧给按钮描一圈边框——那圈边框是录制工具画的，不是页面画的。
+一页重抄调色板，也没有任何一页自己再实现一遍模式开关。五个页面里三个是游戏，另外两个是索引页和
+`/api`（[`playground/web/api.html`](../playground/web/api.html)）——后者是给人看的 API 参考：端点是哪个、
+三个原语分别长什么样、一对从贪吃蛇页面抓下来的真实请求/响应、一个可以自己发一次的输入框、参数、
+上限和错误。索引页还给每个游戏配了一段短录屏
+（[`playground/web/media/`](../playground/web/media/)），都是在这几个页面上以 AI 档实录的；画面没变化的
+帧会被丢掉。
 
 三个游戏的阅读顺序是一样的。游戏栏带标题、实时状态、得分和操作按钮；它下面是棋盘、模型读到的东西
 和推理面板；再往下是"最近一次调用"的控制台，**默认展开**，左边请求右边响应。推理面板放哪儿由棋盘的
@@ -91,26 +93,9 @@ playground 找引擎不需要任何配置：它按候选清单依次打 `/readyz
 
 ## 落点短名单
 
-Tetris 到底问哪些落点，是容量问题不是口味问题，而这问题的两半都是量出来的。
-
-**问几个。** Laya 会把整个问题都算进 `head_max_len`，超预算就拒绝而不是截断，所以页面按 checkpoint
-可能退回到的最小预算来定这个数量。用引擎自己的 `measure()` 实测：落点问题在五个选项下、空棋盘上是
-**178 token**，棋盘堆起来之后最坏 **185**（两个 AI 会话共 45 个真实问题——棋盘越满，选项那行字越长）；
-整个请求从 **415 涨到 475**，而声明不了任何上限的 checkpoint 兜底预算正是 512 的
-`state + 问题`。六个落点约 207，会被 422 拒掉。引擎仍然拒绝时页面会退回自己的启发式，而不是把一个
-猜测当成答案显示出来。
-
-**问哪些。** 把合法落点按页面自己的启发式排序取前五，并不等于给出五个决策：棋盘平的时候，启发式会
-连着偏好同一个朝向的五个列位，于是这个页面发出的第一个请求里五个选项**全是 `rot2`**——模型只在挑列，
-没在挑落点，而这在旁观者眼里就是"它根本不会旋转"。现在页面先把**每个旋转**里最好的那个落点放进去，
-剩下的名额再给其余落点里最好的；只有一种旋转的 `O` 自然就是同一朝向的五个落点。改动后头 26 个真实
-问题实测：23 个给出两种以上旋转、11 个四种都给到了，而只给一种的那些全是 `O`。每个选项的键写着它是
-哪个旋转（`rot<R>_col<C>`，`R` = 方块顺时针转 90 度的次数），面板里同一个旋转也显示在选项的进度条旁边。
-
-改了页面的问题之后重新量并不需要 tokenizer：超预算的问题会以
-``Question 'placement' is about N tokens, over this model's limit of M per question`` 的形式返回，
-而成功的响应会在 `usage.input_tokens` 和 `decis` 命名空间里报出同一组数字。把页面自己发的请求体
-发一次，从控制台里读出来即可。
+**只问五个，不是六个。** Laya 会把整个问题都算进 `head_max_len`，所以选项清单必须装得进 Decis
+支持的最小问题预算（192 token，checkpoint 没有声明任何上限时的兜底值）。五个落点装得下还有余量，
+六个就不行。每个旋转在短名单里都有代表，所以模型既在挑旋转，也在挑列。
 
 ## 致谢
 
@@ -146,10 +131,3 @@ docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
 make build-playground
 make up-playground
 ```
-
-## 测试
-
-[`tests/test_playground.py`](../tests/test_playground.py) 在回环地址上起一个 playground 和一个
-假引擎，并在不 import `decis` 的前提下检查代理，因为 playground 的镜像里没有它。它断言页面是
-自包含的、每个页面问到的文案都已声明、三个游戏挂的是同一个外壳而不是各自实现模式开关或轮询引擎、
-转发出去的请求带的是 playground 的 token 和改写后的 model id，以及仓库 URL 只有一处。

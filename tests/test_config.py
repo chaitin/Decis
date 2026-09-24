@@ -19,7 +19,6 @@ DECIS_VARS = (
     "DECIS_REQUEST_TIMEOUT_MS",
     "DECIS_TORCH_THREADS",
     "DECIS_LOG_LEVEL",
-    "DECIS_LOG_PAYLOADS",
     "DECIS_ENV_FILE",
 )
 
@@ -119,8 +118,8 @@ def test_a_bad_boolean_says_which_variable(clean_env: None, monkeypatch: pytest.
     [("1", True), ("true", True), ("YES", True), ("on", True), ("0", False), ("false", False), ("Off", False)],
 )
 def test_boolean_spellings(clean_env: None, monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool) -> None:
-    monkeypatch.setenv("DECIS_LOG_PAYLOADS", raw)
-    assert load_settings(env_file="").log_payloads is expected
+    monkeypatch.setenv("DECIS_ACCEPT_FOREIGN_DEFAULTS", raw)
+    assert load_settings(env_file="").accept_foreign_defaults is expected
 
 
 def test_optional_values_stay_none(clean_env: None) -> None:

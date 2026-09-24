@@ -5,9 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the
 project is pre-1.0, the wire contract (`v1`) is stable and only adds fields; the server's own
-version is reported by `/healthz` and in the response's `decis` namespace.
+version is reported by `/healthz`, while `/v1/models` reports the upstream package version
+each engine will run.
 
 ## [Unreleased]
+
+### Added
+
+- **A `v*` tag now publishes a GitHub Release.** The `release` job in
+  `.github/workflows/docker-build.yml` waits for the images, then creates the Release from the
+  tag with generated notes; a re-run finds it already there and does nothing. Until now a tag
+  was published with no Release behind it.
+
+### Changed
+
+- **The READMEs and the guides were rewritten against the code.** The temporary status prose,
+  the hand-written performance numbers (`AGENTS.md §8` requires those to come from
+  `benchmarks/results/`) and the field values, CLI output and error codes the code does not
+  have are gone; what replaced them is shorter and traceable to a file and line.
+
+### Removed
+
+- **`DECIS_LOG_PAYLOADS`.** It was documented but never read: no code path logs request or
+  response bodies, so the variable did nothing. A knob that silently does nothing is worse
+  than no knob.
 
 ## [0.3.0] - 2026-09-24
 
