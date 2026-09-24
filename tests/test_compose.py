@@ -79,7 +79,7 @@ def planned(tmp_path_factory: pytest.TempPathFactory) -> dict:
 def engines(compose: dict) -> dict[str, dict]:
     """Engine id -> its service, derived rather than listed here.
 
-    A service is an engine service when the tag of its `kingfs/decis` image is a registered
+    A service is an engine service when the tag of its `chaitin/decis` image is a registered
     engine id. The playground shares that repository but its tag is not an engine, so it
     falls out of this mapping -- which is what keeps the engine invariants below (a profile
     is an engine, a command names `decis`, a port mirrors `DECIS_PORT`) about engines
@@ -95,7 +95,7 @@ def engines(compose: dict) -> dict[str, dict]:
 
 def tag_of(image: str) -> str:
     repository, _, tag = image.partition(":")
-    assert repository == "kingfs/decis", f"an unpublishable repository: {image}"
+    assert repository == "chaitin/decis", f"an unpublishable repository: {image}"
     return tag
 
 
@@ -160,7 +160,7 @@ def test_every_service_is_either_an_engine_or_the_playground(compose: dict, plan
 
 
 def test_the_engine_image_is_the_one_that_carries_the_weights(compose: dict, planned: dict) -> None:
-    """`docker run kingfs/decis:<engine>` must not need the network.
+    """`docker run chaitin/decis:<engine>` must not need the network.
 
     The published tag that is just the engine's name has to be the variant the workflow
     bakes weights into. If the default is ever flipped back to the weightless one, every
@@ -367,7 +367,7 @@ def test_the_env_example_selects_one_engine_that_exists(compose: dict) -> None:
     assert set(profiles) <= known, f".env.example enables {profiles}, which is not a profile in {sorted(known)}"
     assert len(profiles) == 1, f"the default must start one engine, not {profiles}"
     # The bare `latest` image and the default profile must be the same engine, or the
-    # documented `docker pull kingfs/decis` and `docker compose up` disagree.
+    # documented `docker pull chaitin/decis` and `docker compose up` disagree.
     assert profiles == ["laya-multilingual"], profiles
 
 
@@ -483,7 +483,7 @@ def test_only_the_override_builds_and_only_for_this_checkout(compose: dict, over
     deployment that builds is a deployment that needs the source. The override has to cover
     every service: leaving one out would silently mix a locally built image with a pulled one,
     which stays invisible until the two disagree. Its tags are `decis-local:*` so a build
-    cannot repoint `kingfs/decis:<engine>` at whatever is on this machine.
+    cannot repoint `chaitin/decis:<engine>` at whatever is on this machine.
 
     Each service builds the Dockerfile that actually produces it: the engines share
     `docker/Dockerfile` with different build args, and the playground has its own because it

@@ -15,10 +15,10 @@ All engines share one Docker Hub repository; the engine is the tag:
 
 | Tag | What it carries | Compressed size |
 |---|---|---|
-| `kingfs/decis:laya-multilingual` (= `:latest`) | The default engine and its 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
-| `kingfs/decis:kev-0.8b` | The kev adapter and its Qwen3.5 base, baked in | 6.0 GB / 6.2 GB |
+| `chaitin/decis:laya-multilingual` (= `:latest`) | The default engine and its 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
+| `chaitin/decis:kev-0.8b` | The kev adapter and its Qwen3.5 base, baked in | 6.0 GB / 6.2 GB |
 
-`kingfs/decis:playground` is the third image in the same repository, built and pushed by the
+`chaitin/decis:playground` is the third image in the same repository, built and pushed by the
 same workflow: three browser games and the proxy that fronts them, with no model weights and
 no `RUN` in its Dockerfile. `make build-playground` builds the same tag from this checkout in
 seconds, which is what the source tree's Compose override does.
@@ -28,19 +28,18 @@ above. They are not part of `benchmarks/results/` and `report.py` does not regen
 so treat them as an indication of pull size rather than as a benchmark.
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
 ```
 
 `laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull
-kingfs/decis` gives you the default engine. Every tag is a multi-arch manifest covering
+chaitin/decis` gives you the default engine. Every tag is a multi-arch manifest covering
 `amd64` and `arm64`. The registered `laya` (English) and `laya-typed-decisions` checkpoints
 have no image; run those from a source checkout.
 
-Releases also publish versioned tags, which do not move: `laya-multilingual-v0.2.0` and
-`kev-0.8b-v0.2.0` are what `v0.2.0` published, `laya-multilingual-v0.1.0` and
-`kev-0.8b-v0.1.0` what `v0.1.0` did, and `kev-0.8b-v0.0.1` / `laya-multilingual-v0.0.1` the
-release before that. A versioned tag is created when the matching `v*` git tag is pushed, and
-the engine-named tags keep moving with every push to `master`.
+A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
+`laya-multilingual-<version>` and `kev-0.8b-<version>`, plus the weightless
+`-runtime-<version>` variants described below. The engine-named tags are the opposite —
+they keep moving with every push to `master`, so a versioned tag is the one to pin.
 
 ### Bringing your own weights
 
@@ -49,7 +48,7 @@ holds `<engine-id>/`:
 
 ```bash
 # /srv/models/laya-multilingual/multilingual/... must already exist
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaitin/decis:laya-multilingual
 ```
 
 > **Do not mount an empty directory at `/models`.** A mount there hides the baked weights —
@@ -65,15 +64,15 @@ node's image small, releases also publish a weightless variant named
 fill the volume once and mount it from then on:
 
 ```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v0.2.0
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.2.0 \
+docker pull chaitin/decis:laya-multilingual-runtime-v0.3.0
+docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v0.2.0
+  chaitin/decis:laya-multilingual-runtime-v0.3.0
 ```
 
 The volume must be filled before the service starts: this image has nothing to fall back on.
-`v0.2.0` is the current version, and pinning it is the point of this variant — the
+`v0.3.0` is the current version, and pinning it is the point of this variant — the
 engine-named tags move with every push to `master`.
 
 ## Docker Compose
@@ -126,7 +125,7 @@ make build-engine ENGINE=kev-0.8b
 make up-engine    ENGINE=kev-0.8b
 
 make ps / logs / images / config   # what is running, and the images it came from
-make pull                    # the deployment path: the published kingfs/decis:* images
+make pull                    # the deployment path: the published chaitin/decis:* images
 make test / lint
 ```
 

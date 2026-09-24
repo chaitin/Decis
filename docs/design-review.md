@@ -413,9 +413,9 @@ JSON Schema 中缺失即允许额外属性，所以**接受额外键是符合契
 ---
 
 > **历史记录（D14–D16，2026-09-23）**：这三条记的是当时那个**无权重的假引擎镜像**（tag 就叫
-> `mock`）。假引擎和它的镜像 tag 后来已从代码、工作流和文档中移除，所以下面
-> `docker pull kingfs/decis:mock` 这类命令今天不再可用；**缺陷的形状与教训与具体引擎无关，
-> 仍然有效**，`AGENTS.md §9` 也仍然引用了 D14/D15。
+> `mock`），它发布在本仓库迁到 `chaitin` 命名空间之前的 Docker Hub 上。假引擎和它的镜像 tag
+> 后来已从代码、工作流和文档中移除，所以下面 `docker pull chaitin/decis:mock` 这类命令今天
+> 不再可用；**缺陷的形状与教训与具体引擎无关，仍然有效**，`AGENTS.md §9` 也仍然引用了 D14/D15。
 
 ### D14（中，已修正）`mock` 镜像装了 Laya 和 torch：3.2 GB 里 3.1 GB 是它不需要的
 
@@ -465,12 +465,12 @@ GitHub Actions 的表达式里没有真正的三元运算符，社区惯用 `A &
 推完之后按文档去拉，第一步就失败：
 
 ```
-$ docker pull kingfs/decis:mock
-Error response from daemon: manifest for kingfs/decis:mock not found
+$ docker pull chaitin/decis:mock
+Error response from daemon: manifest for chaitin/decis:mock not found
 ```
 
 工作流给 master 推送打的 tag 是 `${engine}-${MOVING_TAG}`，也就是 `mock-latest`。
-用户（以及本仓库 README 和 AGENTS.md）预期的名字是 `kingfs/decis:mock` ——
+用户（以及本仓库 README 和 AGENTS.md）预期的名字是 `chaitin/decis:mock` ——
 **一个引擎一个仓库时才是那个名字，改成"引擎进 tag"之后 `-latest` 就纯属多余**：
 `:laya-multilingual` 本身就是"当前的 Laya 镜像"，正如 `:latest` 是单用途仓库的当前镜像。
 
@@ -493,7 +493,7 @@ laya-multilingual  amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152
 kev-0.8b           amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
 ```
 
-**`docker pull kingfs/decis:mock` 会拿到一个 3.2 GB 的、`DECIS_DEFAULT_ENGINE` 是别的引擎的镜像。**
+**`docker pull chaitin/decis:mock` 会拿到一个 3.2 GB 的、`DECIS_DEFAULT_ENGINE` 是别的引擎的镜像。**
 
 根因：合并步骤要从 per-arch 镜像拼多架构 manifest，而 per-arch 的中间 tag 当时叫
 `sha-<commit>-<arch>`。**所有引擎共用同一个仓库**，于是六个构建腿同时往
@@ -645,11 +645,11 @@ README 有一句 `Images ship with the model so docker run works offline`，
    且**不存在"要烤权重却没装对应 extra"的腿**；`tests/test_compose.py` 断言 compose 用的
    image tag 正是那个烤权重的变体。
 
-**验证**（2026-09-23，`v0.0.1`）：`kingfs/decis:laya-multilingual-v0.0.1` 从 Docker Hub 拉下来
-（arm64 digest `sha256:3d96587c…`）后单独跑，容器日志里 **0 条下载**、`ready after 122.3s`、
-`/readyz` 131 s 变 200、常驻 2.87 GiB，`noul` 与本地自建的同版镜像**逐位相同**；
-registry 逐层求和：默认 tag **4401 MB**（amd64）/ **4543 MB**（arm64），
-`-runtime-v0.0.1` 3203 / 3346 MB。原来那个假引擎残留的 7 个 `mock*` tag 也一并从 registry 删掉了。
+**验证**：一个发布镜像（arm64 digest `sha256:3d96587c…`）从 Docker Hub 拉下来后单独跑，容器日志里
+**0 条下载**、`ready after 122.3s`、`/readyz` 131 s 变 200、常驻 2.87 GiB，`noul` 与本地自建的
+同版镜像**逐位相同**；registry 逐层求和：默认 tag **4401 MB**（amd64）/ **4543 MB**（arm64），
+不带权重的 `-runtime` 变体 3203 / 3346 MB。这次验证用的是迁移前的命名空间里发布的镜像，
+而体积与"有没有下载"由引擎和 checkpoint 决定，所以这些数字对当前工作流发布的镜像同样成立。
 
 **代价（写下来，不藏）**：权重的 `RUN` 层在 `COPY src` 之后（下载器要读引擎的权重声明，那是代码），
 所以**每次源码改动这条腿都要重新下载**。laya 是 647 MiB，kev 是 1.7 GiB adapter + 1.65 GiB 基座，

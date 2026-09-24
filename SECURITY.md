@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 **Do not open a public issue for a security problem.** Use GitHub's private vulnerability
-reporting on the [Security tab](https://github.com/kingfs/Decis/security/advisories/new). If
+reporting on the [Security tab](https://github.com/chaitin/Decis/security/advisories/new). If
 you cannot use GitHub, open an issue that says only that you have a security report and how
 to reach you — no details in the issue itself.
 
@@ -20,7 +20,7 @@ first and publish afterwards, and we will credit you unless you ask us not to.
 ## Supported versions
 
 Decis is pre-1.0. Security fixes land on `master` and in the next release; only the most
-recent release image is supported. Pin a versioned tag (`...-v0.1.0` is the current one)
+recent release image is supported. Pin a versioned tag (`...-v0.3.0` is the current one)
 rather than a moving tag in production.
 
 ## Security model

@@ -26,7 +26,7 @@ well-argued "no" early is cheaper than a rewrite.
 You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/kingfs/Decis && cd Decis
+git clone https://github.com/chaitin/Decis && cd Decis
 uv sync --extra dev
 cp .env.example .env          # set DECIS_API_KEY to anything for local work
 uv run pytest -q              # the weight-free suite: no weights, no network

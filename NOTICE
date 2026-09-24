@@ -106,11 +106,6 @@ If code is ever copied from them, this NOTICE must be updated.
       "generate benchmark reports from raw checked-in JSON, asserting identical
       input hashes" methodology.
 
-  https://github.com/kingfs/UniTS-Hub     Apache-2.0
-      Referenced for: the single-Dockerfile-with-build-arg image pattern and the
-      GitHub Actions test -> build(matrix, push-by-digest) -> imagetools-merge
-      release pipeline.
-
   https://docs.typesafe.ai                (documentation reference only)
       The System One wire contract implemented by Decis is documented by TypeSafe
       AI. Decis implements the interface; it does not include any TypeSafe code,

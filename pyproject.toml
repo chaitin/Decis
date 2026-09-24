@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decis"
-version = "0.2.0"
+version = "0.3.0"
 description = "One API to run all light-weight decision models."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -67,9 +67,9 @@ all = ["decis[laya,kev,remote,metrics]"]
 download = ["huggingface_hub>=0.20"]
 
 [project.urls]
-Homepage = "https://github.com/kingfs/Decis"
-Issues = "https://github.com/kingfs/Decis/issues"
-Changelog = "https://github.com/kingfs/Decis/releases"
+Homepage = "https://github.com/chaitin/Decis"
+Issues = "https://github.com/chaitin/Decis/issues"
+Changelog = "https://github.com/chaitin/Decis/releases"
 
 [project.scripts]
 decis = "decis.cli:main"

@@ -41,7 +41,7 @@
   //: The project this playground ships with. The navigation link is built here rather
   //: than written into four pages, so the repository URL has one home (AGENTS.md §2) --
   //: the same reason the palette lives in theme.css.
-  var REPO_URL = "https://github.com/kingfs/Decis";
+  var REPO_URL = "https://github.com/chaitin/Decis";
 
   //: The links every page shows, and the string that labels each one. `back` is the one
   //: page-specific exception: the index has nothing to go back to, so it omits the

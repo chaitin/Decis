@@ -2,10 +2,10 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/kingfs/Decis/actions/workflows/ci.yml/badge.svg)](https://github.com/kingfs/Decis/actions/workflows/ci.yml)
+[![CI](https://github.com/chaitin/Decis/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitin/Decis/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/kingfs/decis.svg)](https://hub.docker.com/r/kingfs/decis)
+[![Docker Pulls](https://img.shields.io/docker/pulls/chaitin/decis.svg)](https://hub.docker.com/r/chaitin/decis)
 
 **One API to run all light-weight decision models.**
 
@@ -19,7 +19,7 @@ generating text. It is a single forward pass, small enough to run next to your a
 enough to sit in a request path. Decis is the serving layer for those models: one wire
 contract, many interchangeable engines, and one container per engine.
 
-> **Status: v0.2.0.** Two model families run behind one contract —
+> **Status: v0.3.0.** Two model families run behind one contract —
 > `laya-multilingual` (default) and `kev-0.8b` — plus the English and typed-decision Laya
 > checkpoints. The wire contract, authentication, error shapes, the engine abstraction,
 > weight resolution, the CLI, the Docker images and CI are implemented and tested. The
@@ -32,7 +32,7 @@ contract, many interchangeable engines, and one container per engine.
 ## Quickstart
 
 ```bash
-git clone https://github.com/kingfs/Decis && cd Decis
+git clone https://github.com/chaitin/Decis && cd Decis
 uv sync --extra dev --extra laya
 cp .env.example .env                               # set DECIS_API_KEY=local, as the sample does
 uv run decis download --engine laya-multilingual   # 647 MiB, once
@@ -137,7 +137,7 @@ evidence and the upper bound are in [Performance](docs/performance.md).
 ## Deploy
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
 ```
 
 One image per engine, one Docker Hub repository, the engine in the tag. Every engine-tagged
@@ -215,8 +215,6 @@ work.
   attributed in [`NOTICE`](NOTICE)) and generalises the serving layer to many engines.
 - **[Laya](https://huggingface.co/convaiinnovations/laya)** (Convai Innovations) —
   Apache-2.0, multilingual, one forward pass. Decis uses the official `laya` package.
-- **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)** — the multi-model container build
-  pattern Decis follows.
 - **[djev-run](https://github.com/taeold/djev-run)** (Daniel Lee) — the playground's games
   are adapted from it; see [Playground](docs/playground.md#credits).
 

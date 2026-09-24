@@ -10,7 +10,7 @@
 # defined once, in the base file.
 #
 # The local tags are `decis-local:*` on purpose: building must not overwrite the published
-# `kingfs/decis:*` tags on this machine, and `docker images` should make it obvious which of
+# `chaitin/decis:*` tags on this machine, and `docker images` should make it obvious which of
 # the two a container came from.
 #
 # The build args mirror what CI passes, weights included, so "it works locally" means the

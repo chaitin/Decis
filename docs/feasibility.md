@@ -83,10 +83,6 @@ items = [it for group in batch for it in group]  # 展平多组问题
   - `strict=True` 加载（缺键/错形状立即报错）、温度 clamp、归一化熵置信度
 - 它的 README 头条延迟（13.42/7.39ms）与仓库内 checked-in 结果（17.75/10.91ms）**不一致**。规划按保守值。
 
-### 2.5 UniTS-Hub 的 Docker 模式
-
-直接可复用（已写进 [`design.md §8`](design.md)）：单 Dockerfile + `ARG MODEL_TYPE`、CI 三段式 `test → build(matrix, push-by-digest) → merge(imagetools create)`、tag 规范 `<image>:<model>-latest/-<ver>/-<sha7>`、权重构建期 `snapshot_download` 烘进 `/app/models` + `TRANSFORMERS_OFFLINE=1`、`MODELS_DIR` 可挂载覆盖。
-
 ---
 
 ## 3. 逐条对照项目期望
@@ -97,7 +93,7 @@ items = [it for group in batch for it in group]  # 展平多组问题
 | 2. 现代化构建/发布（uv） | ✅ | uv 已是 kev / laya-mlx 的实际选择；PyPI 发布路径成熟 |
 | 3. 高性能 API server | ⚠️ **可行但有条件** | 单次推理确实快，但"高 QPS"靠的是**跨请求批处理 + 多进程**，不是换 server 框架。实测：CPU-only 单问 201 ms（多语）/ 446 ms（英文）；同请求内批处理把每问成本降到 99–234 ms。要低延迟必须上 GPU。见 §4 |
 | 4. 高质量抽象、易扩展 | ✅ | 抽象已被两个独立实现验证（§1）；新增引擎 = 1 个模块 + 1 行注册 |
-| 5. 按模型分别打 Docker + GitHub Actions | ✅ | UniTS-Hub 模式已验证可直接套用 |
+| 5. 按模型分别打 Docker + GitHub Actions | ✅ | 已验证可直接套用 |
 
 ---
 
@@ -278,7 +274,7 @@ device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 | "kev 可以内置进 docker 快速体验" | 技术可行（adapter 113MB + 基座 1.6GB），但 **CPU 上 fp32 就要 1.66 s/请求**，bf16 更是 137 s | kev 应以 CUDA 为主场；CPU 镜像明确标注性能不达标 |
 | "仅一套 api server，稳定接口与 jev 一致" | ✅ 完全可行，且契约有 OpenAPI 生成物可依 | 无 |
 | "方便后续增加更多推理方式" | ✅ 抽象已被两种异构架构验证 | 无 |
-| "用 GitHub Actions 按模型分别打镜像" | ✅ UniTS-Hub 模式直接可用 | 无 |
+| "用 GitHub Actions 按模型分别打镜像" | ✅ 已验证直接可用 | 无 |
 
 **需要认真调整的是两条**：（1）高性能来自**跨请求批处理 + 硬件**，不是换框架；（2）kev 的"轻量"只在 GPU 上成立，CPU 上它比 Laya 慢一个数量级。把这两点写清楚，比承诺一个达不到的数字重要。
 
@@ -310,6 +306,3 @@ device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 - [Laya 模型卡](https://huggingface.co/convaiinnovations/laya)、[PyPI laya](https://pypi.org/project/laya/)、[laya GitHub](https://github.com/NandhaKishorM/laya)
 - 本地安装的 `laya` 0.3.5：`laya/agent.py`、`laya/common.py`
 - [laya-mlx](https://github.com/mizorewww/laya-mlx)（本地 `/data/src/github.com/mizorewww/laya-mlx`）：`pyproject.toml`、`laya_mlx/agent.py`、`tests/conftest.py`、`benchmarks/report.py`、`BENCHMARKS.md`、`docs/*_RESEARCH.md`
-
-**工程模式**
-- [UniTS-Hub](https://github.com/kingfs/UniTS-Hub)：`Dockerfile`、`.github/workflows/docker-build.yml`、`docker-compose.yml`、`scripts/download_models.py`

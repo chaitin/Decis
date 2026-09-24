@@ -77,7 +77,7 @@ def model_schema(name: str, *, mode: str, filename: str | None = None) -> dict[s
     """The JSON Schema for one wire model, with this file's `$id` and dialect set."""
     document = _models()[name].model_json_schema(mode=mode)
     document["$schema"] = JSON_SCHEMA_DIALECT
-    document["$id"] = f"https://github.com/kingfs/Decis/docs/schema/{filename or name + '.schema.json'}"
+    document["$id"] = f"https://github.com/chaitin/Decis/docs/schema/{filename or name + '.schema.json'}"
     return document
 
 

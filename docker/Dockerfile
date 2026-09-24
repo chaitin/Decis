@@ -29,9 +29,9 @@ FROM python:3.13-slim AS base
 # OCI image annotations (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 LABEL org.opencontainers.image.title="Decis" \
       org.opencontainers.image.description="One API to run all light-weight decision models." \
-      org.opencontainers.image.url="https://github.com/kingfs/Decis" \
-      org.opencontainers.image.source="https://github.com/kingfs/Decis" \
-      org.opencontainers.image.documentation="https://github.com/kingfs/Decis/blob/master/README.md" \
+      org.opencontainers.image.url="https://github.com/chaitin/Decis" \
+      org.opencontainers.image.source="https://github.com/chaitin/Decis" \
+      org.opencontainers.image.documentation="https://github.com/chaitin/Decis/blob/master/README.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.base.name="docker.io/library/python:3.13-slim"
 

@@ -2,10 +2,10 @@
 
 [English](README.md) · **简体中文**
 
-[![CI](https://github.com/kingfs/Decis/actions/workflows/ci.yml/badge.svg)](https://github.com/kingfs/Decis/actions/workflows/ci.yml)
+[![CI](https://github.com/chaitin/Decis/actions/workflows/ci.yml/badge.svg)](https://github.com/chaitin/Decis/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/kingfs/decis.svg)](https://hub.docker.com/r/kingfs/decis)
+[![Docker Pulls](https://img.shields.io/docker/pulls/chaitin/decis.svg)](https://hub.docker.com/r/chaitin/decis)
 
 **一个 API，跑所有轻量决策模型。**
 
@@ -17,7 +17,7 @@ Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 
 跑在一起，也快到可以放进请求路径。Decis 就是这些模型缺的那层服务：一套稳定契约，多种引擎，
 一个引擎一个容器。
 
-> **状态：v0.2.0。** 两个模型家族跑在同一份契约后面——`laya-multilingual`（默认）与
+> **状态：v0.3.0。** 两个模型家族跑在同一份契约后面——`laya-multilingual`（默认）与
 > `kev-0.8b`——另有 Laya 的英文与 typed-decisions checkpoint。线格式契约、认证、错误形状、
 > 引擎抽象、权重解析、CLI、Docker 镜像与 CI 都已实现并有测试。契约建立在[官方 OpenAPI
 > 快照](docs/contract/typesafe-openapi-0.2.0.json)和[线上 API 实际返回什么的记录](docs/contract/observations-2026-09-22.md)
@@ -27,7 +27,7 @@ Decis 是一个体量很小、可以自托管的服务端，说的是 [TypeSafe 
 ## 快速开始
 
 ```bash
-git clone https://github.com/kingfs/Decis && cd Decis
+git clone https://github.com/chaitin/Decis && cd Decis
 uv sync --extra dev --extra laya
 cp .env.example .env                               # 设 DECIS_API_KEY=local，示例就是这么用的
 uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
@@ -124,7 +124,7 @@ print(response.nouls["churn_risk"].noul)  # P(true)，0..1
 ## 部署
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
 ```
 
 一个引擎一个镜像，所有引擎共用一个 Docker Hub 仓库，引擎就是 tag。以引擎为 tag 的每个镜像都是
@@ -196,7 +196,6 @@ Decis 不训练模型。它只做服务，并且尽量致谢而不是重复造�
   并把服务层推广到多个引擎。
 - **[Laya](https://huggingface.co/convaiinnovations/laya)**（Convai Innovations）——Apache-2.0，
   多语言，一次前向。Decis 把官方 `laya` 包作为引擎使用。
-- **[UniTS-Hub](https://github.com/kingfs/UniTS-Hub)**——Decis 沿用的多模型容器构建方式。
 - **[djev-run](https://github.com/taeold/djev-run)**（Daniel Lee）——playground 的游戏改编自它；
   见 [Playground](docs/playground.zh-CN.md#致谢)。
 

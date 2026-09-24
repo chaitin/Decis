@@ -52,9 +52,27 @@ class FakeTokenizer:
     mask_token = "[MASK]"
     pad_token_id = 0
 
-    def __call__(self, text: str, add_special_tokens: bool = False) -> dict[str, list[int]]:
+    def __call__(
+        self,
+        text: str,
+        add_special_tokens: bool = False,
+        truncation: bool = False,
+        max_length: int | None = None,
+    ) -> dict[str, list[int]]:
+        """One id per character, honouring the tokenizer-level option cap.
+
+        `build_sequence` caps each option description at 48 tokens before the mask id.
+        Up to 0.3.5 it sliced the result (`[...]["input_ids"][:48]`); from 0.3.20 it asks
+        the tokenizer to do it (`truncation=True, max_length=48`), which upstream documents
+        as keeping exactly the first 48 tokens. The same cap, described differently -- so
+        this double has to accept the arguments *and* apply them, or the assertions below
+        would compare against an uncapped option.
+        """
         del add_special_tokens
-        return {"input_ids": list(range(10, 10 + len(text)))}
+        ids = list(range(10, 10 + len(text)))
+        if truncation and max_length is not None:
+            ids = ids[:max_length]
+        return {"input_ids": ids}
 
 
 def _head_length_from_upstream(tokenizer: FakeTokenizer, question: dict, head_max_len: int, state: str) -> int:

@@ -124,7 +124,7 @@ def test_a_branch_push_builds_every_engine_for_both_architectures(push_to_master
 
 
 def test_a_branch_push_bakes_the_weights_in(push_to_master: dict) -> None:
-    """`docker pull kingfs/decis:<engine>` has to work with no network.
+    """`docker pull chaitin/decis:<engine>` has to work with no network.
 
     An engine's image exists to carry that engine, weights included; a published default
     that downloads 647 MiB on first start is not what the tag promises. The weightless
@@ -399,7 +399,9 @@ def run_step(script: str, tmp_path: Path, docker_bin: Path, **env: str) -> subpr
         "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
         "REGISTRY": "docker.io",
         "IMAGE_REPO": "decis",
-        "DOCKERHUB_USERNAME": "kingfs",
+        # The published namespace, not a credential: the workflow fixes it, so a token
+        # held by some other account cannot move the images.
+        "IMAGE_NAMESPACE": "chaitin",
         **env,
     }
     return run_shell(script, tmp_path, environment)
@@ -409,6 +411,9 @@ def test_the_published_registry_is_docker_hub(workflow: dict) -> None:
     """The project publishes to exactly one registry, and it must be the documented one."""
     assert workflow["env"]["REGISTRY"] == "docker.io"
     assert workflow["env"]["IMAGE_REPO"] == "decis"
+    # The namespace is decided by the workflow (a repository variable may override it),
+    # not derived at run time from whichever credential happens to be configured.
+    assert "chaitin" in workflow["env"]["IMAGE_NAMESPACE"]
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "ghcr.io" not in text, "a GHCR reference survived the move to Docker Hub"
 
@@ -417,7 +422,7 @@ def test_the_published_registry_is_docker_hub(workflow: dict) -> None:
     ("event", "ref", "ref_name", "expected"),
     [
         # On a branch push the engine name IS the tag, as if the repository held one model:
-        # `docker pull kingfs/decis:laya-multilingual`. Nothing is appended, so the
+        # `docker pull chaitin/decis:laya-multilingual`. Nothing is appended, so the
         # documented tag is a tag that exists -- `:laya-multilingual` did not, the
         # workflow produced `:laya-multilingual-latest` while the README said otherwise.
         (
@@ -468,7 +473,7 @@ def test_the_playground_is_tagged_but_never_as_an_engine(tmp_path: Path, plan_sc
 
     It shares the engines' repository -- a second Docker Hub repository would be a manual
     step nothing else needs -- so its tag has to be as predictable as theirs. It must also
-    never *collide* with one: `kingfs/decis:playground` is a web page, not a checkpoint, and
+    never *collide* with one: `chaitin/decis:playground` is a web page, not a checkpoint, and
     a tag that matched an engine's would publish one over the other.
     """
     for event, ref, name, expected in (
@@ -506,7 +511,7 @@ def test_a_pull_request_builds_the_playground_for_one_platform(tmp_path: Path, p
 
 
 def test_the_playground_image_shares_the_engines_repository(playground_meta_script: str, tmp_path: Path) -> None:
-    """`kingfs/decis:playground`, not a second repository to create by hand."""
+    """`chaitin/decis:playground`, not a second repository to create by hand."""
     docker_bin, _ = fake_docker(tmp_path)
     completed = run_step(
         playground_meta_script,
@@ -517,7 +522,7 @@ def test_the_playground_image_shares_the_engines_repository(playground_meta_scri
     )
     assert completed.returncode == 0, completed.stderr
     outputs = parse_outputs(tmp_path / "out")
-    assert outputs["image"] == "docker.io/kingfs/decis", outputs
+    assert outputs["image"] == "docker.io/chaitin/decis", outputs
     assert outputs["tag"] == "playground", outputs
 
 
@@ -574,7 +579,7 @@ def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, 
 
 
 def test_every_engine_shares_one_repository(build_meta_script: str, tmp_path: Path) -> None:
-    """`kingfs/decis:laya-multilingual`, not `kingfs/decis-laya-multilingual`."""
+    """`chaitin/decis:laya-multilingual`, not `chaitin/decis-laya-multilingual`."""
     docker_bin, _ = fake_docker(tmp_path)
     completed = run_step(
         build_meta_script,
@@ -588,16 +593,24 @@ def test_every_engine_shares_one_repository(build_meta_script: str, tmp_path: Pa
     )
     assert completed.returncode == 0, completed.stderr
     outputs = parse_outputs(tmp_path / "out")
-    assert outputs["image"] == "docker.io/kingfs/decis", outputs
+    assert outputs["image"] == "docker.io/chaitin/decis", outputs
     tags = outputs["tags"].splitlines()
-    assert "docker.io/kingfs/decis:laya-multilingual-amd64" in tags, tags
+    assert "docker.io/chaitin/decis:laya-multilingual-amd64" in tags, tags
     # The per-arch provenance tag the merge job consumes must name the artifact as well as
     # the platform.
-    assert "docker.io/kingfs/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64" in tags, tags
+    assert "docker.io/chaitin/decis:laya-multilingual-sha-a1b2c3d4e5f6-amd64" in tags, tags
 
 
-def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta_script: str, tmp_path: Path) -> None:
-    """A fork's owner is not a Docker Hub namespace, so it must not decide the image name."""
+def test_the_namespace_is_neither_the_credential_nor_the_repository_owner(
+    build_meta_script: str, tmp_path: Path
+) -> None:
+    """A published name must not follow whichever account holds the token.
+
+    `DOCKERHUB_USERNAME` is a Docker Hub *login*; an organization is not a user account,
+    so the account that authenticates is not necessarily the namespace the docs name.
+    Deriving the image from it pushes somewhere no document mentions, which is invisible
+    until someone cannot pull what the README told them to pull.
+    """
     docker_bin, _ = fake_docker(tmp_path)
     completed = run_step(
         build_meta_script,
@@ -607,13 +620,14 @@ def test_the_namespace_comes_from_the_secret_not_the_repository_owner(build_meta
         VARIANT="runtime",
         ARCH="amd64",
         IMAGE_TAG="laya-multilingual",
-        # A fork would see its own owner here; the image name must ignore it.
+        # A fork would see its own owner here, and the credential can be any account.
         GITHUB_REPOSITORY_OWNER="someone-else",
-        DOCKERHUB_USERNAME="KingFS",  # registries require lowercase
+        DOCKERHUB_USERNAME="someone-elses-account",
+        IMAGE_NAMESPACE="Chaitin",  # registries require lowercase
         GITHUB_OUTPUT=str(tmp_path / "out"),
     )
     assert completed.returncode == 0, completed.stderr
-    assert parse_outputs(tmp_path / "out")["image"] == "docker.io/kingfs/decis"
+    assert parse_outputs(tmp_path / "out")["image"] == "docker.io/chaitin/decis"
 
 
 def merged_tags(log: Path) -> list[str]:
@@ -630,7 +644,7 @@ def merged_tags(log: Path) -> list[str]:
     ("engine", "variant", "image_tag", "moving_tag", "expected_latest"),
     [
         # `laya-multilingual` is the server's default engine and the one the README leads
-        # with, so it is the right answer to a bare `docker pull kingfs/decis`. It is the
+        # with, so it is the right answer to a bare `docker pull chaitin/decis`. It is the
         # *baked* variant: the bare name has to be the one that runs with no network.
         ("laya-multilingual", "baked", "laya-multilingual", "latest", True),
         # ...but only the image that actually moved `latest`. A version tag must not
@@ -661,8 +675,8 @@ def test_only_the_default_engine_claims_the_bare_latest_tag(
     )
     assert completed.returncode == 0, completed.stderr
     tags = merged_tags(log)
-    assert f"docker.io/kingfs/decis:{image_tag}" in tags, tags
-    assert ("docker.io/kingfs/decis:latest" in tags) is expected_latest, tags
+    assert f"docker.io/chaitin/decis:{image_tag}" in tags, tags
+    assert ("docker.io/chaitin/decis:latest" in tags) is expected_latest, tags
 
 
 def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tmp_path: Path) -> None:
@@ -687,8 +701,8 @@ def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tm
     skip = {words.index("--tag") + 1} if "--tag" in words else set()
     sources = [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
     assert sources == [
-        "docker.io/kingfs/decis:kev-0.8b-sha-a1b2c3d4e5f6-amd64",
-        "docker.io/kingfs/decis:kev-0.8b-sha-a1b2c3d4e5f6-arm64",
+        "docker.io/chaitin/decis:kev-0.8b-sha-a1b2c3d4e5f6-amd64",
+        "docker.io/chaitin/decis:kev-0.8b-sha-a1b2c3d4e5f6-arm64",
     ], sources
 
 
@@ -802,13 +816,13 @@ def test_a_dry_run_needs_no_credentials(plan_script: str, tmp_path: Path) -> Non
 # --- what the docs tell a user to pull -----------------------------------------
 
 
-IMAGE_REFERENCE = re.compile(r"kingfs/decis:([A-Za-z0-9][A-Za-z0-9._-]*)")
+IMAGE_REFERENCE = re.compile(r"chaitin/decis:([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 
 def documented_tags(path: Path) -> set[str]:
     """Every image tag this file tells a user to pull.
 
-    Two places say so: a `kingfs/decis:<tag>` in a command, and the first column of the
+    Two places say so: a `chaitin/decis:<tag>` in a command, and the first column of the
     deployment table. Both are read, because the D15 defect was a *table row* for a tag
     the workflow never built -- a guard that only scanned commands would have missed it.
     """

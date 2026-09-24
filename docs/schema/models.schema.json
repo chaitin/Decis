@@ -52,5 +52,5 @@
   "title": "ModelMetadataList",
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kingfs/Decis/docs/schema/models.schema.json"
+  "$id": "https://github.com/chaitin/Decis/docs/schema/models.schema.json"
 }

@@ -1,14 +1,14 @@
 name: Docker images
 
 # Builds one image per engine and publishes them to Docker Hub under a single
-# repository: `kingfs/decis:<engine>`. One repository rather than one per engine
+# repository: `chaitin/decis:<engine>`. One repository rather than one per engine
 # because the engine is a flavour of the same server, not a different product, and
 # because adding an engine should not mean creating and configuring a new Docker Hub
 # repository. The consequence is that every tag carries its engine: `laya-multilingual-v1.2.0`,
 # `laya-multilingual-runtime-v1.2.0`.
 #
 # The image that carries the engine's name carries its *weights*: `docker pull
-# kingfs/decis:laya-multilingual && docker run` has to work with no network, no volume and
+# chaitin/decis:laya-multilingual && docker run` has to work with no network, no volume and
 # no download step, or the tag is not doing the one thing a per-engine image is for. A
 # release tag also publishes the weightless variant as `<engine>-runtime-<version>`, for
 # deployments that keep one copy of the weights on a shared volume or that must keep every
@@ -64,6 +64,15 @@ env:
   # project only needs one public registry. `docker.io` is explicit even though it is the
   # default, so the login and the image refs cannot drift apart.
   REGISTRY: docker.io
+  # The namespace the images are published under. Kept separate from
+  # `DOCKERHUB_USERNAME`, which is a *login* identity: an organization is not a user
+  # account (an organization access token is used with the organization name as the
+  # username), so deriving the namespace from the credential publishes to whichever
+  # account holds the token -- which is how images end up somewhere no document names.
+  # Set the `DOCKERHUB_NAMESPACE` repository variable to publish elsewhere (a fork);
+  # `chaitin` is this repository's namespace. `||` is a default, not a ternary: an empty
+  # variable is falsy, which is exactly when the default should win.
+  IMAGE_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'chaitin' }}
   # Every image lands in this one repository, with the engine in the tag.
   IMAGE_REPO: decis
 
@@ -201,7 +210,7 @@ jobs:
           }
 
           # The moving tag. A branch push must not move `latest`, and `latest` is not part
-          # of an image's name: `kingfs/decis:laya-multilingual` IS the current Laya image,
+          # of an image's name: `chaitin/decis:laya-multilingual` IS the current Laya image,
           # the way `:latest` is the current image of a single-purpose repository. Only a
           # release tag appends something, and then it pins: `laya-multilingual-v1.2.0`.
           if [[ "$REF" == refs/tags/v* ]]; then
@@ -323,18 +332,13 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           ARCH: ${{ matrix.arch }}
           IMAGE_TAG: ${{ matrix.image_tag }}
-          # Passed through the environment rather than interpolated into this script.
-          # Interpolation would splice a secret into shell *source*: a value containing a
-          # quote would break the script, and one containing `$(...)` would run. It also
-          # keeps this step executable by the tests below, which cannot expand `${{ }}`.
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
-          # The namespace is the secret, not `github.repository_owner`: a fork's owner is
-          # not a Docker Hub namespace, so deriving it from the repository would push to
-          # a repository that cannot exist. Lowercased because registries require it.
-          owner="$(echo "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
-          image="${REGISTRY}/${owner}/${IMAGE_REPO}"
+          # A published name, not a credential: `IMAGE_NAMESPACE` is fixed by the
+          # workflow, so a token belonging to some other account cannot move the images
+          # somewhere no document names. Lowercased because registries require it.
+          namespace="$(echo "$IMAGE_NAMESPACE" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${namespace}/${IMAGE_REPO}"
           short="${GITHUB_SHA::12}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
           {
@@ -420,11 +424,10 @@ jobs:
           # The name comes from the plan script, not from here: `latest` is not part of
           # the playground's name either, and a release appends its version.
           PLAYGROUND_TAG: ${{ needs.plan.outputs.playground_tag }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
-          owner="$(echo "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
-          echo "image=${REGISTRY}/${owner}/${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
+          namespace="$(echo "$IMAGE_NAMESPACE" | tr '[:upper:]' '[:lower:]')"
+          echo "image=${REGISTRY}/${namespace}/${IMAGE_REPO}" >> "$GITHUB_OUTPUT"
           echo "tag=${PLAYGROUND_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether to attest
@@ -484,11 +487,10 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           IMAGE_TAG: ${{ matrix.image_tag }}
           MOVING_TAG: ${{ needs.plan.outputs.tag }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           set -euo pipefail
-          owner="$(echo "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')"
-          image="${REGISTRY}/${owner}/${IMAGE_REPO}"
+          namespace="$(echo "$IMAGE_NAMESPACE" | tr '[:upper:]' '[:lower:]')"
+          image="${REGISTRY}/${namespace}/${IMAGE_REPO}"
           short="${GITHUB_SHA::12}"
 
           # The per-arch tags exist only if that platform's leg ran. Merging a digest that
@@ -511,7 +513,7 @@ jobs:
 
           # `laya-multilingual` is the server's default engine and the one whose install
           # the README leads with, so it is the right answer to a bare
-          # `docker pull kingfs/decis`. It is the *baked* variant, not `-runtime`: the bare
+          # `docker pull chaitin/decis`. It is the *baked* variant, not `-runtime`: the bare
           # name has to be the one that works with no network. Nothing else gets a bare
           # `latest`, and only when this run actually moved `latest`.
           if [ "$ENGINE" = "laya-multilingual" ] && [ "$VARIANT" = "baked" ] && [ "$MOVING_TAG" = "latest" ]; then

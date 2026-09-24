@@ -374,13 +374,13 @@ def test_every_page_links_to_the_repository(name: str) -> None:
     text = (WEB / name).read_text(encoding="utf-8")
     assert "data-repo-link" in text, f"{name} has no link to the repository"
     # The URL itself lives in the shell, so a page that repeats it is the second home.
-    assert "github.com/kingfs/Decis" not in text, f"{name} hardcodes the repository URL"
+    assert "github.com/chaitin/Decis" not in text, f"{name} hardcodes the repository URL"
 
 
 def test_the_repository_url_has_one_home() -> None:
     """`i18n.js` is where the project's URL is written down, and it is written once."""
     text = (WEB / "i18n.js").read_text(encoding="utf-8")
-    assert text.count('REPO_URL = "https://github.com/kingfs/Decis"') == 1
+    assert text.count('REPO_URL = "https://github.com/chaitin/Decis"') == 1
     assert "data-repo-link" in text, "the mount point is no longer recognised"
     assert "data-back-link" in text, "the way back is no longer recognised"
 
@@ -407,7 +407,7 @@ def test_the_index_credits_the_projects_it_borrowed_from() -> None:
     assert "github.com/taeold/djev-run" in text
     assert "credits.core" in text and "credits.title" in text
     # And the credit line points at the repository through the shared mount, not a copy.
-    assert "github.com/kingfs/Decis" not in text
+    assert "github.com/chaitin/Decis" not in text
 
 
 def test_tetris_sizes_its_question_from_one_named_budget() -> None:

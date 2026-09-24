@@ -14,10 +14,10 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 
 | tag | 内容 | 压缩后体积 |
 |---|---|---|
-| `kingfs/decis:laya-multilingual`（= `:latest`） | 默认引擎及其 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
-| `kingfs/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已烤进镜像 | 6.0 GB / 6.2 GB |
+| `chaitin/decis:laya-multilingual`（= `:latest`） | 默认引擎及其 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
+| `chaitin/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已烤进镜像 | 6.0 GB / 6.2 GB |
 
-`kingfs/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
+`chaitin/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
 以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。`make build-playground`
 会在几秒内从当前 checkout 构建出同一个 tag，源码目录里的 Compose 覆盖层走的就是这条路。
 
@@ -26,17 +26,17 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 基准。
 
 ```bash
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
 ```
 
-`laya-multilingual` 是唯一同时拿到裸 `latest` 的 tag，所以 `docker pull kingfs/decis` 拿到的
+`laya-multilingual` 是唯一同时拿到裸 `latest` 的 tag，所以 `docker pull chaitin/decis` 拿到的
 就是默认引擎。每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。注册的 `laya`（英文）
 与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
-release 还会发布带版本的 tag，这些 tag 不会移动：`laya-multilingual-v0.2.0` 与
-`kev-0.8b-v0.2.0` 是 `v0.2.0` 发布的，`laya-multilingual-v0.1.0` 与 `kev-0.8b-v0.1.0` 是
-`v0.1.0` 发布的，`laya-multilingual-v0.0.1` 与 `kev-0.8b-v0.0.1` 是它前一次发布的。带版本的
-tag 在对应的 `v*` git tag 被推送时创建，而引擎名那些 tag 会随着每次推送到 `master` 移动。
+release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会生成
+`laya-multilingual-<version>` 与 `kev-0.8b-<version>`，以及下面说的不带权重的
+`-runtime-<version>` 变体。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，
+所以要钉住的是带版本的 tag。
 
 ### 自带权重
 
@@ -44,7 +44,7 @@ tag 在对应的 `v*` git tag 被推送时创建，而引擎名那些 tag 会随
 
 ```bash
 # /srv/models/laya-multilingual/multilingual/... 必须已经存在
-docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs/decis:laya-multilingual
+docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaitin/decis:laya-multilingual
 ```
 
 > **不要把空目录挂到 `/models`。** 挂在那里会盖住烤进镜像的权重——命名卷只会被镜像内容初始化
@@ -58,14 +58,14 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models kingfs
 然后运行：
 
 ```bash
-docker pull kingfs/decis:laya-multilingual-runtime-v0.2.0
-docker run --rm -v decis-models:/models kingfs/decis:laya-multilingual-runtime-v0.2.0 \
+docker pull chaitin/decis:laya-multilingual-runtime-v0.3.0
+docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  kingfs/decis:laya-multilingual-runtime-v0.2.0
+  chaitin/decis:laya-multilingual-runtime-v0.3.0
 ```
 
-卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。`v0.2.0` 是当前版本，
+卷必须在服务启动前填好：这个镜像没有任何可以退回去的东西。`v0.3.0` 是当前版本，
 而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master` 移动。
 
 ## Docker Compose
@@ -113,7 +113,7 @@ make build-engine ENGINE=kev-0.8b
 make up-engine    ENGINE=kev-0.8b
 
 make ps / logs / images / config   # 正在运行的东西，以及它们来自哪些镜像
-make pull                    # 部署路径：拉发布的 kingfs/decis:* 镜像
+make pull                    # 部署路径：拉发布的 chaitin/decis:* 镜像
 make test / lint
 ```
 

@@ -34,7 +34,7 @@ DOCUMENTED = re.compile(r"^([a-zA-Z][a-zA-Z0-9_-]*):.*?## (.+)$", re.MULTILINE)
 #: Terminology that belongs to the Compose files and the workflow; none of it may appear in
 #: the Makefile. The engine ids are added from the compose file rather than written here (§9:
 #: a hand-copied list can be right while the thing it copies is wrong).
-FOREIGN = ("kingfs/", "decis-local", "DECIS_EXTRAS", "DECIS_PREDOWNLOAD", "DECIS_ENGINE")
+FOREIGN = ("chaitin/", "decis-local", "DECIS_EXTRAS", "DECIS_PREDOWNLOAD", "DECIS_ENGINE")
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

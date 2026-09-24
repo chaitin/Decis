@@ -38,5 +38,5 @@
   "title": "ErrorResponse",
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kingfs/Decis/docs/schema/errors.schema.json"
+  "$id": "https://github.com/chaitin/Decis/docs/schema/errors.schema.json"
 }

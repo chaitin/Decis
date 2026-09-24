@@ -19,9 +19,9 @@ FROM python:3.13-slim
 
 LABEL org.opencontainers.image.title="Decis playground" \
       org.opencontainers.image.description="Browser games that call the Decis System One API." \
-      org.opencontainers.image.url="https://github.com/kingfs/Decis" \
-      org.opencontainers.image.source="https://github.com/kingfs/Decis" \
-      org.opencontainers.image.documentation="https://github.com/kingfs/Decis/blob/master/README.md" \
+      org.opencontainers.image.url="https://github.com/chaitin/Decis" \
+      org.opencontainers.image.source="https://github.com/chaitin/Decis" \
+      org.opencontainers.image.documentation="https://github.com/chaitin/Decis/blob/master/README.md" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.base.name="docker.io/library/python:3.13-slim"
 

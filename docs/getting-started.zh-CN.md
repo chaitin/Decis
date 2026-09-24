@@ -22,7 +22,7 @@ Docker 是源码 checkout 之外的另一条路——已发布的镜像里已经
 ## 从源码运行
 
 ```bash
-git clone https://github.com/kingfs/Decis && cd Decis
+git clone https://github.com/chaitin/Decis && cd Decis
 uv sync --extra dev --extra laya
 cp .env.example .env                               # 设 DECIS_API_KEY=local，示例就是这么用的
 uv run decis download --engine laya-multilingual   # 647 MiB，只需一次

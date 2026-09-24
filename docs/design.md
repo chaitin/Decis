@@ -521,7 +521,7 @@ resolve(spec, settings) →                                    src/decis/paths.p
 - **revision 钉在 commit sha 上**，不是 tag 或 branch：否则上游一次 force-push 就会改变某个已发布的
   Decis 镜像加载的是什么权重，可复现性就没有了（`engines/laya.py: REVISION`）。
   要跑自己的微调就用第 1 条，那是这条规则预留的出口。
-- 离线：`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`，与 UniTS-Hub 一致。
+- 离线：`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`。
 
 ### 7.2 各引擎的权重清单 — ✅ 体积取自 Hub 文件列表实测
 
@@ -562,7 +562,7 @@ kev 是"小 adapter + 大基座"。因此：
 
 ## 8. 打包与镜像
 
-沿用 [UniTS-Hub](https://github.com/kingfs/UniTS-Hub) 已验证的模式（单 Dockerfile + `ARG` 分支 + CI 三段式）。
+采用单 Dockerfile + `ARG` 分支 + CI 三段式的模式。
 
 ### 8.1 单 Dockerfile + 构建参数
 
@@ -593,8 +593,8 @@ ARG DECIS_REVISION=unknown
 ARG DECIS_CREATED=1970-01-01T00:00:00Z
 LABEL org.opencontainers.image.title="Decis" \
       org.opencontainers.image.description="One API to run all light-weight decision models." \
-      org.opencontainers.image.source="https://github.com/kingfs/Decis" \
-      org.opencontainers.image.url="https://github.com/kingfs/Decis" \
+      org.opencontainers.image.source="https://github.com/chaitin/Decis" \
+      org.opencontainers.image.url="https://github.com/chaitin/Decis" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${DECIS_VERSION}" \
       org.opencontainers.image.revision="${DECIS_REVISION}" \
@@ -639,7 +639,7 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 - build 阶段`outputs: type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true`，digest 存 artifact——**多架构并行时不抢 tag**。
 - merge 阶段 `docker buildx imagetools create` 合成 multi-arch manifest。
 - tag 规范：`<image>:<engine>-latest`（默认分支）、`<image>:<engine>-<semver>`（`v*` tag）、`<image>:<engine>-<sha7>`（永远打，回滚锚点）。
-- 相对 UniTS-Hub 的改进：打开 `provenance: true` + SBOM（供应链），digest artifact 保留 7 天而非 1 天。
+- 在此之上打开 `provenance: true` + SBOM（供应链），digest artifact 保留 7 天而非 1 天。
   （原设计写"同时推 GHCR 与 Docker Hub"，实际只推 Docker Hub —— 见 §12.1。）
 
 ### 8.3 镜像清单
@@ -652,7 +652,7 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 | `decis:kev-0.8b-cuda` | kev-0.8b | CUDA runtime | ~6–8 GB |
 | `decis:all-latest` | 全部（demo） | CPU | ~4 GB |
 
-`docker-compose.yml` 用 profiles 按引擎起服务，与 UniTS-Hub 一致。
+`docker-compose.yml` 用 profiles 按引擎起服务。
 
 ---
 
@@ -971,31 +971,31 @@ vendor kev 最小子集，接入第二个引擎。**这一步的真正目的是�
   矩阵生成逻辑是纯 bash，因此可以**离线执行测试**：`tests/test_docker_workflow.py` 把 `plan` 步骤的脚本
   从 YAML 里抠出来，按每种触发事件真跑一遍。
 - ✅ **在真实 runner 上跑通一次**：2026-09-22 push 到 master 触发
-  [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)，6 个构建腿 + 3 个 merge 全绿，
-  彼时镜像在 GHCR（`ghcr.io/kingfs/decis-{laya-multilingual,kev-0.8b}:latest`，另有一个后来被移除的无权重假引擎 tag）。
-- ✅ **改为只推 Docker Hub 单仓库**：`kingfs/decis`，引擎进 tag，`laya-multilingual` 另外拿裸 `latest`。
+  [run 35742701211](https://github.com/chaitin/Decis/actions/runs/35742701211)，6 个构建腿 + 3 个 merge 全绿，
+  彼时镜像在 GHCR（现已只推 Docker Hub，见下条）。
+- ✅ **改为只推 Docker Hub 单仓库**：`chaitin/decis`，引擎进 tag，`laya-multilingual` 另外拿裸 `latest`。
   理由：一个仓库页面能看到所有模型，新增引擎不用建新仓库；代价是每个 tag 都要带引擎名。
 - ✅ **2026-09-23 推 Docker Hub 成功**（run 35807645301，commit `574c0ac`），仓库公开。
-- ✅ **tag 方案定型**：引擎名即 tag（`kingfs/decis:laya-multilingual`），它是**烤权重**的那个变体；
+- ✅ **tag 方案定型**：引擎名即 tag（`chaitin/decis:laya-multilingual`），它是**烤权重**的那个变体；
   只有 release tag 追加版本（`laya-multilingual-v1.2.0`），并同时发布瘦身的
   `laya-multilingual-runtime-v1.2.0`；`laya-multilingual`（默认引擎）在 master 推送时另拿裸 `latest`。
   方案在 `plan` 步骤里算，有测试真跑（含"默认 tag 必须烤权重"和"不许给没装 extra 的腿烤权重"两条断言）。
-- ✅ **体积已量**（registry API 逐层求和，压缩后下载量，2026-09-23 的 `v0.0.1`）：
-  烤权重的 `laya-multilingual`（= `latest`）4401 MB amd64 / 4543-4544 MB arm64，`kev-0.8b` 6045 / 6188 MB；
-  不带权重的 `-runtime-v0.0.1` 是 3203 / 3346 MB 与 3206 / 3349 MB。
-  当时还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
+- ✅ **体积量过一次**（registry API 逐层求和，压缩后下载量）：烤权重的 `laya-multilingual`（= `latest`）
+  4401 MB amd64 / 4543-4544 MB arm64，`kev-0.8b` 6045 / 6188 MB；不带权重的 `-runtime` 变体是
+  3203 / 3346 MB 与 3206 / 3349 MB。体积由引擎与 checkpoint 决定而不是由源码决定（源码只改最上层的
+  那点字节），所以这些数字对当前工作流发布的镜像同样成立；下一次发布后可以用 registry API 复量。
+  历史上还发布过一个无权重的假引擎镜像（72 MB），它一度因为一行三元表达式
   装上了 torch（3203 MB，`design-review.md §2-D14`）；**该镜像现已从代码、工作流和文档中移除**，
   那次的端到端验证（起容器 → 打 `/v1/systemone`，契约响应完整；无凭证 403、错 key 401；
   容器冷启动到 `/readyz` ready 为 2.5 s）记录的正是它，因此只对"容器里的鉴权与 §3-19 生效"这条还有意义。
-- ✅ 推了 `v0.0.1`：release 路径跑通（8 条构建腿 + 4 个 merge，产出 `<engine>-v0.0.1` 与
-  `<engine>-runtime-v0.0.1`），烤权重那个从 Docker Hub 拉下来在容器里跑过（冷启动到 `/readyz`
-  122.3 s，常驻 2.87 GiB），体积逐层量过。**`-runtime` 变体没拉下来跑过**；
+- ✅ **release 路径跑通**（8 条构建腿 + 4 个 merge）：烤权重那个发布镜像在容器里跑过（冷启动到
+  `/readyz` 122.3 s，常驻 2.87 GiB），体积逐层量过。**`-runtime` 变体没拉下来跑过**；
   `kev-0.8b` 的容器内冷启动仍然没测（只在容器里起过 laya）；engine-free 基础镜像的体积与冷启动未测。
 
 **§12.2 待决策：权重层的代价**。默认镜像烤权重（§2-D20）之后，权重的 `RUN` 层会被**任何**源码改动
 作废（下载器要读引擎的权重声明，而那是代码），于是每次 master 推送都要重新下载 647 MiB（laya）
 或 1.7 GiB + 1.65 GiB 基座（kev），每架构各一次。省这笔钱的做法是把权重放进一个单独发布、
-很少变化的"模型层"镜像（例如 `kingfs/decis-models:<engine>-<weights-rev>`），引擎镜像改成
+很少变化的"模型层"镜像（例如 `chaitin/decis-models:<engine>-<weights-rev>`），引擎镜像改成
 `COPY --from=` 它：`COPY` 的缓存键是源镜像的 digest，所以源码改动不再触碰权重层。
 代价是多一类需要自己版本化的产物，以及"模型层与引擎镜像的权重版本会不会漂移"这个新问题。
 **没有实现**；在 CI 时长成为问题之前不要做。
@@ -1030,14 +1030,14 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | kev 在 CPU 上可用 | 可用但比 Laya 慢一个数量级；bf16 再慢 83 倍（单次观测） |
 | `decis bench` 采集 | 已能用，但目前只能测**请求内**批处理；跨请求那部分由 `benchmarks/batch_gain.py` 单独测 |
 | 镜像可在两个架构上构建并推送 | **实测一次**：2026-09-22，commit `17a084e`，push 到 master 触发
-  [run 35742701211](https://github.com/kingfs/Decis/actions/runs/35742701211)。6 个构建腿全部成功
+  [run 35742701211](https://github.com/chaitin/Decis/actions/runs/35742701211)。6 个构建腿全部成功
   （三个引擎 tag × amd64 / arm64，单腿 7m51s–15m52s），3 个 merge 任务成功，
-  合成多架构 manifest，例如 `ghcr.io/kingfs/decis-laya-multilingual:latest@sha256:e6651499f7ba355155af16f5d52cdc1393f44afc08c0981b48d9c2d046f0d6f5`
-  （amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了"能构建、能推送、能合并"** |
-| 镜像体积与容器内冷启动 | **已量**（2026-09-23，`v0.0.1`）：体积见下面的体积 bullet；容器内冷启动从起了容器到 `/readyz` 变 200 是 **122.3 s**（`compose --wait` 131 s），常驻 2.87 GiB。上面那次 2026-09-22 的运行本身没有记录体积、也没有在容器里起过服务。 |
-| release tag 路径与 `-runtime` 变体 | **已构建并推送**（2026-09-23，`v0.0.1`，[run 35830071254](https://github.com/kingfs/Decis/actions/runs/35830071254)：8 条腿 + 4 个 merge 全绿，产出 `<engine>-v0.0.1` 与 `<engine>-runtime-v0.0.1`）。**拉下来跑过的是烤权重那个**；`-runtime` 只验证了"能构建、能合并、体积对" |
-| 默认镜像里确实有权重 | **已验证**（2026-09-23，aarch64，本地自建 + 从 Docker Hub 拉下来的 `laya-multilingual-v0.0.1` 两版）：冷启动 **0 条下载**，容器内 `/v1/systemone` 真的作答且两版结果逐位相同；见 `AGENTS.md` 的镜像段落 |
-| Docker Hub 仓库的可见性 | **已验证**（2026-09-23）：不带任何凭证的匿名 token 就能读到 manifest 与逐层体积，`docker pull kingfs/decis:laya-multilingual-v0.0.1` 也直接成功 |
+  合成多架构 manifest（amd64 + arm64 各一份 manifest 加一份 attestation）。**这只验证了
+  "能构建、能推送、能合并"**；当时镜像在 GHCR，现已只推 Docker Hub。 |
+| 镜像体积与容器内冷启动 | **已量**：体积见上面的体积 bullet；容器内冷启动从起了容器到 `/readyz` 变 200 是 **122.3 s**（`compose --wait` 131 s），常驻 2.87 GiB。上面那次 2026-09-22 的运行本身没有记录体积、也没有在容器里起过服务。 |
+| release tag 路径与 `-runtime` 变体 | **已构建并推送**（[run 35830071254](https://github.com/chaitin/Decis/actions/runs/35830071254)：8 条腿 + 4 个 merge 全绿，产出 `<engine>-<version>` 与 `<engine>-runtime-<version>`）。**拉下来跑过的是烤权重那个**；`-runtime` 只验证了"能构建、能合并、体积对" |
+| 默认镜像里确实有权重 | **已验证**（aarch64，本地自建与发布镜像两版）：冷启动 **0 条下载**，容器内 `/v1/systemone` 真的作答且两版结果逐位相同；见 `AGENTS.md` 的镜像段落 |
+| Docker Hub 的发布路径 | **已验证**：2026-09-24 的 master 推送（[run 35956102642](https://github.com/chaitin/Decis/actions/runs/35956102642)）6 条构建腿 + 2 个 merge 全绿；更早一次还验证了匿名 token 能读到 manifest 与逐层体积、发布镜像能直接拉取 |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 

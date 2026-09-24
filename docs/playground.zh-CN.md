@@ -120,7 +120,7 @@ Tetris 到底问哪些落点，是容量问题不是口味问题，而这问题�
 |---|---|
 | [taeold/djev-run](https://github.com/taeold/djev-run) | Snake、Dino 和 Tetris 三个页面。Decis 把它们的请求地址改成 playground 自己的源，删掉借来的延迟基线，把 Tetris 从 16 个冗长选项压到 5 个精简选项以适配默认引擎的 token 预算，并重新设计样式、翻译了界面。游戏里的物理与规划代码来自那个仓库致谢的项目。 |
 | [trungdq88/jev-tetris](https://github.com/trungdq88/jev-tetris) | Tetris 页面也致谢了它。 |
-| [kingfs/Decis](https://github.com/kingfs/Decis) | 服务端：System One 线格式、引擎抽象、模型推理与 token 计量。playground 只渲染游戏并转发它们的请求，不拥有任何决策逻辑。 |
+| [chaitin/Decis](https://github.com/chaitin/Decis) | 服务端：System One 线格式、引擎抽象、模型推理与 token 计量。playground 只渲染游戏并转发它们的请求，不拥有任何决策逻辑。 |
 
 署名记录在 [`NOTICE`](../NOTICE) 里。
 

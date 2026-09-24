@@ -9,6 +9,33 @@ version is reported by `/healthz` and in the response's `decis` namespace.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-24
+
+### Added
+
+- **`DOCKERHUB_NAMESPACE`**, a repository variable that points the published images at
+  another Docker Hub namespace. Without it the workflow publishes to `chaitin`, which is
+  now a fixed part of the workflow rather than something derived from the login
+  credential: an organization is not a user account, so `DOCKERHUB_USERNAME` (the login)
+  is not necessarily the namespace the documentation names.
+
+### Changed
+
+- **The project moved to the `chaitin` organization.** Every clone URL, badge, issue link,
+  image reference and workflow comment now names `chaitin/Decis` and `chaitin/decis`.
+- The deployment guide describes versioned image tags as a scheme
+  (`<engine>-<version>`) instead of listing what past releases produced. Those images live
+  in the namespace the project used before the move, so the list named tags that are not in
+  `chaitin/decis`.
+- The package version is `0.3.0`.
+
+### Fixed
+
+- `tests/test_upstream_contract.py` no longer fails against a newer `laya`: its tokenizer
+  double now accepts the `truncation` and `max_length` arguments that `laya` began passing
+  to the tokenizer, and honours them the way the upstream truncation does. The declared
+  range (`>=0.3.5,<0.4`) is now covered by the guard, not only its lowest bound.
+
 ## [0.2.0] - 2026-09-24
 
 ### Added
@@ -105,6 +132,8 @@ The first tagged release. Everything below is the initial implementation.
   ([`docs/design-review.md`](docs/design-review.md)) and the feasibility study
   ([`docs/feasibility.md`](docs/feasibility.md)).
 
-[Unreleased]: https://github.com/kingfs/Decis/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/kingfs/Decis/releases/tag/v0.1.0
-[0.0.1]: https://github.com/kingfs/Decis/releases/tag/v0.0.1
+[Unreleased]: https://github.com/chaitin/Decis/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/chaitin/Decis/releases/tag/v0.3.0
+[0.2.0]: https://github.com/chaitin/Decis/releases/tag/v0.2.0
+[0.1.0]: https://github.com/chaitin/Decis/releases/tag/v0.1.0
+[0.0.1]: https://github.com/chaitin/Decis/releases/tag/v0.0.1

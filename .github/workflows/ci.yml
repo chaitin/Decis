@@ -120,6 +120,17 @@ jobs:
       - name: Upstream fidelity
         run: uv run pytest tests/test_upstream_contract.py -q
 
+      # The extra declares `laya>=0.3.5,<0.4`; the lock pins one version inside it, while a
+      # user running `pip install decis[laya]` gets the newest. The two bounds describe the
+      # same 48-token option cap differently -- 0.3.5 slices the result, 0.3.20 passes
+      # `truncation=True, max_length=48` down to the tokenizer -- so a version only in the
+      # lock cannot see a call shape that only the newest one makes. `--no-sync` is what
+      # keeps the upgrade: a plain `uv run` would put the locked version back first.
+      - name: Upstream fidelity against the newest laya the extra allows
+        run: |
+          uv pip install --upgrade 'laya<0.4'
+          uv run --no-sync pytest tests/test_upstream_contract.py -q
+
   contract:
     name: contract snapshot unchanged
     runs-on: ubuntu-latest

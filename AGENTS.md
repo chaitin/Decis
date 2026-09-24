@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**669 通过 / 33 跳过**，约 29 秒，不联网）；
-> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **693 通过 / 28 跳过**（多出来的 24 个用例
+> **测试**：`uv run pytest -q` 跑无权重的那套（**670 通过 / 33 跳过**，约 29 秒，不联网）；
+> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **694 通过 / 28 跳过**（多出来的 24 个用例
 > 是引擎可用后才参数化出来的依赖分支）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
@@ -28,11 +28,14 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `docs/design.md §11` 的目录树是目标结构，其中未出现的文件即为尚未实现的部分。
 >
 > **镜像**：`.github/workflows/docker-build.yml` 在 push/打 tag 时按引擎构建并推送到 **Docker Hub**：
-> **所有引擎共用一个仓库 `kingfs/decis`，引擎就是 tag**（`kingfs/decis:laya-multilingual`、
-> `kingfs/decis:kev-0.8b`），master 推送时 `laya-multilingual` 另外拿一个裸 `latest`（它是默认引擎），
-> 让 `docker pull kingfs/decis` 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
+> **所有引擎共用一个仓库 `chaitin/decis`，引擎就是 tag**（`chaitin/decis:laya-multilingual`、
+> `chaitin/decis:kev-0.8b`）。命名空间由工作流的 `IMAGE_NAMESPACE` 决定（默认 `chaitin`，
+> 可用仓库变量 `DOCKERHUB_NAMESPACE` 覆盖），**不从 `DOCKERHUB_USERNAME` 推导**：那个是登录身份，
+> 而组织不是用户账号（组织访问令牌以组织名当用户名），从凭据推导会把镜像推到一个没有任何文档
+> 写过的命名空间去。master 推送时 `laya-multilingual` 另外拿一个裸 `latest`（它是默认引擎），
+> 让 `docker pull chaitin/decis` 开箱可用。**只有 release tag 才在引擎名后追加版本**（`laya-multilingual-v1.2.0`）——
 > "当前版本"不加 `-latest`，加了就等于同一个东西有两个名字，而其中一个是文档里没有的。
-> **同一仓库里还有一个非引擎镜像 `playground`**：`kingfs/decis:playground`（release 为
+> **同一仓库里还有一个非引擎镜像 `playground`**：`chaitin/decis:playground`（release 为
 > `playground-v1.2.0`），是三个网页小游戏 + 一个只转发 `/v1/systemone` 的纯标准库代理
 > （`playground/`）。它不由引擎矩阵构建，而是单独一个 job；`playground/Dockerfile` 里
 > **没有 `RUN`**，所以一个 job 直接推 amd64+arm64 的 manifest，不需要 QEMU 也不需要合并腿。
@@ -47,18 +50,19 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **矩阵、tag 方案、引擎 → pip extra 的映射全部在 `plan` 步骤里算，并由 `tests/test_docker_workflow.py`
 > 把那段脚本从 YAML 里抠出来真跑验证**（构建/合并步骤只做插值，用一个假的 `docker` 记录它被要求创建哪些 tag）。
 > **GHCR 已不再推送**（只有 Docker Hub 一个 registry）。
-> **已实测**（[run 35807645301](https://github.com/kingfs/Decis/actions/runs/35807645301)，commit `574c0ac`）
-> 6 个构建腿 + 3 个 merge 全绿，`kingfs/decis` 公开。当时还发布了一个无权重的假引擎镜像
+> **已实测**（[run 35807645301](https://github.com/chaitin/Decis/actions/runs/35807645301)，commit `574c0ac`）
+> 6 个构建腿 + 3 个 merge 全绿，当时发布出来的仓库是公开的。当时还发布了一个无权重的假引擎镜像
 > （**现已从代码、工作流和文档中移除**），并真的拉下来跑过：起容器 → 打 `/v1/systemone`，
 > 契约响应完整（`noul` 标量、`score` 的字符串键 + `legend` + `confidence`、`choice` 的键与请求一致、
 > `usage`、`x-typesafe-request-id`、`decis` 命名空间），无凭证 **403** / 错 key **401** 也都实测。
 > 容器里没配 `DECIS_API_KEY` 而监听 `0.0.0.0` 时**拒绝启动**（§3-19 在容器里同样生效）。
 > 体积用 registry API **逐层求和**量出（压缩后的下载量，不是 Docker Hub 页面那个数，
-> 也不是本地解压后的大小；`v0.0.1` 实测）：
-> 烤权重的 `laya-multilingual`（= `latest` = `laya-multilingual-v0.0.1`）**4401 MB** amd64 / **4543 MB** arm64
+> 也不是本地解压后的大小）。数字量自迁到 `chaitin` 之前那个命名空间里的同名镜像，而体积由引擎与
+> checkpoint 决定、与源码无关（源码只改最上层那一层），所以对当前工作流发布的镜像同样成立：
+> 烤权重的 `laya-multilingual`（= `latest`）**4401 MB** amd64 / **4543 MB** arm64
 > （同一份内容两次构建差 1 MB，所以别把它当指纹读）；
-> `kev-0.8b`（= `kev-0.8b-v0.0.1`）**6045 / 6188 MB**；
-> 不带权重的 `-runtime-v0.0.1` 分别是 **3203 / 3346 MB** 与 **3206 / 3349 MB**。
+> `kev-0.8b` **6045 / 6188 MB**；
+> 不带权重的 `-runtime` 变体分别是 **3203 / 3346 MB** 与 **3206 / 3349 MB**。
 > **engine-free 基础镜像尚未量过体积与冷启动。**
 > 那个假引擎镜像曾误装 Laya + torch 达到 3203 MB（`design-review.md §2-D14`），
 > 修好后构建时间从 9m16s 降到 59s——那个镜像已删除，但这条教训（§9 的三元表达式禁用）仍然有效。
@@ -92,17 +96,17 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 两个方向（带/不带 override）都解析通过。
 > 两个环境事实写进了 `design-review.md §2-D23`：Docker **不把** shell 或 `.env` 里的代理带进 `RUN`
 > （本地构建必须 `--build-arg HTTP_PROXY=...`），而代理 build arg **不进** BuildKit 缓存键。
-> **发布出去的镜像也实测过**（`docker pull kingfs/decis:laya-multilingual-v0.0.1`，arm64，走本机那个代理，21 分钟）：容器起来后**日志里
+> **发布出去的镜像也实测过**（一个 release 镜像，arm64，走本机那个代理，21 分钟）：容器起来后**日志里
 > 0 条下载**，从 `/models/laya-multilingual/multilingual` 加载，`ready after 122.3s`，
 > `/readyz` 131 s 变 200，常驻 2.87 GiB，`/v1/systemone` 的 `noul` 与本地自建镜像
-> **逐位相同**（0.0107），403/401 与 `/v1/models` 都对。registry 里 7 个 `mock*` tag
-> （那个假引擎的残留）已删除：`kingfs/decis` 现在只有真实引擎的 tag。
+> **逐位相同**（0.0107），403/401 与 `/v1/models` 都对。那次拉的是迁移前那个命名空间里的镜像；
+> 当时还顺手删掉了 registry 里 7 个 `mock*` tag（那个假引擎的残留）。
 > **未验证**：`-runtime` 变体只验证了"能构建、能合并、体积对"，**没有拉下来跑过**（烤权重那个跑了）；
 > kev 镜像的容器内冷启动（没在容器里起过 kev）、kev 的 compose 路径（只跑了 laya）。
 > 报镜像相关的结论时不要超出这个范围。
 > **playground 已实测**（同一台 aarch64 本机）：`docker build -f playground/Dockerfile` 成功
-> （没有 `RUN`，所以不装任何依赖），镜像直接跑在一个自建 bridge 网络上、旁边是
-> `kingfs/decis:laya-multilingual-v0.0.1`；它**自己**从候选里找到了 `http://decis-test-engine:8000`，
+> （没有 `RUN`，所以不装任何依赖），镜像直接跑在一个自建 bridge 网络上、旁边是一个发布镜像；
+> 它**自己**从候选里找到了 `http://decis-test-engine:8000`，
 > `/readyz` 报 `{"status":"ready","engine":"laya-multilingual"}`，`/`、`/snake`、`/dino`、`/tetris`
 > 都是 200，`/../server.py` 是 404，引擎还在加载时它如实报 `searching`。**三个页面自己的 JS**
 > （node 里给 DOM 打桩、把 `fetch` 换成记录器）发出的真实请求都拿到了 200：
@@ -409,7 +413,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：669 通过 / 33 跳过，约 29 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：670 通过 / 33 跳过，约 29 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
@@ -448,8 +452,8 @@ uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45
 镜像（已发布，CI 构建）：
 
 ```bash
-docker run --rm -p 8000:8000 kingfs/decis:laya-multilingual   # 权重在镜像里，不需要网络也不需要挂卷
-docker run --rm -p 8000:8000 kingfs/decis:kev-0.8b
+docker run --rm -p 8000:8000 chaitin/decis:laya-multilingual   # 权重在镜像里，不需要网络也不需要挂卷
+docker run --rm -p 8000:8000 chaitin/decis:kev-0.8b
 #   想换成自己的权重目录：-v /srv/models:/models，但那个目录里必须已经有 <engine-id>/
 #   ——挂在 /models 上会盖掉烤进镜像的权重（§2-D21）。要"权重放卷"就用 release 的
 #   <engine>-runtime-<version> 镜像先 `decis download` 填一次卷。

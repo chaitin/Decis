@@ -146,7 +146,7 @@ The games are adapted from open-source projects, and the API and inference are D
 |---|---|
 | [taeold/djev-run](https://github.com/taeold/djev-run) | The Snake, Dino and Tetris pages. Decis changed their endpoint to the playground's own origin, removed the borrowed latency baselines, cut Tetris from sixteen verbose options to five terse ones to fit the default engine's token budget, and restyled and translated the interface. The games' physics and planner code comes from the projects that repository credits. |
 | [trungdq88/jev-tetris](https://github.com/trungdq88/jev-tetris) | The Tetris page also credits it. |
-| [kingfs/Decis](https://github.com/kingfs/Decis) | The server: the System One wire format, the engine abstraction, model inference and token accounting. The playground renders the games and proxies their requests; it owns none of the decision logic. |
+| [chaitin/Decis](https://github.com/chaitin/Decis) | The server: the System One wire format, the engine abstraction, model inference and token accounting. The playground renders the games and proxies their requests; it owns none of the decision logic. |
 
 Attribution is recorded in [`NOTICE`](../NOTICE).
 

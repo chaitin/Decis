@@ -23,7 +23,7 @@ weights. See [Deployment](deployment.md) if you would rather not install Python.
 ## Run from source
 
 ```bash
-git clone https://github.com/kingfs/Decis && cd Decis
+git clone https://github.com/chaitin/Decis && cd Decis
 uv sync --extra dev --extra laya
 cp .env.example .env                               # set DECIS_API_KEY=local, as the samples do
 uv run decis download --engine laya-multilingual   # 647 MiB, once

@@ -81,7 +81,7 @@ x-environment: &environment
 services:
   laya-multilingual:
     <<: *engine
-    image: kingfs/decis:laya-multilingual
+    image: chaitin/decis:laya-multilingual
     profiles: [laya-multilingual]
     environment:
       <<: *environment
@@ -96,7 +96,7 @@ services:
 
   kev-0.8b:
     <<: *engine
-    image: kingfs/decis:kev-0.8b
+    image: chaitin/decis:kev-0.8b
     profiles: [kev-0.8b]
     environment:
       <<: *environment
@@ -106,7 +106,7 @@ services:
 
   playground:
     <<: *restart
-    image: kingfs/decis:playground
+    image: chaitin/decis:playground
     # In both engine profiles, so it starts with whichever engine does. It cannot be in
     # neither and start by default: a service with no profile starts on *every* `up`,
     # including a deployment that deliberately runs one engine.
@@ -165,7 +165,7 @@ services:
 # instead, use a weightless image -- a release artifact, so the tag carries a version --
 # and fill the volume once:
 #
-#   docker run --rm -v decis_models:/models kingfs/decis:laya-multilingual-runtime-v1.2.0 \
+#   docker run --rm -v decis_models:/models chaitin/decis:laya-multilingual-runtime-v1.2.0 \
 #     decis download --engine laya-multilingual
 #   docker run --rm -p 8000:8000 -v decis_models:/models -e DECIS_API_KEY=change-me \
-#     kingfs/decis:laya-multilingual-runtime-v1.2.0
+#     chaitin/decis:laya-multilingual-runtime-v1.2.0
