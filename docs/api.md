@@ -168,6 +168,11 @@ All three can be mixed in one request and are evaluated against the same `state`
 }
 ```
 
+The `@0.3.6` in the samples above is the upstream `laya` build they were captured with, not a
+Decis version: `engine_version` is `importlib.metadata.version("laya")`
+(`src/decis/engines/laya.py`), so it follows whichever release the image or the local extra
+installed (`laya<0.4`).
+
 The JSON Schema is
 [`docs/schema/systemone-response.schema.json`](schema/systemone-response.schema.json).
 Guarantees that hold on every response:

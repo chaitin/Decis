@@ -162,6 +162,10 @@ JSON Schema 是 [`docs/schema/systemone-request.schema.json`](schema/systemone-r
 }
 ```
 
+上面样例里的 `@0.3.6` 是抓它们时装的 `laya` 构建，不是 Decis 的版本：`engine_version` 取的是
+`importlib.metadata.version("laya")`（`src/decis/engines/laya.py`），跟着镜像或本机 extra 装到的
+那个上游版本走（`laya<0.4`）。
+
 JSON Schema 是
 [`docs/schema/systemone-response.schema.json`](schema/systemone-response.schema.json)。
 每个响应都成立的保证：
