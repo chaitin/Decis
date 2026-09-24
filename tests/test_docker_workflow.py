@@ -18,7 +18,8 @@ release:
   check now that no weight-free engine ships;
 * every engine in the matrix is a registered engine, so a rename cannot leave a stale
   matrix behind;
-* the Dockerfile's `DECIS_EXTRAS` mapping matches what the registry declares.
+* the Dockerfile's `DECIS_EXTRAS` mapping matches what the registry declares;
+* a `v*` tag also creates a GitHub Release, and no other event does.
 """
 
 from __future__ import annotations
@@ -416,6 +417,34 @@ def test_the_published_registry_is_docker_hub(workflow: dict) -> None:
     assert "chaitin" in workflow["env"]["IMAGE_NAMESPACE"]
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "ghcr.io" not in text, "a GHCR reference survived the move to Docker Hub"
+
+
+def test_a_version_tag_also_creates_the_github_release(workflow: dict) -> None:
+    """A tag push has to produce a Release, or the Releases page lags the tags.
+
+    `v0.1.0` was published by hand and `v0.2.0` and `v0.3.0` were never released at all, so
+    the repository's "latest release" sat several versions behind its own tags. Only the
+    version-tag leg may create one -- a branch push must not announce a release -- and it
+    waits for the manifests, because a release is the announcement that the artifacts
+    exist. `gh release view` comes first because re-running the workflow for a tag that
+    already has a release is normal (`gh run rerun`) and must not fail.
+    """
+    creators = [
+        name
+        for name, job in workflow["jobs"].items()
+        if any("gh release create" in (step.get("run") or "") for step in job.get("steps") or [])
+    ]
+    assert creators == ["release"], f"expected exactly one job to create releases, got {creators}"
+
+    job = workflow["jobs"]["release"]
+    assert "startsWith(github.ref, 'refs/tags/v')" in job["if"], job["if"]
+    assert "needs.plan.outputs.push == 'true'" in job["if"], job["if"]
+    assert job["permissions"]["contents"] == "write", job["permissions"]
+    assert "merge" in job["needs"], "a release must not be announced before the manifests exist"
+
+    script = "\n".join(step.get("run") or "" for step in job["steps"])
+    assert "gh release view" in script, "a tag that already has a release has to be a no-op, not a failure"
+    assert "--generate-notes" in script, "the notes have to come from the repository, not a hand-written file"
 
 
 @pytest.mark.parametrize(

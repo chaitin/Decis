@@ -524,3 +524,31 @@ jobs:
             docker buildx imagetools create --tag "${image}:latest" "${sources[@]}"
             docker buildx imagetools inspect "${image}:latest"
           fi
+
+  # Pushing a `v*` tag is the whole release procedure: the jobs above publish the images,
+  # and this turns the same tag into a GitHub Release. Without it the Releases page is
+  # whatever someone published by hand -- which is how `v0.1.0` stayed the "latest release"
+  # while the tags moved on without one.
+  release:
+    name: github release
+    needs: [plan, merge, playground]
+    if: needs.plan.outputs.push == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release for this tag if it has none
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # `--generate-notes` builds the changelog from the commits since the previous
+          # tag, so the notes cannot drift from what shipped. A tag that already has a
+          # release is left alone: this creates the missing ones, it does not edit
+          # something that is already published.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already has a release"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          fi
