@@ -4,7 +4,9 @@
   Changed for Decis: the endpoint is the playground's own origin (it proxies
   /v1/systemone and attaches the API key server-side), and the page now wears the
   shared /theme.css, /i18n.js and /game.js -- the game bar, the manual/AI switch, the
-  inference panel and the I/O console are the shell's, not this page's. The `state` and
+  inference panel and the I/O console are the shell's, not this page's. The board and the
+  move probabilities are side by side; the two panels about the call (inference, console)
+  sit under both of them. The `state` and
   the `questions` stay English on purpose -- they are the API's language, and the page was
   sized against the token budget those exact strings produce.
 
@@ -22,17 +24,10 @@
   <style>
     /* Page layout only: the palette, the app bar, the game bar, the panels, the buttons,
        the probability bars and the inference panel live in /theme.css. */
-    canvas#board { display: block; width: 360px; height: 360px; }
-
-    /* The stage hugs the board instead of stretching to the column: a 360px canvas inside a
-       700px card reads as a mistake. */
-    .game-stage > .board { align-self: center; }
-
-    .prob-rows { display: flex; flex-direction: column; gap: 7px; }
-
-    @media (max-width: 440px) {
-      canvas#board { width: 100%; max-width: 360px; height: auto; }
-    }
+    /* The board is drawn at `CSS_SIZE` (480) square, so it is shown at its native size and
+       only shrinks -- the 12x12 grid stays crisp. A 360px board in a ~670px column was
+       300px of empty cards. */
+    canvas#board { display: block; width: min(100%, 480px); height: auto; aspect-ratio: 1 / 1; }
   </style>
 </head>
 <body>
@@ -56,7 +51,7 @@
     <div data-lang-switch></div>
   </header>
 
-  <main class="game-shell">
+  <main class="game-shell" data-layout="board">
     <div class="game-bar">
       <div class="game-id">
         <h1 class="game-title" data-i18n="page.title">Snake</h1>
@@ -122,10 +117,12 @@
             </div>
           </div>
         </section>
-
-        <section class="panel" data-telemetry></section>
-        <details class="panel io-console" data-io-console></details>
       </div>
+    </div>
+
+    <div class="game-under">
+      <section class="panel" data-telemetry></section>
+      <details class="panel io-console" data-io-console></details>
     </div>
 
     <footer class="page-foot">
@@ -198,7 +195,9 @@ I18N.add({
 // the endpoint is always same-origin and the page never holds an API key. The proxy
 // rewrites `model` to whichever engine is up (playground/server.py).
 const GRID = 12;
-const CSS_SIZE = 360;
+// The board's bitmap is drawn at this size and the stylesheet shows it at up to the same
+// size, so the grid is never scaled up (a scaled-up canvas blurs the lines).
+const CSS_SIZE = 480;
 const DIRS = ["up", "down", "left", "right"];
 const ARROWS = { up: "\u2191", down: "\u2193", left: "\u2190", right: "\u2192" };
 const VEC = {

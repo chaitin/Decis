@@ -469,11 +469,14 @@ pre {
 /* ---------------------------------------------------------- the game chrome -- */
 /*
  * Everything a game page wraps around its board: the game bar, the score strip, the
- * manual/AI switch, the per-game options row, the two-column stage, the inference panel
- * and the I/O console. It lives here, not in the three pages, because the whole point is
- * that snake, dino and tetris are one product with three boards -- the pages keep their
- * layout constants (how wide their canvas is) and nothing that appears twice
- * (AGENTS.md §2).
+ * manual/AI switch, the per-game options row, the stage and its readout column, and then
+ * the row of call panels under both of them. It lives here, not in the three pages,
+ * because the whole point is that snake, dino and tetris are one product with three
+ * boards -- the pages keep their layout constants (how wide their canvas is) and nothing
+ * that appears twice (AGENTS.md §2).
+ *
+ * The reading order is the same on all three: title bar, board + what the model is
+ * reading, then how the last call went (`.game-under`).
  */
 
 .game-shell { width: 100%; max-width: 1080px; margin: 0 auto; padding: 22px 20px 44px; }
@@ -588,7 +591,16 @@ pre {
 .opt-hint { color: var(--muted); font-size: 11.5px; }
 
 /* The stage hugs its board; the readout column is fixed so all three games read the
-   same way round. A page sizes its own canvas inside `.game-stage`. */
+   same way round. A page sizes its own canvas inside `.game-stage`.
+
+   `data-layout` on `.game-shell` picks the shape, because a board and a side-scroller do
+   not want the same one:
+
+     * `board` (snake) -- square board left, model readout right, board centred in the room
+       it does not fill;
+     * `rail`  (tetris) -- board plus its next-piece rail, model readout right;
+     * `stack` (dino) -- the canvas is a wide runner, so it takes the full width and the
+       readout sits underneath it. */
 .game-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(296px, 348px);
@@ -598,6 +610,29 @@ pre {
 
 .game-stage { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .game-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.game-shell[data-layout="board"] .game-stage > .board { align-self: center; }
+.game-shell[data-layout="rail"] .game-stage { align-items: center; }
+.game-shell[data-layout="stack"] .game-grid { grid-template-columns: minmax(0, 1fr); }
+
+/* The two panels that are about the *call* rather than the game: the inference panel and
+   the console, under the board, at the width of the game area. The console is the bigger
+   half -- it is the one a reader scrolls -- and shows the request and the response side by
+   side (`io-body` below). */
+.game-under {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 16px;
+}
+
+/* The move/placement rows every game draws: one line per option, with its bar. */
+.prob-rows { display: flex; flex-direction: column; gap: 7px; }
+
+/* dino's three moves under a full-width canvas: side by side instead of three stretched
+   lines. */
+.prob-rows.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 16px; }
 
 /* --------------------------------------------------------------- inference -- */
 
@@ -649,7 +684,15 @@ pre {
 .io-console[open] > summary { border-bottom: 1px solid var(--line); }
 .io-console > summary:hover .panel-head { color: var(--ink-dim); }
 
-.io-body { display: flex; flex-direction: column; gap: 10px; padding: 11px 14px 14px; }
+/* The request on the left, the response on the right: what went out next to what came
+   back is how a call is read. Each side scrolls on its own. */
+.io-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 11px 14px 14px;
+}
+
 .io-block { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 
 .io-label {
@@ -664,7 +707,7 @@ pre {
 /* The payload is the one thing on the page that is never translated: it is what the page
    sent. It scrolls rather than clips, because a truncated board is a lie. */
 .io-pre {
-  max-height: 210px;
+  max-height: 300px;
   padding: 9px 11px;
   background: var(--surface-solid);
   border: 1px solid var(--line);
@@ -683,6 +726,8 @@ pre {
 
 @media (max-width: 900px) {
   .game-grid { grid-template-columns: minmax(0, 1fr); }
+  .game-under { grid-template-columns: minmax(0, 1fr); }
+  .prob-rows.cols-3 { grid-template-columns: minmax(0, 1fr); }
   .game-bar .score-strip { margin-left: 0; }
 }
 
@@ -693,4 +738,7 @@ pre {
   .app-nav { order: 3; width: 100%; flex-wrap: wrap; }
   .status-chip { max-width: 60vw; }
   .game-bar .top-actions { flex-wrap: wrap; }
+  /* One payload per row: two 11px monospace blocks side by side stop being readable
+     before the viewport stops being a phone. */
+  .io-body { grid-template-columns: minmax(0, 1fr); }
 }

@@ -5,7 +5,9 @@
   /v1/systemone and attaches the API key server-side), the engine comparison that quoted
   another deployment's latencies is gone, and the page now wears the shared /theme.css,
   /i18n.js and /game.js -- the game bar, the manual/AI switch, the inference panel and the
-  I/O console are the shell's. The `state`, the planner notes and the `questions` stay
+  I/O console are the shell's. The canvas is a wide side-scroller, so the run takes the
+  full width and the model's next action sits under it; the inference panel and the console
+  are under both. The `state`, the planner notes and the `questions` stay
   English on purpose -- they are the API's language, and the page was sized against the
   token budget those exact strings produce.
 
@@ -44,6 +46,11 @@
     }
 
     .prob-row .tag { justify-self: end; }
+
+    /* The canvas is a wide runner, so it takes the full width and the three moves sit
+       under it side by side (`.prob-rows.cols-3` in theme.css). Each one is a whole
+       `.prob-row`, so the columns shrink to leave the bar the room. */
+    .game-side .prob-row { grid-template-columns: 62px minmax(0, 1fr) 44px 42px; gap: 8px; }
   </style>
 </head>
 <body>
@@ -67,7 +74,7 @@
     <div data-lang-switch></div>
   </header>
 
-  <main class="game-shell">
+  <main class="game-shell" data-layout="stack">
     <div class="game-bar">
       <div class="game-id">
         <h1 class="game-title" data-i18n="page.title">Dino</h1>
@@ -141,29 +148,33 @@
             <span data-i18n="dino.panel.moves">Next action &middot; model probabilities</span>
             <span id="agree-badge" class="panel-sub">&mdash;</span>
           </div>
-          <div class="prob-row" id="row-jump">
-            <span class="dir-name" id="name-jump" data-i18n="dino.move.jump">JUMP &uarr;</span>
-            <div class="bar-track"><div class="bar-fill" id="bar-jump"></div></div>
-            <span class="prob-pct" id="pct-jump">&mdash;</span>
-            <span class="tag" id="tag-jump"></span>
-          </div>
-          <div class="prob-row" id="row-duck">
-            <span class="dir-name" id="name-duck" data-i18n="dino.move.duck">DUCK &darr;</span>
-            <div class="bar-track"><div class="bar-fill" id="bar-duck"></div></div>
-            <span class="prob-pct" id="pct-duck">&mdash;</span>
-            <span class="tag" id="tag-duck"></span>
-          </div>
-          <div class="prob-row" id="row-run">
-            <span class="dir-name" id="name-run" data-i18n="dino.move.run">RUN</span>
-            <div class="bar-track"><div class="bar-fill" id="bar-run"></div></div>
-            <span class="prob-pct" id="pct-run">&mdash;</span>
-            <span class="tag" id="tag-run"></span>
+          <div class="prob-rows cols-3">
+            <div class="prob-row" id="row-jump">
+              <span class="dir-name" id="name-jump" data-i18n="dino.move.jump">JUMP &uarr;</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-jump"></div></div>
+              <span class="prob-pct" id="pct-jump">&mdash;</span>
+              <span class="tag" id="tag-jump"></span>
+            </div>
+            <div class="prob-row" id="row-duck">
+              <span class="dir-name" id="name-duck" data-i18n="dino.move.duck">DUCK &darr;</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-duck"></div></div>
+              <span class="prob-pct" id="pct-duck">&mdash;</span>
+              <span class="tag" id="tag-duck"></span>
+            </div>
+            <div class="prob-row" id="row-run">
+              <span class="dir-name" id="name-run" data-i18n="dino.move.run">RUN</span>
+              <div class="bar-track"><div class="bar-fill" id="bar-run"></div></div>
+              <span class="prob-pct" id="pct-run">&mdash;</span>
+              <span class="tag" id="tag-run"></span>
+            </div>
           </div>
         </section>
-
-        <section class="panel" data-telemetry></section>
-        <details class="panel io-console" data-io-console></details>
       </div>
+    </div>
+
+    <div class="game-under">
+      <section class="panel" data-telemetry></section>
+      <details class="panel io-console" data-io-console></details>
     </div>
 
     <footer class="page-foot">

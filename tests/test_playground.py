@@ -415,9 +415,10 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
 
     Laya refuses a question over `head_max_len` rather than truncating it (AGENTS.md §3-9),
     and a checkpoint that declares no limits falls back to 192 tokens -- where five terse
-    placements fit and six do not (measured with the engine's own `measure()`). The count is
-    load-bearing in two places, the API request and the local simulation the page compares
-    itself against, and they have to agree or the two are answering different questions.
+    placements fit and six do not (measured with the engine's own `measure()`: worst head
+    185 over 26 real questions, ~207 at six). The count is load-bearing in the API request,
+    in the local simulation the page compares itself against, and in the row count of its own
+    panel, and they have to agree or they are answering different questions.
 
     This is a text-level guard on purpose: the only part of the budget the weightless suite
     can check is that the number is not written into the page. The budget itself needs
@@ -427,7 +428,7 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     assert text.count("const PLACEMENT_SHORTLIST = ") == 1, "the shortlist constant was duplicated or renamed"
     for hardcoded in ("slice(0, 6)", "slice(0, 16)", "slice(0, 5)"):
         assert hardcoded not in text, f"tetris.html hardcodes the shortlist as {hardcoded}"
-    assert text.count("PLACEMENT_SHORTLIST") >= 3, "the constant is declared but no longer used"
+    assert text.count("PLACEMENT_SHORTLIST") >= 4, "the constant is declared but no longer used"
     # The page used to carry its own copy of the count in a "last call" panel, and when the
     # shortlist was cut from six to five that label kept a literal `6`: the page went on
     # claiming one option more than it sent (AGENTS.md §9). There is no such label now --
@@ -435,8 +436,25 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     # left to guard is that the request still sizes itself from the constant, and that the
     # console is fed the request itself rather than a summary of it.
     assert "GameShell.observe({ request," in text, "the console is no longer fed the request as sent"
-    body = text.split("function buildQuestions(", 1)[1].split("\n}", 1)[0]
+    # One home for "which options are asked": the request, the page's own simulation, its
+    # local heuristic and the panel's fallback ranking all go through `shortlistPlacements`.
+    assert text.count("function shortlistPlacements(") == 1, "the shortlist is built in more than one place"
+    calls = [
+        line
+        for line in text.splitlines()
+        if "shortlistPlacements(placements)" in line and not line.lstrip().startswith("function ")
+    ]
+    assert len(calls) == 4, f"there are {len(calls)} call sites instead of four: {calls}"
+    body = text.split("function shortlistPlacements(", 1)[1].split("\n}", 1)[0]
     assert "PLACEMENT_SHORTLIST" in body, "the request no longer sizes its options from the constant"
+    assert "slice(0, PLACEMENT_SHORTLIST)" in body, "the budget is no longer applied where the shortlist is built"
+    # **Every rotation gets a slot.** Sorting by the local heuristic alone collapses to one
+    # rotation on a flat board -- five options that were all `rot2`, so the model was only
+    # ever choosing a column and the game looked like it could not rotate (AGENTS.md).
+    assert "p.rotation" in body, "the shortlist no longer looks at rotations"
+    # The panel draws one row per option from the same constant: a six-row panel next to a
+    # five-option question is the literal-6 bug this page has already had once.
+    assert "i < 6" not in text, "the placement panel is back to a hardcoded row count"
     # Only the shortlist's own values, not every clamp in the file: `Math.min(100, pct)` is
     # arithmetic, `Math.min(6, …)` is the shortlist written out a second time.
     leftover = re.search(r"Math\.min\(\s*(?:5|6|16)(?!\d)", text)
@@ -523,6 +541,33 @@ def test_every_game_mounts_the_shared_shell(name: str) -> None:
     assert 'id="mode-select"' not in text, f"{name} grew its own mode control"
     assert "refreshEngine(" not in text, f"{name} polls the engine itself instead of using game.js"
     assert "GameShell.mode()" in text, f"{name} does not ask the shell which mode is selected"
+    # The two panels about the *call* are one row under the game area (`.game-under` in
+    # theme.css): telemetry, then the console, each mounted once. The console prints the last
+    # request and the last response side by side, which is what this playground is for, so it
+    # does not live in the narrow readout column next to the board.
+    assert text.count('<div class="game-under">') == 1, f"{name} has no single call-panel row"
+    assert text.count("data-telemetry") == 1 and text.count("data-io-console") == 1, name
+    under = text.index('<div class="game-under">')
+    assert text.index('class="game-grid"') < under < text.index("data-telemetry") < text.index("data-io-console"), (
+        f"{name} puts the call panels somewhere other than under the board"
+    )
+
+
+def test_the_shell_opens_the_console_and_each_page_leaves_it_alone() -> None:
+    """The console starts open, and that is the shell's decision.
+
+    The call is what the playground is showing, so the panels under the board start
+    expanded; a reader who wants to watch the board is one click from a summary line. The
+    initial state lives in `game.js`, which builds the panel -- three pages each carrying an
+    `open` attribute would be three opinions about one thing (AGENTS.md §2).
+    """
+    shell = (WEB / "game.js").read_text(encoding="utf-8")
+    assert "host.open = true;" in shell, "the shell no longer opens the console it builds"
+    for name in GAMES:
+        text = (WEB / name).read_text(encoding="utf-8")
+        tag = re.search(r"<details[^>]*data-io-console[^>]*>", text)
+        assert tag, f"{name} has no console element"
+        assert " open" not in tag.group(0), f"{name} decides the console's initial state itself"
 
 
 @pytest.mark.parametrize("name", GAMES)

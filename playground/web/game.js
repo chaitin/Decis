@@ -6,9 +6,10 @@
  *   * the **manual / AI switch** -- one control, the same two words, on every page;
  *   * the **inference panel** -- latency, tokens, throughput and the call count of the
  *     session, fed by `observe()` after every `/v1/systemone` call;
- *   * the **I/O console** -- the last request and the last response as JSON, collapsed
- *     until someone opens it, because that is what a person debugging wants and what a
- *     person playing does not;
+ *   * the **I/O console** -- the last request and the last response as JSON, side by side
+ *     behind a summary that starts open: the call is the thing this playground exists to
+ *     show, and the page puts it under the board rather than beside it for that reason.
+ *     Collapsing it is one click for someone who would rather just watch the game;
  *   * the **status dot/text** in the game bar, the **engine chip** in the app bar, and the
  *     keyboard shortcuts (space, R, M) that go with them.
  *
@@ -294,6 +295,11 @@
   function mountConsole() {
     var host = document.querySelector("[data-io-console]");
     if (!host) return;
+    // Open on load, and opened by the shell rather than by the three pages: the panels
+    // under the board are the shell's arrangement (`theme.css` `.game-under`), so their
+    // initial state belongs here too -- a page that wanted it closed would be a second
+    // opinion about the same thing.
+    host.open = true;
     var summary = document.createElement("summary");
     var head = document.createElement("span");
     head.className = "panel-head";

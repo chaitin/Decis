@@ -27,10 +27,12 @@
        board keeps its own canvas art, so nothing here recolours what the canvas draws. */
     .game-stage { align-self: start; }
 
-    /* 282px board card + 12px gap + 96px next-piece rail. */
+    /* 382px board card + 12px gap + 104px next-piece rail. The canvas bitmap is 560x1120
+       (`CSS_W`/`CSS_H` x DPR) and is shown at 380x760, so the board grew 36% and is still
+       only ever scaled down: a 282px board in a ~670px column left half the row empty. */
     .stage-row {
       display: grid;
-      grid-template-columns: 282px 96px;
+      grid-template-columns: 382px 104px;
       gap: 12px;
       align-items: start;
     }
@@ -38,13 +40,13 @@
     /* `.board` gives the canvas its card; this sizes it and anchors the overlay. */
     .board-box {
       position: relative;
-      width: 282px;
-      height: 562px;
+      width: 382px;
+      height: 762px;
       padding: 0;
       overflow: hidden;
     }
 
-    canvas#board { display: block; width: 280px; height: 560px; }
+    canvas#board { display: block; width: 380px; height: 760px; }
 
     .overlay {
       position: absolute;
@@ -84,8 +86,8 @@
     }
 
     .next-canvas-wrap {
-      width: 74px;
-      height: 56px;
+      width: 82px;
+      height: 62px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -94,9 +96,7 @@
       border-radius: var(--radius-sm);
     }
 
-    canvas#next { display: block; width: 74px; height: 56px; }
-
-    .prob-rows { display: flex; flex-direction: column; gap: 6px; }
+    canvas#next { display: block; width: 82px; height: 62px; }
 
     /* This page's four columns: placement id, one-line description, bar, percentage. */
     .prob-row {
@@ -170,12 +170,13 @@
       .board-box { height: auto; }
     }
 
-    /* The stage is a 282px board plus a 96px rail, so below 440px of viewport it cannot
-       fit side by side and the page scrolls sideways. Stack it instead of shrinking the
-       canvas: the board is drawn at a fixed 280x560 and scaling it would blur the grid. */
-    @media (max-width: 440px) {
+    /* The stage is a 382px board plus a 104px rail, so on a phone it cannot fit side by
+       side and the page scrolls sideways. Stack it and let the board shrink: the bitmap is
+       560x1120, so showing it narrower is a downscale and stays crisp. */
+    @media (max-width: 520px) {
       .stage-row { grid-template-columns: minmax(0, 1fr); }
-      .board-box { width: 100%; max-width: 282px; }
+      .board-box { width: 100%; max-width: 382px; height: auto; }
+      canvas#board { width: 100%; height: auto; }
       .game-bar { flex-wrap: wrap; }
       .game-bar .top-actions { flex-wrap: wrap; margin-left: 0; }
     }
@@ -202,7 +203,7 @@
     <div data-lang-switch></div>
   </header>
 
-  <main class="game-shell">
+  <main class="game-shell" data-layout="rail">
     <div class="game-bar">
       <div class="game-id">
         <h1 class="game-title" data-i18n="page.title">Tetris</h1>
@@ -297,10 +298,12 @@
             <div id="st-survive" class="strat-cell"><span data-i18n="strat.short.survive">survive</span><span id="stp-survive">&mdash;</span></div>
           </div>
         </section>
-
-        <section class="panel" data-telemetry></section>
-        <details class="panel io-console" data-io-console></details>
       </div>
+    </div>
+
+    <div class="game-under">
+      <section class="panel" data-telemetry></section>
+      <details class="panel io-console" data-io-console></details>
     </div>
 
     <footer class="page-foot">
@@ -432,19 +435,27 @@ const WIDTH = 10;
 const HEIGHT = 20;
 const CSS_W = 280;
 const CSS_H = 560;
+// The next-piece rail's canvas: 82x62 CSS pixels, and its bitmap is the same size x DPR
+// (see the DOM setup below), so `drawNextPiece` works in these units.
+const NEXT_W = 82;
+const NEXT_H = 62;
 const MODEL = "jev-latest"; // rewritten by the playground proxy to the running engine
 
 // How many placements the model is asked to choose between -- and, deliberately, the
-// same number the local simulation ranks, so the two columns describe the same choice.
+// same number the local simulation, the local heuristic and the panel's fallback rank, so
+// the options on the wire and the bars on the page describe the same choice.
 //
 // Five is a measurement, not a taste. Laya charges a whole question against `head_max_len`,
 // and each option costs about 29 tokens of `"rot0_col0": "cols 3-6: 1 clear, 0 new holes,
 // height 6, slightly uneven"`. Measured by running the engine's own `measure()` over this
-// page's payload: the placement question is 178 tokens at five options and would be ~207 at
-// six, while the whole request is 415 sequence tokens against a 512 state+question budget.
-// The multilingual checkpoint declares max_len=1024/head_max_len=256, where six fit; a
-// checkpoint that declares nothing falls back to 512/192 (laya.py's DEFAULT_MAX_LEN and
-// DEFAULT_HEAD_MAX_LEN), where only five do. Five is what makes the page fit either.
+// page's payload: 178 tokens at five options on the empty board this constant was first
+// sized on, ~207 at six, and the whole request 415 sequence tokens. Re-measured over 45
+// real questions from two AI sessions (the board filled up, so the option lines grew):
+// worst head 185, worst sequence 475. The multilingual checkpoint declares
+// max_len=1024/head_max_len=256, where six fit; a checkpoint that declares nothing falls
+// back to 512/192 (laya.py's DEFAULT_MAX_LEN and DEFAULT_HEAD_MAX_LEN), where only five do.
+// Five is what makes the page fit either -- with 7 tokens of head room left, which is why
+// `PLACEMENT_INSTRUCTIONS` says nothing about the option keys.
 const PLACEMENT_SHORTLIST = 5;
 
 // Desaturated-yet-distinct tetromino palette (strictly zero purple/violet/indigo)
@@ -631,6 +642,38 @@ function enumeratePlacements(board, piece) {
   return placements;
 }
 
+// Which placements the model is asked to choose between, and the one place the option
+// budget is applied. Two rules, one of them learned from a real request this page sent:
+//
+//   * the count is `PLACEMENT_SHORTLIST`, sized by the engine's own `measure()` -- six
+//     options do not fit the 192-token head a checkpoint without `head_max_len` falls
+//     back to (AGENTS.md §3-9, tests/test_playground.py);
+//   * **every rotation gets a slot.** Sorting by the local heuristic alone does not do
+//     that: on a flat board the heuristic prefers one orientation five times and the
+//     request that came out of this page was `rot2_col0` … `rot2_col3` -- five options,
+//     one rotation, so all the model could decide was the column and the page looked
+//     like it could not rotate at all. The best placement of each rotation goes in
+//     first; whatever slots are left go to the best of the rest, so a piece with fewer
+//     distinct rotations (O has one) still gets a full question.
+//     Measured over two AI sessions after the change: of the first 26 questions, 23 offered
+//     two or more rotations and 11 offered all four, and every single-rotation question was
+//     an O piece -- which has no second rotation to offer.
+function shortlistPlacements(placements) {
+  const byScore = placements.slice().sort((a, b) => b.heuristic - a.heuristic);
+  const picked = [];
+  const taken = new Set();
+  for (const p of byScore) {
+    if (taken.has(p.rotation)) continue;
+    taken.add(p.rotation);
+    picked.push(p);
+  }
+  for (const p of byScore) {
+    if (picked.length >= PLACEMENT_SHORTLIST) break;
+    if (!picked.includes(p)) picked.push(p);
+  }
+  return picked.slice(0, PLACEMENT_SHORTLIST).sort((a, b) => b.heuristic - a.heuristic);
+}
+
 function describeClear(n) {
   if (n === 0) return "none";
   if (n === 1) return "single (1 line)";
@@ -667,6 +710,17 @@ function describeWells(w) {
   if (w <= 4) return "one I-piece well";
   return "deep wells";
 }
+
+// The placement question's instructions -- and, deliberately, nothing about the option keys.
+// An option's key is `rot<R>_col<C>` (`R` is the piece turned 90 degrees clockwise that many
+// times, `C` is the 1-based leftmost column) and the model has to read the rotation off the
+// key: a sentence spelling that out costs about 23 tokens, and at five options the question
+// has 7 tokens of head room left under the 192-token fallback (worst measured head 185 over
+// 45 real questions from two sessions). Paying for the legend would mean dropping a field
+// from every option or a fifth of the options; the keys carry it instead, and the panel
+// shows the same rotation as `r2 · c4`.
+const PLACEMENT_INSTRUCTIONS =
+  "Choose the best placement for the current piece. Prefer clearing lines, creating no holes, a low stack and a flat surface; when the stack is high, survival beats tidiness.";
 
 // One short line per option. The eight-field object this used to return is a good
 // description and an unaffordable one: it is what pushed a tetris question past Laya's
@@ -733,13 +787,14 @@ function buildQuestions(placements) {
   const criteria = {};
   // The API refuses an over-budget question with a 422 rather than truncating it in
   // silence (AGENTS.md §3-9), so the shortlist is sized to the budget -- see
-  // PLACEMENT_SHORTLIST. The page still falls back to its local heuristic on a 422.
-  const shortlist = placements.slice().sort((a, b) => b.heuristic - a.heuristic).slice(0, PLACEMENT_SHORTLIST);
+  // PLACEMENT_SHORTLIST and `shortlistPlacements` below. The page still falls back to its
+  // local heuristic on a 422.
+  const shortlist = shortlistPlacements(placements);
   for (const p of shortlist) criteria[p.id] = describePlacement(p);
   return {
     placement: {
       type: "choice",
-      instructions: "Choose the best placement for the current piece. Prefer clearing lines, creating no holes, a low stack and a flat surface; when the stack is high, survival beats tidiness.",
+      instructions: PLACEMENT_INSTRUCTIONS,
       criteria,
     },
     strategy: {
@@ -774,8 +829,10 @@ function buildRequest(gameInfo, placements) {
 }
 
 function simulateSystemOne(gameInfo, placements) {
-  const sorted = placements.slice().sort((a, b) => b.heuristic - a.heuristic);
-  const shortlist = sorted.slice(0, PLACEMENT_SHORTLIST);
+  // The same options the request carries: the page's own prediction is only a stand-in for
+  // the model if the two are answering the same question (AGENTS.md §2 -- one home for the
+  // shortlist, or the dashboard and the wire drift apart).
+  const shortlist = shortlistPlacements(placements);
   const maxH = shortlist[0]?.heuristic ?? 0;
   const weights = shortlist.map((p) => Math.exp((p.heuristic - maxH) / 0.45));
   const sumW = weights.reduce((a, b) => a + b, 0) || 1;
@@ -880,7 +937,7 @@ function pickPlacement(response, placements) {
   const chosen = byId.get(answer?.choice) || ranked[0]?.placement || placements[0];
   return {
     chosen,
-    ranked: ranked.length ? ranked : placements.slice(0, PLACEMENT_SHORTLIST).map((p, i) => ({ placement: p, probability: i === 0 ? 0.5 : 0.1 })),
+    ranked: ranked.length ? ranked : shortlistPlacements(placements).map((p, i) => ({ placement: p, probability: i === 0 ? 0.5 : 0.1 })),
     confidence: answer?.confidence ?? ranked[0]?.probability ?? 0.5,
     answers: response?.answers,
     response,
@@ -888,13 +945,17 @@ function pickPlacement(response, placements) {
 }
 
 function heuristicDecision(placements) {
-  const sorted = placements.slice().sort((a, b) => b.heuristic - a.heuristic);
-  const max = sorted[0].heuristic;
-  const weights = sorted.map((p) => Math.exp((p.heuristic - max) / 0.5));
+  // The page's own answer to the question the model is asked: the same shortlist, so the
+  // panel shows the rotation spread here too -- manual mode and the first frames before an
+  // answer used to draw the top five by heuristic, which is one rotation five times. The
+  // best placement overall is always on the shortlist; it is the best of its own rotation.
+  const shortlist = shortlistPlacements(placements);
+  const max = shortlist[0].heuristic;
+  const weights = shortlist.map((p) => Math.exp((p.heuristic - max) / 0.5));
   const sum = weights.reduce((a, b) => a + b, 0) || 1;
   return {
-    chosen: sorted[0],
-    ranked: sorted.map((p, i) => ({ placement: p, probability: weights[i] / sum })),
+    chosen: shortlist[0],
+    ranked: shortlist.map((p, i) => ({ placement: p, probability: weights[i] / sum })),
     confidence: weights[0] / sum,
     answers: null,
   };
@@ -912,13 +973,15 @@ const CELL = CSS_W / WIDTH;
 
 const nextCanvas = $("next");
 const nextCtx = nextCanvas.getContext("2d");
-nextCanvas.width = 74 * DPR;
-nextCanvas.height = 56 * DPR;
+nextCanvas.width = NEXT_W * DPR;
+nextCanvas.height = NEXT_H * DPR;
 nextCtx.scale(DPR, DPR);
 
-// Build the 6 static placement rows once for zero layout shift (CLS = 0)
+// Build one static placement row per option a request can carry (zero layout shift, and
+// the number is the request's own -- a panel with six rows next to a five-option question
+// is the literal-6 bug this page already had once).
 const probRowsContainer = $("prob-rows");
-for (let i = 0; i < 6; i++) {
+for (let i = 0; i < PLACEMENT_SHORTLIST; i++) {
   const row = document.createElement("div");
   row.className = "prob-row";
   row.innerHTML = `
@@ -1018,7 +1081,7 @@ function clearProbabilityPanel() {
   lastPanelDecision = null;
   lastPanelSource = null;
   $("choice-summary").textContent = "\u2014";
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < PLACEMENT_SHORTLIST; i++) {
     $(`pslot-${i}`).textContent = "\u2013";
     $(`pslot-${i}`).className = "slot-id";
     $(`pdesc-${i}`).textContent = "\u2013";
@@ -1059,7 +1122,7 @@ function renderProbabilityPanel(decision, source) {
     pct: `${(confidence * 100).toFixed(1)}%`,
   });
 
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < PLACEMENT_SHORTLIST; i++) {
     const item = topRanked[i];
     const slotEl = $(`pslot-${i}`);
     const descEl = $(`pdesc-${i}`);
@@ -1272,12 +1335,12 @@ function drawBoard() {
 
 function drawNextPiece() {
   nextCtx.fillStyle = "#0d0f17";
-  nextCtx.fillRect(0, 0, 74, 56);
+  nextCtx.fillRect(0, 0, NEXT_W, NEXT_H);
   if (!game.next) return;
   const st = PIECES[game.next][0];
   const sz = 13;
-  const ox = Math.floor((74 - st.width * sz) / 2);
-  const oy = Math.floor((56 - st.height * sz) / 2);
+  const ox = Math.floor((NEXT_W - st.width * sz) / 2);
+  const oy = Math.floor((NEXT_H - st.height * sz) / 2);
   nextCtx.fillStyle = PIECE_COLORS[game.next];
   for (const [cx, cy] of st.cells) {
     nextCtx.fillRect(ox + cx * sz + 1, oy + cy * sz + 1, sz - 2, sz - 2);

@@ -68,6 +68,13 @@ board and its own options; the manual/AI switch, the inference panel, the consol
 call, the engine chip and the keyboard shortcuts come from the shell, so no page restates the
 palette or re-implements a mode control.
 
+The reading order is the same on all three games. The game bar carries the title, the live status,
+the score and the controls. Under it sit the board and the model's readout — except on dino, whose
+canvas is a wide side-scroller: there the run takes the full width and the model's next action goes
+underneath it. Below them both is one row of two panels: the inference panel, and the console for
+the last call, which starts **open**, request on the left and response on the right. The console
+collapses to a single line if you would rather watch the board.
+
 One switch (`M`) decides who plays: you, or the model. `enter` starts and pauses on every page
 and `R` resets. In manual mode snake and tetris take the arrow keys — `space` is the hard drop in
 tetris — and dino takes `space` or the up arrow to jump and the down arrow to duck.
@@ -75,8 +82,8 @@ tetris — and dino takes `space` or the up arrow to jump and the down arrow to 
 The inference panel is fed only by the API's own `usage` and the browser's clock. Latency and
 throughput are end-to-end, because the contract has no server-side timing; p50 and p95 describe
 the last 200 calls, and a page that has not called anything yet shows dashes rather than a
-plausible-looking number. The collapsible console below it prints the body of the last
-`/v1/systemone` call as it went on the wire, then the response or the error.
+plausible-looking number. The console prints the body of the last `/v1/systemone` call as it went
+on the wire, next to the response or the error.
 
 The interface is bilingual, English and Simplified Chinese. The language comes from
 `navigator.languages` unless `?lang=zh` says otherwise; the switch in the app bar overrides
@@ -88,17 +95,30 @@ token budget these pages were sized against is the budget of those exact strings
 page shows a value it also sends — an option name, a placement id — the label around it may
 be localised, but the value on the wire is not.
 
-## The five-placement decision
+## The placement shortlist
 
-"How many placements should Tetris consider?" is a capacity question, not a taste one. Laya
-charges a whole question against its `head_max_len` and rejects an over-budget one instead
-of truncating it, so the page asks with the number that fits the smallest budget a
-checkpoint can fall back to.
+Which placements Tetris asks about is a capacity question, not a taste one, and both halves of it
+are measurements.
 
-Measured through the engine's own `measure()`: the placement question is **178 tokens at
-five options** and the whole request is **415 of a 512-token** `state + question` budget,
-against a fallback of 512/192. Six options would be about 207 and would get a 422. If an engine
+**How many.** Laya charges a whole question against its `head_max_len` and rejects an over-budget
+one instead of truncating it, so the page asks with the number that fits the smallest budget a
+checkpoint can fall back to. Measured through the engine's own `measure()`: the placement question
+is **178 tokens at five options** on an empty board and **185 at worst** once the board fills up
+(45 real questions from two AI sessions — a filled board makes the option lines longer), and the
+whole request goes from **415 to 475** of the 512-token `state + question` budget a checkpoint that
+declares no limits falls back to. Six options would be about 207 and would get a 422. If an engine
 still says no the page drops to its own heuristic, rather than showing a guess as an answer.
+
+**Which ones.** Sorting the legal placements by the page's own heuristic and taking the top five
+does not give five decisions: on a flat board the heuristic prefers one orientation at five
+columns, and the first request this page sent had five options that were all `rot2`. The model was
+choosing a column, not a placement — which is what a person watching the page sees as "it never
+rotates". The page now puts the best placement of **each rotation** on the list first and fills the
+remaining slots with the best of the rest. A piece with one distinct rotation (`O`) simply gets
+five placements of that orientation. Measured over the first 26 real questions after the change: 23
+offered two or more distinct rotations, 11 offered all four, and every question that offered one
+was an `O`. Each option's key says which rotation it is (`rot<R>_col<C>`, `R` = the piece turned 90
+degrees clockwise `R` times) and the panel shows the same rotation beside the option's bar.
 
 Re-measuring after changing a page's questions does not need a tokenizer: an over-budget question
 comes back as ``Question 'placement' is about N tokens, over this model's limit of M per
