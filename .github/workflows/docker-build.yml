@@ -70,8 +70,12 @@ env:
   # username), so deriving the namespace from the credential publishes to whichever
   # account holds the token -- which is how images end up somewhere no document names.
   # Set the `DOCKERHUB_NAMESPACE` repository variable to publish elsewhere (a fork);
-  # `chaitin` is this repository's namespace. `||` is a default, not a ternary: an empty
-  # variable is falsy, which is exactly when the default should win.
+  # `chaitin` is this repository's namespace. The repository has to *exist* on Docker Hub and
+  # the credential has to have push access to it, or every leg fails at the push step with
+  # `insufficient_scope` after the image is already built. An organization access token is
+  # the sharper edge: it is scoped to the repositories that existed when it was created, so
+  # one issued before the repository did cannot publish to it. `||` is a default, not a
+  # ternary: an empty variable is falsy, which is exactly when the default should win.
   IMAGE_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'chaitin' }}
   # Every image lands in this one repository, with the engine in the tag.
   IMAGE_REPO: decis

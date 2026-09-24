@@ -449,7 +449,7 @@ uv run decis download --engine kev-0.8b   # adapter 43 MiB + 基座 1.65 GiB
 uv run decis serve --engine kev-0.8b --host 127.0.0.1   # CPU 冷启动约 12-45 秒
 ```
 
-镜像（已发布，CI 构建）：
+镜像（CI 构建并推送，tag 方案见 `docs/deployment.md`）：
 
 ```bash
 docker run --rm -p 8000:8000 chaitin/decis:laya-multilingual   # 权重在镜像里，不需要网络也不需要挂卷
