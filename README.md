@@ -17,7 +17,7 @@ migration. One wire contract, several interchangeable engines, one container per
 A *decision model* returns calibrated probabilities for typed questions instead of
 generating text: one forward pass, small enough to run next to your app.
 
-- **Runs out of the box.** `docker compose up` gives you an engine answering `/v1/systemone`
+- **Runs out of the box.** Three commands and you have an engine answering `/v1/systemone`
   and a playground to try it in. The images carry their weights, so nothing is downloaded at
   startup and there is no volume to mount.
 - **A Jev-like API.** Decis speaks the contract the closed model does, so the official
