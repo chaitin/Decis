@@ -825,15 +825,24 @@ def documented_tags(path: Path) -> set[str]:
     Two places say so: a `chaitin/decis:<tag>` in a command, and the first column of the
     deployment table. Both are read, because the D15 defect was a *table row* for a tag
     the workflow never built -- a guard that only scanned commands would have missed it.
+    A cell may spell the reference out and name the alias beside it
+    (`| `chaitin/decis:laya-multilingual` (= `:latest`) |`), so a cell is reduced to the tag
+    it stands for rather than compared as written.
     """
-    lines = path.read_text(encoding="utf-8").splitlines()
-    tags = set(IMAGE_REFERENCE.findall("\n".join(lines)))
+    text = path.read_text(encoding="utf-8")
+    tags = set(IMAGE_REFERENCE.findall(text))
+    lines = text.splitlines()
     for index, line in enumerate(lines):
         if line.startswith("| Tag |"):
             for row in lines[index + 2 :]:
                 if not row.startswith("|"):
                     break
-                tags.update(re.findall(r"`([^`]+)`", row.split("|")[1]))
+                for cell in re.findall(r"`([^`]+)`", row.split("|")[1]):
+                    spelled_out = IMAGE_REFERENCE.findall(cell)
+                    if spelled_out:
+                        tags.update(spelled_out)
+                    elif cell.startswith(":"):
+                        tags.add(cell[1:])
     return tags
 
 
@@ -841,14 +850,19 @@ def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path,
     """`design-review.md §2-D15`/D17: a documented name that nothing produces.
 
     The expected set is read out of the plan script rather than written here: a second
-    copy of the tag scheme is the defect this guards against (§2). Release tags are
-    included because that is where the README's `-runtime` example comes from; `latest`
-    is added by the merge job, not the matrix.
+    copy of the tag scheme is the defect this guards against (§2). The release leg is run
+    with the version the package reports, so a guide that pins `-v<old version>` fails here
+    instead of sending a reader to a tag no release made -- the versioned halves of
+    `docs/deployment.md` and `SECURITY.md` are the ones a bump forgets. `latest` is added by
+    the merge job, not the matrix.
     """
+    from decis import __version__
+
+    version = f"v{__version__}"
     produced: set[str] = set()
     for event, ref, name in (
         ("push", "refs/heads/master", "master"),
-        ("push", "refs/tags/v1.2.0", "v1.2.0"),
+        ("push", f"refs/tags/{version}", version),
     ):
         directory = tmp_path / name
         directory.mkdir()
@@ -860,11 +874,16 @@ def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path,
         if planned["tag"] == "latest":
             produced.add("latest")
 
-    for readme in (ROOT / "README.md", ROOT / "README.zh-CN.md"):
-        tags = documented_tags(readme)
-        assert tags, f"{readme.name} documents no image at all -- did the table change shape?"
+    for doc in (
+        ROOT / "README.md",
+        ROOT / "README.zh-CN.md",
+        ROOT / "docs" / "deployment.md",
+        ROOT / "docs" / "deployment.zh-CN.md",
+    ):
+        tags = documented_tags(doc)
+        assert tags, f"{doc.name} documents no image at all -- did the table change shape?"
         for tag in sorted(tags):
             assert tag in produced, (
-                f"{readme.name} tells the user to pull {tag!r}, which no event in the workflow creates "
+                f"{doc.name} tells the user to pull {tag!r}, which no event in the workflow creates "
                 f"(it creates {sorted(produced)})"
             )

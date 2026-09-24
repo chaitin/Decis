@@ -267,6 +267,30 @@ def test_the_documented_healthz_version_is_the_reported_one() -> None:
         )
 
 
+def test_the_release_version_the_docs_quote_is_the_packaged_one() -> None:
+    """A versioned tag the guides print has to be the version this release produces.
+
+    `docs/deployment.md` and `SECURITY.md` name a `-v<version>` image tag, and both READMEs
+    announce the same version as their status, so a bump leaves four hand-written copies
+    behind -- and a stale one names a tag no release ever made (the `§9`/D15 shape, with a
+    date attached). The `v` prefix is what separates our release from the upstream OpenAPI
+    snapshot's `0.2.0`, which is a document version and carries no `v`.
+    """
+    from decis import __version__
+
+    version = f"v{__version__}"
+    quoted = re.compile(r"\bv\d+\.\d+\.\d+\b")
+    for path in (
+        ROOT / "README.md",
+        ROOT / "README.zh-CN.md",
+        ROOT / "SECURITY.md",
+        DOCS / "deployment.md",
+        DOCS / "deployment.zh-CN.md",
+    ):
+        found = sorted(set(quoted.findall(_text(path))))
+        assert found == [version], f"{path.name} quotes {found or 'no release version'}, the package reports {version}"
+
+
 def test_the_documented_environment_variables_are_read_by_something() -> None:
     """A documented knob that nothing reads is worse than an undocumented one.
 

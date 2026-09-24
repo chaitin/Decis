@@ -639,6 +639,9 @@ test  ──►  build (matrix: engine × arch, push-by-digest, 不打 tag)  ─
 - build 阶段`outputs: type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true`，digest 存 artifact——**多架构并行时不抢 tag**。
 - merge 阶段 `docker buildx imagetools create` 合成 multi-arch manifest。
 - tag 规范：`<image>:<engine>-latest`（默认分支）、`<image>:<engine>-<semver>`（`v*` tag）、`<image>:<engine>-<sha7>`（永远打，回滚锚点）。
+  **这一节记的是最初的设计**：实际实现的方案是默认分支只有引擎名（没有 `-latest`，引擎名本身就是"当前镜像"）、
+  release 加 `-<version>`、无权重变体加 `-runtime-<version>`，以 `docs/deployment.md` 与工作流 `plan` 为准，
+  差异见 §12.1；`tests/test_docker_workflow.py` 会把文档里的每个 tag 与 `plan` 真跑出来的矩阵对照。
 - 在此之上打开 `provenance: true` + SBOM（供应链），digest artifact 保留 7 天而非 1 天。
   （原设计写"同时推 GHCR 与 Docker Hub"，实际只推 Docker Hub —— 见 §12.1。）
 
@@ -1037,7 +1040,7 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 镜像体积与容器内冷启动 | **已量**：体积见上面的体积 bullet；容器内冷启动从起了容器到 `/readyz` 变 200 是 **122.3 s**（`compose --wait` 131 s），常驻 2.87 GiB。上面那次 2026-09-22 的运行本身没有记录体积、也没有在容器里起过服务。 |
 | release tag 路径与 `-runtime` 变体 | **已构建并推送**（[run 35830071254](https://github.com/chaitin/Decis/actions/runs/35830071254)：8 条腿 + 4 个 merge 全绿，产出 `<engine>-<version>` 与 `<engine>-runtime-<version>`）。**拉下来跑过的是烤权重那个**；`-runtime` 只验证了"能构建、能合并、体积对" |
 | 默认镜像里确实有权重 | **已验证**（aarch64，本地自建与发布镜像两版）：冷启动 **0 条下载**，容器内 `/v1/systemone` 真的作答且两版结果逐位相同；见 `AGENTS.md` 的镜像段落 |
-| Docker Hub 的发布路径 | **已验证**：2026-09-24 的 master 推送（[run 35956102642](https://github.com/chaitin/Decis/actions/runs/35956102642)）6 条构建腿 + 2 个 merge 全绿；更早一次还验证了匿名 token 能读到 manifest 与逐层体积、发布镜像能直接拉取 |
+| Docker Hub 的发布路径 | **已验证的是迁移前那个命名空间**：2026-09-24 的 master 推送（[run 35956102642](https://github.com/chaitin/Decis/actions/runs/35956102642)）6 条构建腿 + 2 个 merge 全绿；更早一次还验证了匿名 token 能读到 manifest 与逐层体积、发布镜像能直接拉取。迁到 `chaitin` 命名空间后的第一次推送**被 registry 拒了**（`insufficient_scope`：`chaitin/decis` 这个仓库还不存在，而工作流用的凭据是自己的命名空间，对组织没有写权限），所以"能发布到 `chaitin/decis`"这一条**目前没有证据** |
 
 **C 档 — 不能承诺（写了就是虚假宣传）**
 
@@ -1048,8 +1051,8 @@ ONNX Runtime 引擎（无 torch 的极小镜像）；MLX 引擎（macOS，复用
 | 多进程 / 多 worker 的扩展性 | **已测且为负**：固定总线程预算下 1/2/4 进程吞吐差 1.18x，加进程不增加吞吐。见 §4-M5 |
 | 429 在真实限流下的行为 | 无 API key，无法触发 |
 | 生产可用性（SLO、内存上限、并发数） | 无压测，无长时间运行观测 |
-| 镜像可移植性 | 工作流已就位（多架构、Docker Hub、SBOM/provenance），并已在真实 runner 上跑通过一次多架构构建与合并（当时推 GHCR）；
-  改为 Docker Hub 单仓库后，tag 命名有测试守着，但那次推送本身**还没实际跑过** |
+| 镜像可移植性 | 工作流已就位（多架构、Docker Hub、SBOM/provenance），并已在真实 runner 上跑通过多架构构建、合并与推送（迁移前那个命名空间）；
+  **`chaitin/decis` 这个仓库至今没有任何一次成功发布**（见上面 B 档那一行），所以"照着文档 `docker pull chaitin/decis:...` 就能用"现在还不成立 |
 
 **剩余工作，按"挡住对外承诺的程度"排序**
 
