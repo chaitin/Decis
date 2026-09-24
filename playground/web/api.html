@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<!--
+  The playground's human-facing reference for the API itself.
+
+  It is a page of the playground, not a second copy of docs/api.md: it is the short version
+  a reader can scroll while a request is in front of them, with a box that sends a real
+  call. It wears the shared /theme.css and /i18n.js like the games, and it is static HTML
+  apart from that box -- with JavaScript off, the prose and every example still read.
+
+  Three conventions it follows deliberately:
+
+  * **The wire vocabulary stays English.** `state`, `questions`, `criteria`, the field
+    names, the status codes and `POST /v1/systemone` are values a caller types, so they are
+    not translated. Only the prose around them is.
+  * **The examples are captured, not invented.** The request/response pair in "A real call"
+    is the snake page's own call, taken from `.scratch/api_example_request.json` and
+    `.scratch/api_example_response.json` (see `.scratch/capture_api_example.py`); the
+    numbers in it are that call's.
+  * **No number here is a measurement of ours.** The engine limits are reported by the
+    engine from `GET /v1/models`, so this page points at it instead of printing a value it
+    has not measured (AGENTS.md §8).
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Decis / API reference</title>
+  <link rel="stylesheet" href="/theme.css">
+  <script src="/i18n.js"></script>
+  <style>
+    /* Page layout only: the palette, the panels, the buttons, the I/O blocks and the
+       footer come from /theme.css, which every page shares; so does the reading column
+       (`.shell`, `.hero`, `.lede`), which the index and this page have in common. */
+    /* One column of panels, in the order a reader needs them. */
+    .sections { display: flex; flex-direction: column; gap: 16px; margin-top: 26px; }
+
+    .panel p { margin: 0 0 10px; color: var(--ink-dim); font-size: 13px; max-width: 82ch; }
+    .panel p:last-child { margin-bottom: 0; }
+
+    .panel h3 { margin: 18px 0 8px; font-size: 13px; font-weight: 650; color: var(--ink); }
+    .panel h3:first-of-type { margin-top: 4px; }
+
+    .panel ul { margin: 0 0 10px; padding-left: 18px; color: var(--ink-dim); font-size: 13px; max-width: 82ch; }
+    .panel li { margin: 3px 0; }
+
+    /* Field tables: layout only. Every colour is a theme token, used not restated. */
+    table.fields { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.fields th, table.fields td { text-align: left; vertical-align: top; padding: 5px 12px 5px 0; }
+    table.fields thead th {
+      color: var(--muted);
+      font-size: 10.5px;
+      font-weight: 650;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      padding-bottom: 2px;
+    }
+    table.fields tbody td { color: var(--ink-dim); }
+    table.fields td.field, table.fields td.status { white-space: nowrap; color: var(--ink); }
+    /* A cell can hold one unbreakable token -- `authentication_error`, `upstream_unavailable`,
+       `DECIS_REQUEST_TIMEOUT_MS` -- and at a phone width the auto layout would honour its full
+       width and push the whole page sideways (measured at 380px: `table.fields [35..475]
+       vw=380`, then `[35..398]` once only the `error_type` column could break). Letting the
+       words break is what keeps three columns inside the column. */
+    table.fields td { overflow-wrap: anywhere; }
+
+    /* The one control theme.css has no primitive for: an input, wearing `.io-pre` so it
+       is the same block as every payload on the page. */
+    textarea.io-pre { width: 100%; min-height: 210px; resize: vertical; color: var(--ink); }
+
+    .try-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <header class="app-bar">
+    <a class="brand" href="/">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Decis <span class="brand-sub" data-i18n="brand.sub">playground</span></span>
+    </a>
+    <nav class="app-nav">
+      <a data-back-link></a>
+      <a href="/snake" data-i18n="nav.snake">Snake</a>
+      <a href="/dino" data-i18n="nav.dino">Dino</a>
+      <a href="/tetris" data-i18n="nav.tetris">Tetris</a>
+      <a href="/api" data-i18n="nav.api" aria-current="page">API</a>
+      <a data-repo-link></a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="status-chip" id="status-chip">
+      <span id="dot" class="dot busy"></span>
+      <span id="status-text" data-i18n="status.searching" data-i18n-dynamic>Looking for the engine&hellip;</span>
+    </span>
+    <div data-lang-switch></div>
+  </header>
+
+  <main class="shell">
+    <div class="hero">
+      <h1><span class="grad" data-i18n="hero.title">API reference</span></h1>
+    </div>
+    <p class="lede" data-i18n="hero.lede">
+      One endpoint does the work, and this page is served by the same origin that answers it.
+      Below: what to send, what comes back, what the parameters and the limits mean, what each
+      error says, and a box that sends a real request so you can watch a real answer arrive.
+    </p>
+
+    <div class="sections">
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="ep.title">The endpoint</span>
+          <span class="panel-sub">POST /v1/systemone</span>
+        </div>
+        <p data-i18n="ep.body">
+          Send JSON to POST /v1/systemone on this page's own origin. The playground serves these
+          pages and forwards that one path to the engine: it attaches the bearer token in the
+          request header, so the browser never holds one, and it rewrites the model field to the
+          id of the engine that answered /readyz. JSON in, JSON out &mdash; there is no streaming
+          endpoint.
+        </p>
+        <p data-i18n="ep.ids">
+          Every response carries x-typesafe-request-id, error responses included, and the same id
+          appears in the server log. It is what to quote when a call goes wrong.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="prim.title">The three primitives</span>
+          <span class="panel-sub">choice &middot; score &middot; noul</span>
+        </div>
+        <p data-i18n="prim.lede">
+          A question is one object with a type, the instructions the model reads, and criteria. All
+          three types can be mixed in one request, and they are all judged against the same state.
+        </p>
+        <h3>choice</h3>
+        <pre class="io-pre">{
+  "type": "choice",
+  "instructions": "Which team should handle this?",
+  "criteria": {
+    "billing": "invoices, payments, refunds",
+    "technical": "bugs, outages, system errors"
+  }
+}</pre>
+        <p data-i18n="prim.choice.body">
+          choice picks one name from a set. criteria is an object, and its keys are the option
+          names: the answer's choice is one of those keys, and the answer's probabilities has
+          exactly the same keys in the same order.
+        </p>
+        <h3>score</h3>
+        <pre class="io-pre">{
+  "type": "score",
+  "instructions": "How urgent is this?",
+  "criteria": ["no deadline", "this week", "today", "already late"]
+}</pre>
+        <p data-i18n="prim.score.body">
+          score rates on an ordered rubric. criteria is an array from lowest to highest; in the
+          answer, legend and probabilities use the string keys "0", "1", &hellip; and score is
+          &Sigma; k&middot;p&#8342; over those 0-based levels, so a score can be fractional.
+        </p>
+        <h3>noul</h3>
+        <pre class="io-pre">{
+  "type": "noul",
+  "instructions": "Does the user threaten to cancel?"
+}</pre>
+        <p data-i18n="prim.noul.body">
+          noul is a yes/no question. The answer is a single scalar, noul = P(true), with no
+          confidence and no probabilities. Its criteria is optional, and if you send it the keys
+          must be exactly "true" and "false".
+        </p>
+        <p data-i18n="prim.guarantees">
+          Three things hold on every response. choice equals argmax(probabilities), and its keys
+          match your criteria keys in order. answers has exactly the same keys as questions. And
+          those question keys are yours: they are never sent to the model, so two questions may be
+          worded identically without being confused.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="call.title">A real call</span>
+          <span class="panel-sub">snake &middot; choice</span>
+        </div>
+        <p data-i18n="call.note">
+          Below is a request/response pair captured from the snake page of this playground, against
+          the engine that was answering it. Nothing in it is illustrative: usage, latency_ms and
+          the probabilities are that call's own numbers.
+        </p>
+        <div class="io-body">
+          <div class="io-block">
+            <span class="io-label" data-i18n="io.request">Request</span>
+            <pre class="io-pre">{
+  "model": "jev-latest",
+  "questions": {
+    "move": {
+      "criteria": {
+        "down": "Move south (y + 1)",
+        "left": "Move west (x - 1)",
+        "right": "Move east (x + 1)",
+        "up": "Move north (y - 1)"
+      },
+      "instructions": "Select the next move for the snake head. Choose recommended_safe_move in safe_moves that reduces manhattan_to_food while preserving open_space.",
+      "type": "choice"
+    }
+  },
+  "state": {
+    "food": [
+      7,
+      0
+    ],
+    "food_delta": {
+      "dx": 2,
+      "dy": -6,
+      "preferred_horizontal": "right",
+      "preferred_vertical": "up"
+    },
+    "head": [
+      5,
+      6
+    ],
+    "move_analysis": {
+      "down": {
+        "manhattan_to_food": 9,
+        "open_space": 141,
+        "reason": "safe",
+        "reduces_distance": false,
+        "safe": true
+      },
+      "left": {
+        "manhattan_to_food": 9,
+        "open_space": 0,
+        "reason": "neck",
+        "reduces_distance": false,
+        "safe": false
+      },
+      "right": {
+        "manhattan_to_food": 7,
+        "open_space": 141,
+        "reason": "safe",
+        "reduces_distance": true,
+        "safe": true
+      },
+      "up": {
+        "manhattan_to_food": 7,
+        "open_space": 141,
+        "reason": "safe",
+        "reduces_distance": true,
+        "safe": true
+      }
+    },
+    "recommended_safe_move": "right",
+    "safe_moves": [
+      "up",
+      "down",
+      "right"
+    ]
+  }
+}</pre>
+          </div>
+          <div class="io-block">
+            <span class="io-label" data-i18n="io.response">Response</span>
+            <pre class="io-pre">{
+  "answers": {
+    "move": {
+      "choice": "right",
+      "confidence": 0.1052,
+      "probabilities": {
+        "down": 0.0909,
+        "left": 0.2673,
+        "right": 0.3289,
+        "up": 0.3128
+      },
+      "type": "choice"
+    }
+  },
+  "decis": {
+    "batch_size": 1,
+    "device": "cpu",
+    "dtype": "float32",
+    "engine": "laya-multilingual",
+    "engine_version": "0.3.6",
+    "latency_ms": 1303.98,
+    "native_confidence": {
+      "move": 0.062265098094940186
+    }
+  },
+  "model": "decis/laya-multilingual@0.3.6",
+  "usage": {
+    "input_tokens": 287,
+    "output_tokens": 34
+  }
+}</pre>
+          </div>
+        </div>
+        <p data-i18n="call.anatomy">
+          state is the board the page sent. questions.move is the one question it asked, and
+          answers.move is the answer the engine gave. Both files are embedded as they were
+          captured, only re-indented.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="try.title">Try it</span>
+          <span class="panel-subs">
+            <span class="panel-sub" id="try-status" data-i18n="try.idle" data-i18n-dynamic>Not sent yet</span>
+            <span class="panel-sub" id="try-id"></span>
+          </span>
+        </div>
+        <p data-i18n="try.hint">
+          This sends a real request to this origin, which proxies /v1/systemone only; the bearer
+          token is attached server-side, so nothing here needs a key. If the engine cannot honour
+          the request it answers 422, and the message names the measured token count and the limit
+          &mdash; so this box doubles as a way to find out whether a request fits.
+        </p>
+        <div class="io-body">
+          <div class="io-block">
+            <label class="io-label" for="try-request" data-i18n="io.request">Request</label>
+            <textarea id="try-request" class="io-pre" rows="12" spellcheck="false">{"model":"jev-latest","questions":{"move":{"criteria":{"down":"Move south (y + 1)","left":"Move west (x - 1)","right":"Move east (x + 1)","up":"Move north (y - 1)"},"instructions":"Select the next move for the snake head. Choose recommended_safe_move in safe_moves that reduces manhattan_to_food while preserving open_space.","type":"choice"}},"state":{"food":[7,0],"food_delta":{"dx":2,"dy":-6,"preferred_horizontal":"right","preferred_vertical":"up"},"head":[5,6],"move_analysis":{"down":{"manhattan_to_food":9,"open_space":141,"reason":"safe","reduces_distance":false,"safe":true},"left":{"manhattan_to_food":9,"open_space":0,"reason":"neck","reduces_distance":false,"safe":false},"right":{"manhattan_to_food":7,"open_space":141,"reason":"safe","reduces_distance":true,"safe":true},"up":{"manhattan_to_food":7,"open_space":141,"reason":"safe","reduces_distance":true,"safe":true}},"recommended_safe_move":"right","safe_moves":["up","down","right"]}}</textarea>
+          </div>
+          <div class="io-block">
+            <span class="io-label" data-i18n="io.response">Response</span>
+            <pre class="io-pre" id="try-response"></pre>
+          </div>
+        </div>
+        <div class="try-actions">
+          <button class="btn btn-primary" id="try-send" type="button" data-i18n="try.send">Send</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="params.title">Parameters and limits</span>
+        </div>
+        <h3 data-i18n="params.req.head">The request body</h3>
+        <table class="fields">
+          <thead>
+            <tr><th data-i18n="params.field">Field</th><th data-i18n="params.meaning">Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="field mono">state</td>
+              <td data-i18n="params.state.desc">
+                The content to reason about: a string, an object or an array. Text only &mdash; no
+                images, audio or video.
+              </td>
+            </tr>
+            <tr>
+              <td class="field mono">model</td>
+              <td data-i18n="params.model.desc">
+                Which model to ask. Send jev-latest, or a versioned id from GET /v1/models; the
+                playground rewrites it to the engine that is actually running.
+              </td>
+            </tr>
+            <tr>
+              <td class="field mono">questions</td>
+              <td data-i18n="params.questions.desc">
+                At least one entry. The keys are yours, they come back verbatim, and they are never
+                sent to the model.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 data-i18n="params.qhead">A question</h3>
+        <table class="fields">
+          <thead>
+            <tr><th data-i18n="params.field">Field</th><th data-i18n="params.meaning">Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="field mono">type</td>
+              <td data-i18n="params.q.type.desc">One of choice, score or noul.</td>
+            </tr>
+            <tr>
+              <td class="field mono">instructions</td>
+              <td data-i18n="params.q.instructions.desc">The question text the model reads.</td>
+            </tr>
+            <tr>
+              <td class="field mono">criteria</td>
+              <td data-i18n="params.q.criteria.desc">Depends on the type; the three shapes are below.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 data-i18n="params.criteria.head">criteria by primitive</h3>
+        <ul>
+          <li data-i18n="params.criteria.choice">
+            choice: a required object. Its keys are the option names and become the keys of the
+            answer.
+          </li>
+          <li data-i18n="params.criteria.score">
+            score: a required, non-empty array, ordered from lowest to highest.
+          </li>
+          <li data-i18n="params.criteria.noul">
+            noul: an optional object whose keys must be exactly "true" and "false"; any other key
+            is ignored.
+          </li>
+        </ul>
+
+        <h3 data-i18n="limits.title">Engine limits</h3>
+        <p data-i18n="limits.lede">
+          Four limits belong to the engine rather than to the API, and each engine reports its own
+          from GET /v1/models &mdash; a /v1/* path this playground does not proxy, so ask the engine
+          directly. No values are printed here: the engine is the only thing that measures them.
+        </p>
+        <table class="fields">
+          <thead>
+            <tr><th data-i18n="params.field">Field</th><th data-i18n="params.meaning">Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="field mono">max_options</td>
+              <td data-i18n="limits.maxOptions.desc">Most criteria one choice question may have.</td>
+            </tr>
+            <tr>
+              <td class="field mono">max_question_tokens</td>
+              <td data-i18n="limits.maxQuestionTokens.desc">
+                Token budget for one question, instructions and options included.
+              </td>
+            </tr>
+            <tr>
+              <td class="field mono">max_sequence_tokens</td>
+              <td data-i18n="limits.maxSequenceTokens.desc">Token budget for state plus one question.</td>
+            </tr>
+            <tr>
+              <td class="field mono">max_state_tokens</td>
+              <td data-i18n="limits.maxStateTokens.desc">
+                A separate budget for state alone, when the engine has one; 0 means the sequence
+                limit is the only one.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p data-i18n="limits.tokenizer">
+          Token counts are measured with the engine's own tokenizer, not estimated from characters,
+          and a request that does not fit is rejected rather than truncated. For scale: snake asks
+          with 4 options, dino with 3 and tetris with 5. Those are examples of option counts, not
+          limits.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="err.title">Errors</span>
+        </div>
+        <p data-i18n="err.lede">
+          Two body shapes exist, and a client has to handle both. Everything except validation
+          answers with detail.error_type and detail.message; a validation or capacity failure
+          answers with a list of loc / msg / type entries. The status codes below are the engine's.
+        </p>
+        <div class="io-body">
+          <div class="io-block">
+            <span class="io-label" data-i18n="err.shape.one">Everything except validation</span>
+            <pre class="io-pre">{"detail": {"error_type": "authentication_error", "message": "&hellip;"}}</pre>
+          </div>
+          <div class="io-block">
+            <span class="io-label" data-i18n="err.shape.two">Validation and capacity</span>
+            <pre class="io-pre">{"detail": [{"loc": ["body", "questions", "move"], "msg": "&hellip;", "type": "&hellip;"}]}</pre>
+          </div>
+        </div>
+        <table class="fields">
+          <thead>
+            <tr>
+              <th data-i18n="err.status">Status</th>
+              <th>error_type</th>
+              <th data-i18n="err.when">When</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="status"><span class="tag">401</span></td>
+              <td class="mono">authentication_error</td>
+              <td data-i18n="err.401">The bearer token is not valid.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">403</span></td>
+              <td class="mono">authentication_error</td>
+              <td data-i18n="err.403">No credential, or a scheme other than Bearer.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">404</span></td>
+              <td class="mono">&mdash;</td>
+              <td data-i18n="err.404">Unknown path.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">405</span></td>
+              <td class="mono">&mdash;</td>
+              <td data-i18n="err.405">Known path, wrong method.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">413</span></td>
+              <td class="mono">request_too_large</td>
+              <td data-i18n="err.413">Body over the engine's DECIS_MAX_REQUEST_BYTES.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">422</span></td>
+              <td class="mono">validation</td>
+              <td data-i18n="err.422">
+                Bad shape, or a request the engine cannot honour: too many options, an over-long
+                question, state over the budget, an empty criteria, an unknown model. The message
+                names the measured number and the limit.
+              </td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">429</span></td>
+              <td class="mono">rate_limit_error</td>
+              <td data-i18n="err.429">
+                Waiting for the engine exceeded DECIS_REQUEST_TIMEOUT_MS. Carries retry-after-ms.
+              </td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">500</span></td>
+              <td class="mono">engine_error</td>
+              <td data-i18n="err.500">The engine raised; the message includes the request id.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">503</span></td>
+              <td class="mono">engine_unavailable</td>
+              <td data-i18n="err.503">The engine is not loaded, or its load failed.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3 data-i18n="err.play.title">This playground's own answers</h3>
+        <p data-i18n="err.play.lede">
+          The proxy answers in the engine's shape, so one reader handles both, but these come from
+          the playground itself.
+        </p>
+        <table class="fields">
+          <thead>
+            <tr>
+              <th data-i18n="err.status">Status</th>
+              <th>error_type</th>
+              <th data-i18n="err.when">When</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="status"><span class="tag">400</span></td>
+              <td class="mono">invalid_request_error</td>
+              <td data-i18n="err.play.400">The body is not valid JSON, or not a JSON object.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">404</span></td>
+              <td class="mono">not_found</td>
+              <td data-i18n="err.play.404">No such page, and no path the proxy answers.</td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">413</span></td>
+              <td class="mono">invalid_request_error</td>
+              <td data-i18n="err.play.413">
+                Larger than the proxy itself will buffer; it has its own cap, separate from the
+                engine's.
+              </td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">502</span></td>
+              <td class="mono">upstream_error</td>
+              <td data-i18n="err.play.502">
+                The engine could not be reached; the playground forgets its address and looks again.
+              </td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">503</span></td>
+              <td class="mono">searching</td>
+              <td data-i18n="err.play.503">
+                /readyz while no engine is ready: it reports the candidates it is probing.
+              </td>
+            </tr>
+            <tr>
+              <td class="status"><span class="tag">503</span></td>
+              <td class="mono">upstream_unavailable</td>
+              <td data-i18n="err.play.503.post">
+                A POST to /v1/systemone while no engine is ready.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p data-i18n="err.id.note">
+          Error responses carry x-typesafe-request-id too, and a 429 carries retry-after-ms so a
+          retry can wait the right amount of time.
+        </p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span data-i18n="ref.title">Where the full contract lives</span>
+        </div>
+        <p>
+          <span data-i18n="ref.lead">This page is a hands-on summary, not the contract. The complete reference &mdash; every field, the generated schemas, the official SDK, retry behaviour and model names &mdash; is</span>
+          <a data-docs-link></a><span data-i18n="ref.tail">. The machine-readable schemas under docs/schema/ are generated from the server's own models and CI fails if they no longer match, so they cannot drift from what runs.</span>
+        </p>
+      </section>
+    </div>
+
+    <p class="page-foot" data-i18n="foot.note">
+      The games, this reference and the proxy are one standard-library program; the only thing it
+      forwards is POST /v1/systemone.
+    </p>
+  </main>
+
+  <script>
+    I18N.add({
+      en: {
+        "hero.title": "API reference",
+        "hero.lede": "One endpoint does the work, and this page is served by the same origin that answers it. Below: what to send, what comes back, what the parameters and the limits mean, what each error says, and a box that sends a real request so you can watch a real answer arrive.",
+        "ep.title": "The endpoint",
+        "ep.body": "Send JSON to POST /v1/systemone on this page's own origin. The playground serves these pages and forwards that one path to the engine: it attaches the bearer token in the request header, so the browser never holds one, and it rewrites the model field to the id of the engine that answered /readyz. JSON in, JSON out \u2014 there is no streaming endpoint.",
+        "ep.ids": "Every response carries x-typesafe-request-id, error responses included, and the same id appears in the server log. It is what to quote when a call goes wrong.",
+        "prim.title": "The three primitives",
+        "prim.lede": "A question is one object with a type, the instructions the model reads, and criteria. All three types can be mixed in one request, and they are all judged against the same state.",
+        "prim.choice.body": "choice picks one name from a set. criteria is an object, and its keys are the option names: the answer's choice is one of those keys, and the answer's probabilities has exactly the same keys in the same order.",
+        "prim.score.body": "score rates on an ordered rubric. criteria is an array from lowest to highest; in the answer, legend and probabilities use the string keys \"0\", \"1\", \u2026 and score is \u03a3 k\u00b7p\u2096 over those 0-based levels, so a score can be fractional.",
+        "prim.noul.body": "noul is a yes/no question. The answer is a single scalar, noul = P(true), with no confidence and no probabilities. Its criteria is optional, and if you send it the keys must be exactly \"true\" and \"false\".",
+        "prim.guarantees": "Three things hold on every response. choice equals argmax(probabilities), and its keys match your criteria keys in order. answers has exactly the same keys as questions. And those question keys are yours: they are never sent to the model, so two questions may be worded identically without being confused.",
+        "call.title": "A real call",
+        "call.note": "Below is a request/response pair captured from the snake page of this playground, against the engine that was answering it. Nothing in it is illustrative: usage, latency_ms and the probabilities are that call's own numbers.",
+        "call.anatomy": "state is the board the page sent. questions.move is the one question it asked, and answers.move is the answer the engine gave. Both files are embedded as they were captured, only re-indented.",
+        "try.title": "Try it",
+        "try.hint": "This sends a real request to this origin, which proxies /v1/systemone only; the bearer token is attached server-side, so nothing here needs a key. If the engine cannot honour the request it answers 422, and the message names the measured token count and the limit \u2014 so this box doubles as a way to find out whether a request fits.",
+        "try.send": "Send",
+        "try.idle": "Not sent yet",
+        "try.sending": "Sending\u2026",
+        "try.status": "HTTP {status} \u00b7 {ms} ms",
+        "try.badJson": "Not valid JSON: {message}",
+        "try.noResponse": "The request did not complete: {message}",
+        "try.raw": "HTTP {status} \u00b7 {ms} ms \u2014 the body is not JSON, shown as it arrived",
+        "params.title": "Parameters and limits",
+        "params.field": "Field",
+        "params.meaning": "Meaning",
+        "params.req.head": "The request body",
+        "params.state.desc": "The content to reason about: a string, an object or an array. Text only \u2014 no images, audio or video.",
+        "params.model.desc": "Which model to ask. Send jev-latest, or a versioned id from GET /v1/models; the playground rewrites it to the engine that is actually running.",
+        "params.questions.desc": "At least one entry. The keys are yours, they come back verbatim, and they are never sent to the model.",
+        "params.qhead": "A question",
+        "params.q.type.desc": "One of choice, score or noul.",
+        "params.q.instructions.desc": "The question text the model reads.",
+        "params.q.criteria.desc": "Depends on the type; the three shapes are below.",
+        "params.criteria.head": "criteria by primitive",
+        "params.criteria.choice": "choice: a required object. Its keys are the option names and become the keys of the answer.",
+        "params.criteria.score": "score: a required, non-empty array, ordered from lowest to highest.",
+        "params.criteria.noul": "noul: an optional object whose keys must be exactly \"true\" and \"false\"; any other key is ignored.",
+        "limits.title": "Engine limits",
+        "limits.lede": "Four limits belong to the engine rather than to the API, and each engine reports its own from GET /v1/models \u2014 a /v1/* path this playground does not proxy, so ask the engine directly. No values are printed here: the engine is the only thing that measures them.",
+        "limits.maxOptions.desc": "Most criteria one choice question may have.",
+        "limits.maxQuestionTokens.desc": "Token budget for one question, instructions and options included.",
+        "limits.maxSequenceTokens.desc": "Token budget for state plus one question.",
+        "limits.maxStateTokens.desc": "A separate budget for state alone, when the engine has one; 0 means the sequence limit is the only one.",
+        "limits.tokenizer": "Token counts are measured with the engine's own tokenizer, not estimated from characters, and a request that does not fit is rejected rather than truncated. For scale: snake asks with 4 options, dino with 3 and tetris with 5. Those are examples of option counts, not limits.",
+        "err.title": "Errors",
+        "err.lede": "Two body shapes exist, and a client has to handle both. Everything except validation answers with detail.error_type and detail.message; a validation or capacity failure answers with a list of loc / msg / type entries. The status codes below are the engine's.",
+        "err.shape.one": "Everything except validation",
+        "err.shape.two": "Validation and capacity",
+        "err.status": "Status",
+        "err.when": "When",
+        "err.401": "The bearer token is not valid.",
+        "err.403": "No credential, or a scheme other than Bearer.",
+        "err.404": "Unknown path.",
+        "err.405": "Known path, wrong method.",
+        "err.413": "Body over DECIS_MAX_REQUEST_BYTES.",
+        "err.422": "Bad shape, or a request the engine cannot honour: too many options, an over-long question, state over the budget, an empty criteria, an unknown model. The message names the measured number and the limit.",
+        "err.429": "Waiting for the engine exceeded DECIS_REQUEST_TIMEOUT_MS. Carries retry-after-ms.",
+        "err.500": "The engine raised; the message includes the request id.",
+        "err.503": "The engine is not loaded, or its load failed.",
+        "err.play.title": "This playground's own answers",
+        "err.play.lede": "The proxy answers in the engine's shape, so one reader handles both, but these come from the playground itself.",
+        "err.play.400": "The body is not valid JSON, or not a JSON object.",
+        "err.play.404": "No such page, and no path the proxy answers.",
+        "err.play.413": "Larger than the proxy itself will buffer; it has its own cap, separate from the engine's.",
+        "err.play.502": "The engine could not be reached; the playground forgets its address and looks again.",
+        "err.play.503": "/readyz while no engine is ready: it reports the candidates it is probing.",
+        "err.play.503.post": "A POST to /v1/systemone while no engine is ready.",
+        "err.id.note": "Error responses carry x-typesafe-request-id too, and a 429 carries retry-after-ms so a retry can wait the right amount of time.",
+        "ref.title": "Where the full contract lives",
+        "ref.lead": "This page is a hands-on summary, not the contract. The complete reference \u2014 every field, the generated schemas, the official SDK, retry behaviour and model names \u2014 is",
+        "ref.tail": ". The machine-readable schemas under docs/schema/ are generated from the server's own models and CI fails if they no longer match, so they cannot drift from what runs.",
+        "foot.note": "The games, this reference and the proxy are one standard-library program; the only thing it forwards is POST /v1/systemone."
+      },
+      zh: {
+        "hero.title": "API 参考",
+        "hero.lede": "干活只需要一个端点，而本页就由回答它的同一来源提供。下面依次是：发什么、回什么、参数与上限的含义、每种错误说什么，以及一个真的发出请求、让你看见真实答案回来的输入框。",
+        "ep.title": "端点",
+        "ep.body": "把 JSON 发到本页同一来源（origin）的 POST /v1/systemone。playground 提供这些页面，并把这一条路径转发给引擎：它在请求头里附上 bearer token，所以浏览器里始终没有密钥；同时把 model 字段改写成 /readyz 报出的引擎 id。JSON 进、JSON 出——没有流式接口。",
+        "ep.ids": "每个响应都带 x-typesafe-request-id，错误响应也一样，同一个 id 也会出现在服务端日志里。调用出问题时，引用它。",
+        "prim.title": "三种原语",
+        "prim.lede": "一个 question 是一个对象，包含 type、给模型读的 instructions，以及 criteria。三种 type 可以在同一个请求里混用，并且都针对同一个 state 作答。",
+        "prim.choice.body": "choice 从一组名字里挑一个。criteria 是一个对象，它的键就是选项名：回答里的 choice 是其中一个键，probabilities 的键与它逐字相同、顺序一致。",
+        "prim.score.body": "score 按一条有序的量表打分。criteria 是从低到高的数组；回答里的 legend 与 probabilities 使用字符串键 \"0\"、\"1\"……，score 是在这些 0 基层级上的 Σ k·pₖ，所以可以是小数。",
+        "prim.noul.body": "noul 是一个是/否问题。回答是单个标量 noul = P(true)，没有 confidence，也没有 probabilities。它的 criteria 是可选的；如果要发，键必须正好是 \"true\" 和 \"false\"。",
+        "prim.guarantees": "每个响应都保证三件事。choice 等于 argmax(probabilities)，且它的键与你的 criteria 键按顺序一一对应。answers 的键与 questions 完全相同。而这些 question 键是你自己的：它们从不发给模型，所以两个问题可以措辞一样而不会混淆。",
+        "call.title": "一次真实调用",
+        "call.note": "下面是本 playground 的贪吃蛇页面当时向在作答的引擎发出的请求/响应对。里面没有示例数字：usage、latency_ms 和各个概率都是那一次调用自己的。",
+        "call.anatomy": "state 是页面发出去的棋盘。questions.move 是它问的唯一一个问题，answers.move 是引擎给出的回答。两个文件按抓取到的样子嵌入，只重新缩进过。",
+        "try.title": "试一试",
+        "try.hint": "这会把一个真实请求发到本来源；它只代理 /v1/systemone，bearer token 在服务端附上，所以这里不需要任何密钥。如果引擎无法完成这个请求，它会回 422，消息里会写出实测的 token 数和上限——所以这个框也是判断一个请求装不装得下的办法。",
+        "try.send": "发送",
+        "try.idle": "还没有发送",
+        "try.sending": "正在发送……",
+        "try.status": "HTTP {status} · {ms} 毫秒",
+        "try.badJson": "不是合法的 JSON：{message}",
+        "try.noResponse": "请求没有完成：{message}",
+        "try.raw": "HTTP {status} · {ms} 毫秒——响应体不是 JSON，按原样显示",
+        "params.title": "参数与上限",
+        "params.field": "字段",
+        "params.meaning": "含义",
+        "params.req.head": "请求体",
+        "params.state.desc": "要推理的内容：字符串、对象或数组。只支持文本——没有图像、音频或视频。",
+        "params.model.desc": "要问哪个模型。可以发 jev-latest，也可以发 GET /v1/models 里的版本化 id；playground 会把它改写成真正在跑的那个引擎。",
+        "params.questions.desc": "至少一项。键由你决定，会原样返回，并且从不发给模型。",
+        "params.qhead": "一个 question",
+        "params.q.type.desc": "取 choice、score 或 noul 之一。",
+        "params.q.instructions.desc": "模型读到的题目文字。",
+        "params.q.criteria.desc": "取决于 type；三种形状见下。",
+        "params.criteria.head": "各原语的 criteria",
+        "params.criteria.choice": "choice：必填的对象。它的键就是选项名，并成为回答的键。",
+        "params.criteria.score": "score：必填的非空数组，从低到高排列。",
+        "params.criteria.noul": "noul：可选的对象，键必须正好是 \"true\" 和 \"false\"；其他键会被忽略。",
+        "limits.title": "引擎上限",
+        "limits.lede": "有四条上限属于引擎而不是 API，每个引擎都通过 GET /v1/models 报出自己的取值——这条 /v1/* 路径本 playground 不代理，请直接问引擎。这里不印任何数值：只有引擎自己测量它们。",
+        "limits.maxOptions.desc": "一个 choice 问题最多允许多少个 criteria。",
+        "limits.maxQuestionTokens.desc": "一个问题的 token 预算，包含 instructions 与选项。",
+        "limits.maxSequenceTokens.desc": "state 加一个问题的 token 预算。",
+        "limits.maxStateTokens.desc": "某些引擎对 state 单独设的预算；0 表示只有序列那一条上限。",
+        "limits.tokenizer": "token 数用引擎自己的 tokenizer 量出来，不从字符数估算；装不下的请求会被拒绝，而不是截断。作为规模参照：贪吃蛇发 4 个选项、恐龙 3 个、俄罗斯方块 5 个。这些是选项数的例子，不是上限。",
+        "err.title": "错误",
+        "err.lede": "有两种响应体形状，客户端两种都要处理。除校验外的所有错误都回 detail.error_type 与 detail.message；校验或容量失败则回一组 loc / msg / type 条目。下表中的状态码来自引擎。",
+        "err.shape.one": "除校验之外的一切",
+        "err.shape.two": "校验与容量",
+        "err.status": "状态码",
+        "err.when": "何时",
+        "err.401": "bearer token 无效。",
+        "err.403": "没有凭证，或 scheme 不是 Bearer。",
+        "err.404": "未知路径。",
+        "err.405": "路径已知，方法不对。",
+        "err.413": "请求体超过 DECIS_MAX_REQUEST_BYTES。",
+        "err.422": "形状不对，或引擎无法完成这个请求：选项过多、问题过长、state 超出预算、criteria 为空、模型未知。消息里会写出实测的数值和上限。",
+        "err.429": "等引擎的时间超过了 DECIS_REQUEST_TIMEOUT_MS。带 retry-after-ms。",
+        "err.500": "引擎抛出了异常；消息里带请求 id。",
+        "err.503": "引擎没有加载，或加载失败。",
+        "err.play.title": "本 playground 自己的回答",
+        "err.play.lede": "代理用引擎的形状作答，所以一套解析逻辑就够；但下面这些来自 playground 自己。",
+        "err.play.400": "请求体不是合法 JSON，或者不是一个 JSON 对象。",
+        "err.play.404": "没有这个页面，也没有代理会回答的这条路径。",
+        "err.play.413": "比代理自己愿意缓冲的还大；它有自己的上限，与引擎的那个分开。",
+        "err.play.502": "联系不上引擎；playground 会忘掉它的地址并重新寻找。",
+        "err.play.503": "还没有引擎就绪时的 /readyz：它会报出正在探测的候选地址。",
+        "err.play.503.post": "还没有引擎就绪时，向 /v1/systemone 发 POST。",
+        "err.id.note": "错误响应也带 x-typesafe-request-id；429 还带 retry-after-ms，好让重试等够正确的时间。",
+        "ref.title": "完整契约在哪里",
+        "ref.lead": "本页是上手用的摘要，不是契约。完整参考——每个字段、生成的 schema、官方 SDK、重试行为和模型名——在",
+        "ref.tail": "。docs/schema/ 下的机器可读 schema 由服务端模型本身生成，一旦不再一致 CI 就会失败，所以它们不会和实际运行的代码脱节。",
+        "foot.note": "三个游戏、本参考页和代理是同一个纯标准库程序；它唯一转发的就是 POST /v1/systemone。"
+      }
+    });
+
+    const $ = (id) => document.getElementById(id);
+
+    // --- the engine chip -------------------------------------------------------------
+    // The same `/api/config` poll the index page uses: the chip is shell furniture, so it
+    // says which engine is up rather than leaving the page looking for one forever.
+    let lastConfig = null;
+    let lastConfigError = null;
+
+    function renderStatus() {
+      const dot = $("dot");
+      const text = $("status-text");
+      if (lastConfigError !== null) {
+        dot.className = "dot err";
+        text.textContent = I18N.t("status.unreachable", { message: lastConfigError });
+        return;
+      }
+      if (!lastConfig) {
+        dot.className = "dot busy";
+        text.textContent = I18N.t("status.searching");
+        return;
+      }
+      if (lastConfig.ready) {
+        dot.className = "dot live";
+        text.textContent = I18N.t("status.ready", { engine: lastConfig.engine || "" });
+      } else {
+        dot.className = "dot warn";
+        text.textContent = I18N.t("status.searching");
+      }
+    }
+
+    async function refreshEngine() {
+      try {
+        const response = await fetch("/api/config", { cache: "no-store" });
+        lastConfig = await response.json();
+        lastConfigError = null;
+      } catch (error) {
+        lastConfig = null;
+        lastConfigError = error.message;
+      }
+      renderStatus();
+    }
+
+    // --- the try-it box --------------------------------------------------------------
+    // What it prints is the response, the status the browser saw, and the wall-clock time
+    // this page measured around the fetch. The engine's own `decis.latency_ms` is in the
+    // body and is server-side; the two are different measurements and both are labelled.
+    let lastTry = { kind: "idle" };
+
+    function renderTry() {
+      const status = $("try-status");
+      if (lastTry.kind === "idle") status.textContent = I18N.t("try.idle");
+      else if (lastTry.kind === "sending") status.textContent = I18N.t("try.sending");
+      else if (lastTry.kind === "done") status.textContent = I18N.t("try.status", { status: lastTry.status, ms: lastTry.ms });
+      else status.textContent = I18N.t(lastTry.key, lastTry.vars);
+    }
+
+    async function sendRequest() {
+      const button = $("try-send");
+      const output = $("try-response");
+      const requestId = $("try-id");
+      let payload;
+      try {
+        payload = JSON.parse($("try-request").value);
+      } catch (error) {
+        output.textContent = "";
+        requestId.textContent = "";
+        lastTry = { kind: "message", key: "try.badJson", vars: { message: error.message } };
+        renderTry();
+        return;
+      }
+
+      button.disabled = true;
+      output.textContent = "";
+      requestId.textContent = "";
+      lastTry = { kind: "sending" };
+      renderTry();
+
+      const started = performance.now();
+      let response = null;
+      let failure = null;
+      try {
+        response = await fetch("/v1/systemone", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+      } catch (error) {
+        failure = error.message;
+      }
+      const elapsed = Math.round(performance.now() - started);
+      button.disabled = false;
+
+      if (failure !== null) {
+        lastTry = { kind: "message", key: "try.noResponse", vars: { message: failure } };
+        renderTry();
+        return;
+      }
+
+      // The id the SDK requires is on every response, so it is worth showing next to the
+      // status rather than leaving a reader to open developer tools for it.
+      const header = response.headers.get("x-typesafe-request-id");
+      if (header) requestId.textContent = header;
+
+      // Assigned as text, never as markup: a body from the engine is data.
+      const body = await response.text();
+      let pretty = null;
+      try {
+        pretty = JSON.stringify(JSON.parse(body), null, 2);
+      } catch (error) {
+        pretty = null;
+      }
+      if (pretty === null) {
+        output.textContent = body;
+        lastTry = { kind: "message", key: "try.raw", vars: { status: response.status, ms: elapsed } };
+      } else {
+        output.textContent = pretty;
+        lastTry = { kind: "done", status: response.status, ms: elapsed };
+      }
+      renderTry();
+    }
+
+    I18N.onChange(renderStatus);
+    I18N.onChange(renderTry);
+    $("try-send").addEventListener("click", sendRequest);
+    renderTry();
+    refreshEngine();
+    setInterval(refreshEngine, 5000);
+  </script>
+</body>
+</html>

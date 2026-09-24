@@ -22,6 +22,7 @@
  *   <div data-lang-switch></div>                    <!-- the switch mounts itself -->
  *   <a data-back-link></a>                          <!-- "back to the playground" -->
  *   <a data-repo-link></a>                          <!-- this project on GitHub -->
+ *   <a data-docs-link></a>                          <!-- the API reference, in the repo -->
  *   <script>
  *     I18N.add({ en: { "score": "Score" }, zh: { "score": "得分" } });
  *     I18N.onChange(() => renderLabels());          // re-render dynamic text
@@ -47,7 +48,14 @@
   //: element and this mount finds nothing.
   var LINKS = [
     { attribute: "data-back-link", href: "/", key: "nav.back", className: "link-back" },
-    { attribute: "data-repo-link", href: REPO_URL, key: "nav.repo", className: "link-repo", external: true }
+    { attribute: "data-repo-link", href: REPO_URL, key: "nav.repo", className: "link-repo", external: true },
+    {
+      attribute: "data-docs-link",
+      href: REPO_URL + "/blob/master/docs/api.md",
+      key: "nav.docs",
+      className: "link-docs",
+      external: true
+    }
   ];
   var LANGS = [
     { code: "en", label: "EN", title: "English" },
@@ -63,6 +71,7 @@
       "nav.snake": "Snake",
       "nav.dino": "Dino",
       "nav.tetris": "Tetris",
+      "nav.api": "API",
       "status.searching": "Looking for the engine\u2026",
       "status.ready": "Connected to {engine}",
       "status.unreachable": "Playground unreachable: {message}",
@@ -102,6 +111,9 @@
       "nav.repo": "Decis",
       "nav.repo.title": "Decis on GitHub",
       "nav.repo.aria": "Decis on GitHub (opens in a new tab)",
+      "nav.docs": "API reference",
+      "nav.docs.title": "The full API reference in the repository",
+      "nav.docs.aria": "The full API reference in the repository (opens in a new tab)",
       "foot.adapted": "Games adapted from",
     },
     zh: {
@@ -109,6 +121,7 @@
       "nav.snake": "\u8d2a\u5403\u86c7",
       "nav.dino": "\u6050\u9f99",
       "nav.tetris": "\u4fc4\u7f57\u65af\u65b9\u5757",
+      "nav.api": "API",
       "status.searching": "\u6b63\u5728\u5bfb\u627e\u5f15\u64ce\u2026",
       "status.ready": "\u5df2\u8fde\u63a5 {engine}",
       "status.unreachable": "\u65e0\u6cd5\u8bbf\u95ee playground\uff1a{message}",
@@ -148,6 +161,9 @@
       "nav.repo": "Decis",
       "nav.repo.title": "Decis \u7684 GitHub \u4ed3\u5e93",
       "nav.repo.aria": "Decis \u7684 GitHub \u4ed3\u5e93\uff08\u65b0\u6807\u7b7e\u9875\u6253\u5f00\uff09",
+      "nav.docs": "API \u8bf4\u660e",
+      "nav.docs.title": "\u4ed3\u5e93\u91cc\u7684\u5b8c\u6574 API \u53c2\u8003",
+      "nav.docs.aria": "\u4ed3\u5e93\u91cc\u7684\u5b8c\u6574 API \u53c2\u8003\uff08\u65b0\u6807\u7b7e\u9875\u6253\u5f00\uff09",
       "foot.adapted": "\u6e38\u620f\u6539\u7f16\u81ea",
     }
   };
@@ -234,9 +250,10 @@
   /**
    * Fill in every tagged node under `root`.
    *
-   * `data-i18n` sets the text, `data-i18n-title` / `-aria-label` / `-placeholder` set that
-   * attribute. Text is assigned with `textContent`, never `innerHTML`: strings come from
-   * this file, but a translation is still not markup.
+   * `data-i18n` sets the text, `data-i18n-title` / `-aria-label` / `-placeholder` / `-alt` set
+   * that attribute (the last one is what a screen reader reads out for the screenshots on the
+   * index). Text is assigned with `textContent`, never `innerHTML`: strings come from this
+   * file, but a translation is still not markup.
    */
   function apply(root) {
     var scope = root || document;
@@ -247,7 +264,8 @@
     var attributes = [
       ["data-i18n-title", "title"],
       ["data-i18n-aria-label", "aria-label"],
-      ["data-i18n-placeholder", "placeholder"]
+      ["data-i18n-placeholder", "placeholder"],
+      ["data-i18n-alt", "alt"]
     ];
     for (var a = 0; a < attributes.length; a++) {
       var found = scope.querySelectorAll("[" + attributes[a][0] + "]");

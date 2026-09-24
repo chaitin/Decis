@@ -4,11 +4,13 @@
 #   docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me decis-playground
 #
 # Deliberately *not* built from `docker/Dockerfile`. The playground does not import
-# `decis`: it serves four HTML files and forwards `POST /v1/systemone` to whichever
-# engine answers `/readyz`, attaching the bearer token so the browser never holds it.
+# `decis`: it serves five HTML files -- three games, the index and `/api`, the API
+# reference -- and forwards `POST /v1/systemone` to whichever engine answers `/readyz`,
+# attaching the bearer token so the browser never holds it.
 # Its whole dependency tree is the standard library, so its image is a
-# `python:3.13-slim` plus about 150 KB of pages -- a few hundred MB smaller than any
-# engine image, and the reason it can be the one service that is always running.
+# `python:3.13-slim` plus about 270 KB of pages (the API page is the largest of them) and
+# 844 KB of recordings the index shows -- a few hundred MB smaller than any engine image,
+# and the reason it can be the one service that is always running.
 #
 # There is no `RUN` in this file on purpose: a cross-platform build then executes
 # nothing under emulation, so `linux/amd64,linux/arm64` build in seconds.

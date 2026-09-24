@@ -73,6 +73,11 @@ DEFAULT_CANDIDATES = (
 
 #: `/snake` and `/snake.html` both work: the first is what the reference project
 #: documents, the second is what a relative link from another page produces.
+#:
+#: `/api` is the human-facing reference page for the API itself, so it is deliberately the
+#: shortest thing a reader would guess. It is an exact match like every other key here, so
+#: it sits next to `/api/config` without shadowing it -- the JSON endpoints are answered in
+#: `do_GET` before this table is consulted.
 PAGES = {
     "/": "index.html",
     "/index.html": "index.html",
@@ -83,6 +88,8 @@ PAGES = {
     "/dino.html": "dino.html",
     "/tetris": "tetris.html",
     "/tetris.html": "tetris.html",
+    "/api": "api.html",
+    "/api.html": "api.html",
 }
 
 CONTENT_TYPES = {
@@ -92,6 +99,7 @@ CONTENT_TYPES = {
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    ".gif": "image/gif",
     ".ico": "image/x-icon",
 }
 

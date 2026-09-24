@@ -61,19 +61,29 @@ the service name at all, so a dependency on a stopped engine would fail to start
 
 ## Interface
 
-The four pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css)),
+The five pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css)),
 one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)) and one shell
 ([`playground/web/game.js`](../playground/web/game.js)). A page carries its own strings, its own
 board and its own options; the manual/AI switch, the inference panel, the console for the last
 call, the engine chip and the keyboard shortcuts come from the shell, so no page restates the
-palette or re-implements a mode control.
+palette or re-implements a mode control. Four of the five are games; `/api`
+([`playground/web/api.html`](../playground/web/api.html)) is the human-facing reference for the
+call they make — the endpoint, the three primitives, a real request/response pair captured from the
+snake page, a box that sends one of your own, the parameters, the limits and the errors. The index
+also carries one short recording per game ([`playground/web/media/`](../playground/web/media/)),
+taken from these pages in AI mode. The recorder (`.scratch/record_gif.py`) drops frames in which
+nothing changed and outlines the Start button on the one frame where it is held down — that
+outline is drawn by the recording tool, not by the page.
 
-The reading order is the same on all three games. The game bar carries the title, the live status,
-the score and the controls. Under it sit the board and the model's readout — except on dino, whose
-canvas is a wide side-scroller: there the run takes the full width and the model's next action goes
-underneath it. Below them both is one row of two panels: the inference panel, and the console for
-the last call, which starts **open**, request on the left and response on the right. The console
-collapses to a single line if you would rather watch the board.
+The reading order is the same on all three games: the game bar carries the title, the live status,
+the score and the controls; under it the board, the model's readout and the inference panel; below
+all of it the console with the last call, which starts **open**, request on the left and response on
+the right. Where the inference panel sits is the one thing the board decides. Snake and tetris have
+a readout column beside the board, so the panel goes at the foot of that column and the bottom row
+is the console alone, at the width of the game area. Dino's canvas is a wide side-scroller that
+takes the full width, with the model's three moves in a row underneath it, so its panel shares the
+bottom row with the console. The console collapses to a single line if you would rather watch the
+board.
 
 One switch (`M`) decides who plays: you, or the model. `enter` starts and pauses on every page
 and `R` resets. In manual mode snake and tetris take the arrow keys — `space` is the hard drop in
@@ -83,7 +93,10 @@ The inference panel is fed only by the API's own `usage` and the browser's clock
 throughput are end-to-end, because the contract has no server-side timing; p50 and p95 describe
 the last 200 calls, and a page that has not called anything yet shows dashes rather than a
 plausible-looking number. The console prints the body of the last `/v1/systemone` call as it went
-on the wire, next to the response or the error.
+on the wire, next to the response or the error. That body is exactly the three fields the contract
+defines — `state`, `model` and `questions`: the reference projects also sent `samples`, `steps` and
+`seed`, and those are gone, so what a reader copies out of the console is what
+[`docs/api.md`](api.md) documents.
 
 The interface is bilingual, English and Simplified Chinese. The language comes from
 `navigator.languages` unless `?lang=zh` says otherwise; the switch in the app bar overrides

@@ -41,6 +41,7 @@
       <a href="/snake" aria-current="page" data-i18n="nav.snake">Snake</a>
       <a href="/dino" data-i18n="nav.dino">Dino</a>
       <a href="/tetris" data-i18n="nav.tetris">Tetris</a>
+      <a href="/api" data-i18n="nav.api">API</a>
       <a data-repo-link></a>
     </nav>
     <span class="spacer"></span>
@@ -117,11 +118,12 @@
             </div>
           </div>
         </section>
+
+        <section class="panel" data-telemetry></section>
       </div>
     </div>
 
     <div class="game-under">
-      <section class="panel" data-telemetry></section>
       <details class="panel io-console" data-io-console></details>
     </div>
 
@@ -390,9 +392,6 @@ function simulateSystemOne(state) {
 async function requestDecision(state) {
   const reqBody = {
     model: "jev-latest",
-    samples: 1,
-    steps: 1,
-    seed: 42 + steps,
     state,
     questions: QUESTIONS_SCHEMA
   };

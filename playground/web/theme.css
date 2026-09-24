@@ -430,6 +430,20 @@ pre {
 
 .card p { margin: 10px 0 0; color: var(--ink-dim); font-size: 13px; }
 
+/* The recording of the game, at the top of its card. It is a capture of the real page, so it
+   gets the same border as everything else and no shadow or glow of its own; `height: auto`
+   keeps whatever aspect the capture had (`width`/`height` are on the tag, so the card does
+   not reflow while the GIF loads). */
+.card-shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 0 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
 .card .api {
   margin-top: 12px;
   font-family: var(--mono);
@@ -466,17 +480,47 @@ pre {
 .page-foot a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
 .page-foot a:hover { color: var(--ink); }
 
+/* ------------------------------------------------------- the reading column -- */
+/*
+ * The column a prose page reads in, with the heading treatment the index and the API
+ * reference share. It lived in both pages' own `<style>` blocks, which is two homes for one
+ * look (AGENTS.md §2) and two places to change when the accent gradient or the measure
+ * moves. A page may still narrow its own lede; neither of them does.
+ */
+
+.shell { width: 100%; max-width: 940px; margin: 0 auto; padding: 40px 20px 56px; }
+
+.hero { margin-bottom: 6px; }
+
+.hero h1 {
+  font-size: clamp(26px, 4.4vw, 40px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  font-weight: 700;
+  margin: 0;
+}
+
+.hero h1 .grad {
+  background: linear-gradient(100deg, var(--accent) 10%, var(--accent-3) 48%, var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.lede { color: var(--ink-dim); margin: 14px 0 0; max-width: 68ch; font-size: 14.5px; }
+
 /* ---------------------------------------------------------- the game chrome -- */
 /*
  * Everything a game page wraps around its board: the game bar, the score strip, the
  * manual/AI switch, the per-game options row, the stage and its readout column, and then
- * the row of call panels under both of them. It lives here, not in the three pages,
+ * the console for the last call under all of it. It lives here, not in the three pages,
  * because the whole point is that snake, dino and tetris are one product with three
  * boards -- the pages keep their layout constants (how wide their canvas is) and nothing
  * that appears twice (AGENTS.md §2).
  *
- * The reading order is the same on all three: title bar, board + what the model is
- * reading, then how the last call went (`.game-under`).
+ * The reading order is the same on all three: title bar, board, what the model is reading
+ * and how the call went (the inference panel sits with the readout), then the payload of
+ * the last call (`.game-under`).
  */
 
 .game-shell { width: 100%; max-width: 1080px; margin: 0 auto; padding: 22px 20px 44px; }
@@ -596,11 +640,13 @@ pre {
    `data-layout` on `.game-shell` picks the shape, because a board and a side-scroller do
    not want the same one:
 
-     * `board` (snake) -- square board left, model readout right, board centred in the room
-       it does not fill;
-     * `rail`  (tetris) -- board plus its next-piece rail, model readout right;
+     * `board` (snake) -- square board left, model readout plus the inference panel right,
+       board centred in the room it does not fill;
+     * `rail`  (tetris) -- board plus its next-piece rail, model readout plus the inference
+       panel right;
      * `stack` (dino) -- the canvas is a wide runner, so it takes the full width and the
-       readout sits underneath it. */
+       readout sits underneath it; with no readout column to put it in, the inference
+       panel stays beside the console (`.game-under`). */
 .game-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(296px, 348px);
@@ -615,16 +661,23 @@ pre {
 .game-shell[data-layout="rail"] .game-stage { align-items: center; }
 .game-shell[data-layout="stack"] .game-grid { grid-template-columns: minmax(0, 1fr); }
 
-/* The two panels that are about the *call* rather than the game: the inference panel and
-   the console, under the board, at the width of the game area. The console is the bigger
-   half -- it is the one a reader scrolls -- and shows the request and the response side by
-   side (`io-body` below). */
+/* The row under the game: in snake and tetris it is now only the console for the last call,
+   at the full width of the game area, because the inference panel moved into the readout
+   column above (`board` and `rail` below). Dino has no readout column -- its three moves
+   are a row of their own -- so there the inference panel rides along beside the console
+   instead of taking a full-width row to itself. The console is the one a reader scrolls,
+   and it shows the request and the response side by side (`io-body` below). */
 .game-under {
   display: grid;
   grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
   margin-top: 16px;
+}
+
+.game-shell[data-layout="board"] .game-under,
+.game-shell[data-layout="rail"] .game-under {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* The move/placement rows every game draws: one line per option, with its bar. */

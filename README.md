@@ -161,11 +161,19 @@ are in [Deployment](docs/deployment.md).
 ## Playground
 
 `docker compose up` also starts three browser games at <http://localhost:8080> — snake, dino
-and tetris. Each one can be played by hand from the keyboard or handed to the model: the
-manual/AI switch, the inference panel and the console for the last call are the same on all
-three, and in AI mode every decision is one real `/v1/systemone` call. The playground holds the
-API key server-side, so the pages never see it, and it finds the engine by itself. See
-[Playground](docs/playground.md), including the projects the games are adapted from.
+and tetris — plus a reference page for the API itself at `/api`. Each one can be played by hand
+from the keyboard or handed to the model: the manual/AI switch, the inference panel and the
+console for the last call are the same on all three, and in AI mode every decision is one real
+`/v1/systemone` call. The playground holds the API key server-side, so the pages never see it,
+and it finds the engine by itself. See [Playground](docs/playground.md), including the projects
+the games are adapted from.
+
+Each recording below is that page in AI mode, taken from this repository (real engine, CPU);
+frames in which nothing changed are dropped, so they run faster than the session they came from:
+
+| Snake | Dino | Tetris |
+|---|---|---|
+| ![The model choosing each move in snake](playground/web/media/snake.gif) | ![The model choosing jump, duck or run in dino](playground/web/media/dino.gif) | ![The model choosing a placement in tetris](playground/web/media/tetris.gif) |
 
 
 ## Documentation

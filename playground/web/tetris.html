@@ -193,6 +193,7 @@
       <a href="/snake" data-i18n="nav.snake">Snake</a>
       <a href="/dino" data-i18n="nav.dino">Dino</a>
       <a href="/tetris" aria-current="page" data-i18n="nav.tetris">Tetris</a>
+      <a href="/api" data-i18n="nav.api">API</a>
       <a data-repo-link></a>
     </nav>
     <span class="spacer"></span>
@@ -298,11 +299,12 @@
             <div id="st-survive" class="strat-cell"><span data-i18n="strat.short.survive">survive</span><span id="stp-survive">&mdash;</span></div>
           </div>
         </section>
+
+        <section class="panel" data-telemetry></section>
       </div>
     </div>
 
     <div class="game-under">
-      <section class="panel" data-telemetry></section>
       <details class="panel io-console" data-io-console></details>
     </div>
 
@@ -822,8 +824,6 @@ function buildRequest(gameInfo, placements) {
   return {
     state: buildState(gameInfo),
     model: MODEL,
-    steps: 1,
-    samples: 1,
     questions: buildQuestions(placements),
   };
 }

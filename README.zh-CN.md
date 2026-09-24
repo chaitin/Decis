@@ -147,10 +147,17 @@ make pull                    # 部署路径：拉发布镜像
 ## Playground
 
 `docker compose up` 还会在 <http://localhost:8080> 起三个网页小游戏——贪吃蛇、恐龙、俄罗斯
-方块。每个都可以用键盘自己玩，也可以交给模型：手动/AI 开关、推理面板和"最近一次调用"的控制台
-在三个页面上是同一套，AI 档下每个决策都真的发一次 `/v1/systemone`。API key 留在 playground
-服务端，页面永远拿不到；引擎也由它自己找到。见 [Playground](docs/playground.zh-CN.md)，
-包括游戏改编自哪些项目。
+方块，另外还有一个专门讲 API 的 `/api` 页面。每个游戏都可以用键盘自己玩，也可以交给模型：
+手动/AI 开关、推理面板和"最近一次调用"的控制台在三个页面上是同一套，AI 档下每个决策都真的发
+一次 `/v1/systemone`。API key 留在 playground 服务端，页面永远拿不到；引擎也由它自己找到。
+见 [Playground](docs/playground.zh-CN.md)，包括游戏改编自哪些项目。
+
+下面三段录屏就是这三个页面在 AI 档下的样子，取自本仓库（真引擎、CPU）；画面没变化的帧被丢掉了，
+所以比它录的那一次会话快：
+
+| 贪吃蛇 | 恐龙 | 俄罗斯方块 |
+|---|---|---|
+| ![贪吃蛇：模型逐步选方向](playground/web/media/snake.gif) | ![恐龙：模型选跳、蹲还是跑](playground/web/media/dino.gif) | ![俄罗斯方块：模型选落点](playground/web/media/tetris.gif) |
 
 
 ## 文档

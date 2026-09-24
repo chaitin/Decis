@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**658 通过 / 33 跳过**，约 25 秒，不联网）；
-> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **682 通过 / 28 跳过**（多出来的 24 个用例
+> **测试**：`uv run pytest -q` 跑无权重的那套（**669 通过 / 33 跳过**，约 29 秒，不联网）；
+> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **693 通过 / 28 跳过**（多出来的 24 个用例
 > 是引擎可用后才参数化出来的依赖分支）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
@@ -73,7 +73,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 名字 `docker-compose.override.yml` 就是机制：Compose 会自动把它叠在基文件上，于是**源码目录里
 > 裸 `docker compose up` 用本仓库源码构建 `decis-local:*`**，而部署只拷基文件、拉发布镜像。
 > `tests/test_compose.py` 不需要 docker daemon：image tag、profile、端口、鉴权、探针、构建覆盖层
-> 全部**从工作流 `plan` 脚本、Dockerfile 和 compose 文件本身读出来**比对，不抄常量。
+> 全部从工作流 `plan`、Dockerfile 与 compose 文件本身读出来比对，不抄常量。
 > **playground 是同一个 compose 里的第二个服务**，`profiles` 同时挂着两个引擎 id，所以它能起来
 > 不是因为"默认引擎也在跑"：它**不 `depends_on` 任何引擎**——没启用的 profile 其服务名在
 > Compose 网络里根本不解析，`depends_on` 会直接起不来。它靠**自己**按顺序打候选的 `/readyz`
@@ -82,8 +82,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 和引擎一样发布在所有网卡上（`.env.example` 给了只绑回环的写法）。`DECIS_PLAYGROUND_UPSTREAM`
 > 可以跳过搜索。它有自己的 `DECIS_PLAYGROUND_*` 变量，**不读引擎的 `env_file`**（那个文件里有
 > `DECIS_DEFAULT_ENGINE` 之类只对引擎有意义的键）。
-> **烤权重的镜像与 override 已实测**（2026-09-23，aarch64 本机，本次改动之后从源码构建的
-> `decis-local:laya-multilingual`，7.25 GB 解压后）：`docker compose up -d --wait` 起**一个容器**，
+> **烤权重的镜像与 override 已实测**（aarch64 本机，源码构建的 `decis-local:laya-multilingual`，7.25 GB 解压后）：`docker compose up -d --wait` 起**一个容器**，
 > 没有卷、没有预取服务、**日志里没有任何下载**，加载路径就是 `/models/laya-multilingual/multilingual`；
 > `engine laya-multilingual ready after 120.7s`，而 `--wait` 在 **129 s** 返回且返回时 `/readyz` 已是
 > **200**（§2-D22 的修法就是这么验的），常驻 **2.804 GiB**。容器内 `/v1/systemone` 真的作答
@@ -91,11 +90,9 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `x-typesafe-request-id`、`decis` 命名空间），`jev-latest` 被替换成 `decis/laya-multilingual@0.3.6`，
 > 无凭证 **403** / 错 key **401**、加载期间 `/readyz` 报 503 都复现；`docker compose config` 在
 > 两个方向（带/不带 override）都解析通过。
-> 构建期实测到两个环境事实，都写进了 `design-review.md §2-D23`：Docker **不把** shell 或 `.env` 里的
-> 代理带进 `RUN`（本地构建必须 `--build-arg HTTP_PROXY=...`），而代理 build arg **不进** BuildKit 的
-> 缓存键（重建复用了依赖层）。
-> **发布出去的镜像也实测过**（2026-09-23，`docker pull kingfs/decis:laya-multilingual-v0.0.1`，
-> arm64 digest `sha256:3d96587c…`，21 分钟 4.5 GB，走的是本机那个代理）：容器起来后**日志里
+> 两个环境事实写进了 `design-review.md §2-D23`：Docker **不把** shell 或 `.env` 里的代理带进 `RUN`
+> （本地构建必须 `--build-arg HTTP_PROXY=...`），而代理 build arg **不进** BuildKit 缓存键。
+> **发布出去的镜像也实测过**（`docker pull kingfs/decis:laya-multilingual-v0.0.1`，arm64，走本机那个代理，21 分钟）：容器起来后**日志里
 > 0 条下载**，从 `/models/laya-multilingual/multilingual` 加载，`ready after 122.3s`，
 > `/readyz` 131 s 变 200，常驻 2.87 GiB，`/v1/systemone` 的 `noul` 与本地自建镜像
 > **逐位相同**（0.0107），403/401 与 `/v1/models` 都对。registry 里 7 个 `mock*` tag
@@ -103,7 +100,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **未验证**：`-runtime` 变体只验证了"能构建、能合并、体积对"，**没有拉下来跑过**（烤权重那个跑了）；
 > kev 镜像的容器内冷启动（没在容器里起过 kev）、kev 的 compose 路径（只跑了 laya）。
 > 报镜像相关的结论时不要超出这个范围。
-> **playground 已实测**（2026-09-23，同一台 aarch64 本机）：`docker build -f playground/Dockerfile` 成功
+> **playground 已实测**（同一台 aarch64 本机）：`docker build -f playground/Dockerfile` 成功
 > （没有 `RUN`，所以不装任何依赖），镜像直接跑在一个自建 bridge 网络上、旁边是
 > `kingfs/decis:laya-multilingual-v0.0.1`；它**自己**从候选里找到了 `http://decis-test-engine:8000`，
 > `/readyz` 报 `{"status":"ready","engine":"laya-multilingual"}`，`/`、`/snake`、`/dino`、`/tetris`
@@ -115,24 +112,19 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 的 config 提供而非代码默认）：snake 的 head 79 / 序列 287，dino 78 / 128，tetris 的四个问题
 > 分别 178、100、97、69，state 233、序列 415——**全部落在代码兜底的 512/192 之内**。
 > 正是这个测量把 tetris 的落点候选从 6 压到 5：6 个约 207 > 192。
-> **playground 的界面（统一外壳之前那一版）已实测**（2026-09-23，headless Chromium 1223 走 CDP，工具是 `.scratch/webcheck.py`；
-> 页面连的是本机 8299 上那个替身引擎，所以棋真的在下）：四个页面 × 中英各跑一遍（`.scratch/final_sweep.py`
-> 一把跑完八次并把结果留在 `.scratch/final_sweep.json`），**`bad` 全空**——没有未捕获异常、没有 console
-> 输出、没有横向溢出（`documentScrollWidth == viewport`）、没有看不见的字、每个 canvas 都真有像素
-> （snake 1 个、dino 4 个、tetris 2 个）。窄视口也是实测的：**四个页面在 380 与 700 都验过**
-> （索引页另有 420/1024，tetris 另有 400/420/460）。对比度按 WCAG AA 逐节点算（渐变取平均色、
-> 半透明逐层合成，**是近似不是读数**）：index 34 / snake 50 / dino 61–62 / tetris 66 个样本，
-> **没有一个低于阈值**。语言行为也是实测的：`--lang=zh-CN` 起的浏览器**不带参数进来就是中文**，
-> `?lang=en` 覆盖它，点顶栏开关切换后**刷新仍是切换后的语言**。真实页面在浏览器里发出的请求被
-> 替身引擎记了下来：snake 9 次 `move`、dino 28 次 `action`、tetris 8 次四问，`state`/`instructions`/
-> `criteria` 仍是英文原文，tetris 的落点候选**恰好 5 个**。
-> **那一轮验证抓到并修掉两个真实缺陷**，两个都不是改版引入的、是原来就在的：
-> 一是 tetris 的"最近一次调用"面板把候选数写成**字面量 6**——短名单从 6 压到 5 时这句没跟着改，
-> 于是页面显示比它实际发出去的选项多一个；二是 tetris 在 380–430px 会横向溢出（stage 是 282px
-> 棋盘 + 96px 侧栏，而媒体查询只把外层压成一列），已加 440px 断点让 stage 竖排、操作栏换行。
-> 统一外壳之后前者那块面板没有了（控制台直接印发出去的请求体），于是守卫改成盯住"请求仍按
-> `PLACEMENT_SHORTLIST` 定量"，且 `Math.min(5|6|16, …)` 这种二次写法不存在。
-> **三个页面的外壳已统一并重新实测**（同一台机器，headless Chromium 1223 走 CDP）：
+> **playground 的界面（统一外壳之前那一版）已实测**（headless Chromium 走 CDP，工具 `webcheck.py`，
+> 页面连本机 8299 上的替身引擎，所以棋真的在下）：四页 × 中英各跑一遍（`final_sweep.py`，结果留在同名
+> JSON）**`bad` 全空**——无未捕获异常、无 console 输出、无横向溢出（`documentScrollWidth == viewport`）、
+> 无看不见的字、每个 canvas 都真有像素；窄视口四页在 380 与 700 都验过。对比度按 WCAG AA 逐节点算
+> （渐变取平均色、半透明逐层合成，**是近似不是读数**），没有一个样本低于阈值。语言行为：`--lang=zh-CN` 起的
+> 浏览器不带参数进来就是中文，`?lang=en` 覆盖它，点顶栏开关切换后刷新仍是切换后的语言。页面发出的请求
+> 被替身引擎记下：snake 9 次 `move`、dino 28 次 `action`、tetris 8 次四问，`state`/`instructions`/
+> `criteria` 仍是英文原文，tetris 的落点候选恰好 5 个。**这一轮抓到并修掉两个真实缺陷**（都不是改版引入的）：
+> tetris 的"最近一次调用"面板把候选数写成字面量 6（短名单从 6 压到 5 时漏改，页面显示比实际发出去的多一个）；
+> tetris 在 380–430px 横向溢出（stage 是 282px 棋盘 + 96px 侧栏，媒体查询只压了外层），已加 440px 断点
+> 让 stage 竖排、操作栏换行。统一外壳之后前者那块面板没有了（控制台直接印发出去的请求体），守卫改成盯住
+> "请求仍按 `PLACEMENT_SHORTLIST` 定量"且不存在 `Math.min(5|6|16, …)` 这种二次写法。
+> **三个页面的外壳已统一并重新实测**（headless Chromium 走 CDP）：
 > 手动/AI 是**一个开关**（`data-ai-switch`，快捷键 `M`），推理面板的延迟与吞吐只由真实 `usage`
 > 和浏览器时钟算出（延迟是客户端端到端，吞吐 `(input + output) / latency`，p50/p95 取最近
 > 200 次，第一次调用之前显示破折号），"最近一次调用"在一个可折叠的控制台里、印的是**发出去的
@@ -185,6 +177,57 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 150 秒**：36 次调用 0 失败、每次约 3.0 s、**四种旋转都真的被选中**（rot0 11 / rot1 16 / rot2 4 /
 > rot3 4），面板每一帧都是混合朝向；但 35 个方块**一行都没消除**，最后 game over。所以"它不会旋转"
 > 这个现象修掉了；"Laya 玩得好不好"是另一个问题，这一轮只有这一次运行的数据，不下结论。
+> **这一轮按用户对布局/文案/文档/录屏的四点反馈又改了一遍**（同一台机器，真引擎
+> `laya-multilingual` 在 `:8000`，页面由源码树里的 `playground/server.py` 起在 `:8200` 上对着它跑；
+> 之所以用 8200 而不是用户 compose 里那个 8080，是因为 8080 是旧镜像，新页面必须先重建才对得上）。
+> **布局**：贪吃蛇与俄罗斯方块的推理面板从 `.game-under` 移进棋盘旁的读数列（`.game-side` 末尾，
+> 在"模型读数"下面），`.game-under` 在这两页只剩控制台一行、占满游戏区宽度；恐龙没动——它没有
+> 读数列（三行动作就是它那一行），面板仍与控制台并排。守卫不再手抄一张表：`test_every_game_mounts_the_shared_shell`
+> 从页面自己声明的 `data-layout` 和 theme.css 里那条把 `.game-under` 压成单列的规则**双向**读出来，
+> 页面与样式表不一致就红。几何用
+> `.scratch/layout_probe.py` 量（10 次运行 ALL OK）：1440 下贪吃蛇 `.game-under` 1040×123、控制台
+> x=200 宽 1040、推理面板 (892,334) 在读数列里，俄罗斯方块同形（棋盘 380×760），恐龙两块面板并排
+> (200,572)/(516,572)，≤700 竖排。
+> **修掉两个真实缺陷**：一是三个页面的请求体里还带着参考项目留下的 `samples`/`steps`/`seed`——
+> 契约里没有这三个字段，而 pydantic 默认 `extra="ignore"`，所以它们一直静默地跟着请求上线；现在
+> 请求体只有 `state`/`model`/`questions`（抓手是抓下来的真实请求体：键集合就是这三个，控制台长度
+> snake 1439/1437、dino 712/694、tetris 3217/3207 字符），`docs/playground.md` 双向写明。二是新增的
+> `/api` 页在 380px 横向溢出（三列表格里 `authentication_error` / `DECIS_REQUEST_TIMEOUT_MS` 这种
+> 不可断的词把 `table.fields` 撑到 475px > 380，webcheck 的 audit 报
+> `overflows the viewport: table.fields [35..475] vw=380`）：加 `table.fields td { overflow-wrap: anywhere }`
+> 后 380 与 320 都 `bad` 全空、对比度 81 个样本 0 不合格。**顺带发现我的量尺有 bug**：
+> `window.innerWidth` 在窄档不是布局宽度（Chromium 窗口有约 475px 的平台下限，`--window-size`
+> 下不去，emulation 只改 `documentElement.clientWidth`/`visualViewport`），所以 `layout_probe.py`
+> 之前拿 `scrollWidth` 比的是 475——一个真溢出的页面会看起来干净。`webcheck.py` 的 audit 一直用的是
+> `clientWidth`（因此 final_sweep / uisweep 的历史结论不受影响），`layout_probe.py` 已改成 clientWidth。
+> **新页面 `/api`**（`playground/web/api.html`，`server.py` 的 `PAGES` 里同时有 `/api` 与 `/api.html`，
+> 因为 `_page_for` 是精确匹配、`/api/config` 在它之前分支，两者不互相遮蔽）：七段——端点是哪个；
+> 三个原语各一段 shape；**一对真抓下来的**请求/响应（`.scratch/api_example_{request,response}.json`，页面里逐字嵌入）；一个真的会发的 "try it"（浏览器里实测
+> HTTP 200 / 809 ms、带 `x-typesafe-request-id req_6c3ca52c…`、真回答 `decis/laya-multilingual@0.3.6`
+> 的 `answers.move.choice`）；参数与上限（四个上限**不印数值**，指向 `GET /v1/models`，并说明这个 origin
+> 只代理 `/v1/systemone`）；错误（两张三列表：引擎那 9 行与 `docs/api.md` 的表**逐行对照**，
+> 新守卫 `test_the_api_page_lists_the_errors_the_contract_lists` 会红；playground 自己的 400/404/413/502/503
+> 另列，且断言的 `error_type` 必须在 `server.py` 里真的出现）；文档链接（`data-docs-link` 挂载，仓库 URL
+> 只有 `i18n.js` 一份）。i18n 71 键/语言，浏览器里中英各跑一遍 `bad` 全空。
+> **文案**：索引页的状态提示不再印 `上游 http://… · 每一步都是向它发一次 POST`（引擎 id 已经在旁边的
+> chip 里、lede 里也说过一次），改成一行"怎么用"：挑游戏、空格开始、游戏栏的开关切手动。
+> **共享**：`.shell`/`.hero`/`.hero h1(.grad)`/`.lede` 原来在 index 与 api 两份页面 `<style>` 里各一份，
+> 已搬进 `theme.css`，并加守卫 `test_the_reading_column_has_one_home`；i18n 新增 `data-i18n-alt`
+> （图片 alt 用）与 `data-docs-link`/`nav.api`/`nav.docs`。
+> **录屏**：工具是 `.scratch/record_gif.py`（CDP `Page.startScreencast`，取不到帧就回退到
+> `Page.captureScreenshot` 轮询；共享 255 色 MEDIANCUT 调色板；每帧时长 = 真实间隔），
+> 三段真页面录屏放在 `playground/web/media/`（snake 1104×1131 / 34 帧 / 204.5 KiB、dino 1104×1059 /
+> 52 帧 / 478.8 KiB、tetris 1104×1391 / 12 帧 / 160.5 KiB，都是 AI 档、真引擎、以 Start 那一按开头），
+> 两个 README 与索引页卡片都引用它们；`server.py` 补了 `.gif` 的类型，守卫按 GIF 文件头读出真实尺寸
+> 跟标签上的 `width`/`height` 比对（`test_the_recordings_the_index_shows_are_in_the_repository_and_served`），
+> `docs/playground.md` 双向注明录屏会丢静止帧、并且 Start 上那圈边框是录制工具画的。
+> **这一轮的 sweep**：`final_sweep.py --narrow` 30 次运行（五页 × 中英 × 1440/380/700）`bad` 全空
+> （顺带修掉那个脚本的一个坑：`START[page]` 遇到新页面直接 `KeyError`，于是上一轮的 JSON 被留在原地、
+> 看起来像"这一轮也跑过了"——现在是 `START.get`）；`uisweep.py` 6 次交互运行 `bad` 全空（AI 档真在调用、
+> 手动档不再调用、切语言正常，telemetry 有真数：snake 778 ms / 285→34 tok、dino 1542 ms、tetris
+> 3100 ms / 1386→198 tok）；**`make build-playground && make up-playground` 之后在用户那个 8080 容器上
+> 又跑一遍，同样 `bad` 全空**（snake 532 ms / 283→33 tok、dino 639 ms、tetris 1699 ms / 1414→197 项），
+> 也就是说这一轮改的东西真到了那个容器里。
 > **playground 未验证**：没有用 `docker compose up` 起过（是 `docker run` 起在等价网络上），
 > 所以 compose 的 profile 交互与健康检查只经 `docker compose config` 校验；kev profile 下没跑过；
 > 那条 CI job 也还没在 GitHub 上跑过。界面这一层**没有任何人眼看过**（截图在 `.scratch/shots/`，
@@ -366,7 +409,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：658 通过 / 33 跳过，约 25 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：669 通过 / 33 跳过，约 29 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）

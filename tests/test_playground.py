@@ -28,7 +28,7 @@ from playground import server as playground
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "playground" / "web"
-PAGES = ("index.html", "snake.html", "dino.html", "tetris.html")
+PAGES = ("index.html", "snake.html", "dino.html", "tetris.html", "api.html")
 
 #: Bypasses the proxy environment for the same reason `playground/server.py` does: a
 #: loopback test that asks `HTTP_PROXY` for `127.0.0.1` gets a 502 on a host that has one.
@@ -495,6 +495,56 @@ def test_every_page_marks_up_its_translatable_text(name: str) -> None:
     assert "I18N.add(" in text, f"{name} declares no strings of its own"
 
 
+#: The reading column the two prose pages share. It lived in both of their own `<style>`
+#: blocks, which is two homes for one look and two places to change when the accent gradient
+#: or the measure moves (AGENTS.md §2).
+SHARED_PAGE_STYLE = (".shell", ".hero", ".hero h1", ".hero h1 .grad", ".lede")
+
+
+def test_the_api_page_lists_the_errors_the_contract_lists() -> None:
+    """The error table on `/api` is a restatement, so it is checked against its source.
+
+    A page that enumerates status codes is exactly the kind of second home that goes stale the
+    day a code is added, and a reader has no way to tell (AGENTS.md §2). The engine's rows are
+    therefore compared with the table in `docs/api.md`, which any contract change has to touch
+    anyway, and the playground's own rows have to name shapes `playground/server.py` really
+    answers -- a weaker check than the contract one, because those answers are spread over the
+    proxy's branches, but enough to catch a renamed or invented `error_type`.
+    """
+    contract = set()
+    for line in (ROOT / "docs" / "api.md").read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\|\s*\*\*(\d{3})\*\*\s*\|\s*([^|]+?)\s*\|", line)
+        if match:
+            kind = match.group(2).strip().strip("`")
+            contract.add((match.group(1), None if kind in {"—", "-"} else kind))
+    assert len(contract) >= 9, f"docs/api.md no longer has an error table to compare with: {contract}"
+
+    page = (WEB / "api.html").read_text(encoding="utf-8")
+    before, _, after = page.partition('data-i18n="err.play.title"')
+    assert after, "api.html no longer separates the engine's errors from the playground's"
+    row = r'<td class="status"><span class="tag">(\d{3})</span></td>\s*<td class="mono">([a-z_]+|&mdash;)</td>'
+    engine = {(status, None if kind == "&mdash;" else kind) for status, kind in re.findall(row, before)}
+    assert engine == contract, f"/api and docs/api.md disagree: {engine ^ contract}"
+
+    server = (ROOT / "playground" / "server.py").read_text(encoding="utf-8")
+    own = {(status, kind) for status, kind in re.findall(row, after) if kind != "&mdash;"}
+    assert own, "/api claims nothing about the playground's own answers"
+    for status, kind in own:
+        assert f'"{kind}"' in server, f"/api promises a {status} {kind}, which the playground never answers"
+
+
+def test_the_reading_column_has_one_home() -> None:
+    css = (WEB / "theme.css").read_text(encoding="utf-8")
+    for selector in SHARED_PAGE_STYLE:
+        assert re.search(rf"(?m)^{re.escape(selector)} \{{", css), f"theme.css does not define {selector}"
+    for name in PAGES:
+        style = (WEB / name).read_text(encoding="utf-8").split("<style>", 1)[-1].split("</style>", 1)[0]
+        for selector in SHARED_PAGE_STYLE:
+            assert not re.search(rf"(?m)^\s*{re.escape(selector)}\s*\{{", style), (
+                f"{name} defines {selector} locally, but theme.css is where it lives"
+            )
+
+
 def test_the_shared_assets_are_served(playground_url: str) -> None:
     """`theme.css`, `i18n.js` and `game.js` are served by the same file rule as the pages."""
     for path, content_type in (
@@ -508,6 +558,35 @@ def test_the_shared_assets_are_served(playground_url: str) -> None:
         assert len(body) > 500, path
     # The rule that serves them still refuses to walk out of the web directory.
     assert get(playground_url + "/../server.py")[0] == 404
+
+
+def test_the_recordings_the_index_shows_are_in_the_repository_and_served(playground_url: str) -> None:
+    """The three recordings are real files, served as images, at the size the page claims.
+
+    The index is the page a person lands on, and a recording there is the one thing on it that
+    cannot be checked by reading prose: a name nothing validates is how a landing page ends up
+    with a broken image (`docs/design-review.md §2-D15`). The `width`/`height` on the tag is
+    what reserves the room before the GIF loads, so it has to be the file's own size rather
+    than a round number someone typed -- the dimensions are read out of the GIF header here.
+    """
+    text = (WEB / "index.html").read_text(encoding="utf-8")
+    shots = re.findall(r'<img class="card-shot" src="/media/([a-z0-9_-]+\.gif)" width="(\d+)" height="(\d+)"', text)
+    assert len(shots) == 3, f"the index does not show three recordings: {shots}"
+    assert {name for name, _, _ in shots} == {"snake.gif", "dino.gif", "tetris.gif"}
+    for name, width, height in shots:
+        path = WEB / "media" / name
+        assert path.is_file(), f"the index shows {name}, which is not in the repository"
+        header = path.read_bytes()[:10]
+        assert header[:6] in (b"GIF87a", b"GIF89a"), f"{name} is not a GIF"
+        real = (int.from_bytes(header[6:8], "little"), int.from_bytes(header[8:10], "little"))
+        assert real == (int(width), int(height)), f"{name} is {real[0]}x{real[1]}, the tag says {width}x{height}"
+        status, headers, body = get(playground_url + f"/media/{name}")
+        assert status == 200, f"{name} is not served"
+        # A browser draws nothing from `application/octet-stream`, and this is the only place
+        # the extension-to-type table is exercised for an image.
+        assert headers["content-type"].startswith("image/gif"), headers["content-type"]
+        assert body == path.read_bytes(), f"{name} is served differently from what is committed"
+    assert playground.CONTENT_TYPES.get(".gif") == "image/gif"
 
 
 # --- one shell for the three games --------------------------------------------------
@@ -541,16 +620,54 @@ def test_every_game_mounts_the_shared_shell(name: str) -> None:
     assert 'id="mode-select"' not in text, f"{name} grew its own mode control"
     assert "refreshEngine(" not in text, f"{name} polls the engine itself instead of using game.js"
     assert "GameShell.mode()" in text, f"{name} does not ask the shell which mode is selected"
-    # The two panels about the *call* are one row under the game area (`.game-under` in
-    # theme.css): telemetry, then the console, each mounted once. The console prints the last
-    # request and the last response side by side, which is what this playground is for, so it
-    # does not live in the narrow readout column next to the board.
+    # Where the two panels about the *call* sit is the page's shape, and the page declares
+    # its shape (`data-layout`), so this reads the placement out of the page and the
+    # mechanism out of the stylesheet rather than carrying a table of its own (AGENTS.md §9).
+    # A game with a readout column beside the board (snake, tetris) puts the inference panel
+    # in that column, under the model's readout, and its under row is the console alone at
+    # the full width of the game area. Dino has no readout column -- its three moves are a
+    # row of their own -- so there its inference panel stays in the under row, beside the
+    # console, and the stylesheet keeps that row two columns wide.
     assert text.count('<div class="game-under">') == 1, f"{name} has no single call-panel row"
     assert text.count("data-telemetry") == 1 and text.count("data-io-console") == 1, name
     under = text.index('<div class="game-under">')
-    assert text.index('class="game-grid"') < under < text.index("data-telemetry") < text.index("data-io-console"), (
-        f"{name} puts the call panels somewhere other than under the board"
+    assert text.index('class="game-grid"') < under, f"{name} puts the call panels above the board"
+    assert text.index("data-io-console") > under, f"{name} puts the console outside the call-panel row"
+    row = text[under : text.index("</div>", text.index("data-io-console"))]
+    if _layout(name) in _layouts_that_keep_the_panel_in_the_readout_column():
+        assert text.index('class="game-side"') < text.index("data-telemetry") < under, (
+            f"{name} does not put the inference panel in the readout column above the console"
+        )
+        assert "data-telemetry" not in row, f"{name} has the inference panel in two places"
+    else:
+        assert text.index("data-telemetry") > under, f"{name} has no readout column to put the panel in"
+
+
+def _layout(name: str) -> str:
+    """Which shape the page declares for itself (`data-layout` on `.game-shell`)."""
+    match = re.search(r'<main class="game-shell" data-layout="([a-z]+)">', (WEB / name).read_text(encoding="utf-8"))
+    assert match, f"{name} does not declare a layout"
+    return match.group(1)
+
+
+def _layouts_that_keep_the_panel_in_the_readout_column() -> set[str]:
+    """The layouts whose under row is the console alone -- read from the rule that does it.
+
+    The mapping has to agree in both directions: a page that moves the inference panel into
+    its readout column while the stylesheet still lays that row out in two columns leaves a
+    300px hole next to the console, and the reverse leaves the panel squeezed into a column
+    it no longer belongs to.
+    """
+    css = (WEB / "theme.css").read_text(encoding="utf-8")
+    rule = re.search(
+        r'([^{}]*\.game-shell\[data-layout="[a-z]+"\] \.game-under[^{}]*)\{\s*'
+        r"grid-template-columns: minmax\(0, 1fr\);\s*\}",
+        css,
     )
+    assert rule, "theme.css no longer collapses the call-panel row for any layout"
+    layouts = set(re.findall(r'data-layout="([a-z]+)"', rule.group(1)))
+    assert len(layouts) >= 1, "the rule names no layout"
+    return layouts
 
 
 def test_the_shell_opens_the_console_and_each_page_leaves_it_alone() -> None:
@@ -846,7 +963,7 @@ def _i18n_usages(text: str) -> tuple[set[str], set[str]]:
     """
     literals: set[str] = set()
     families: set[str] = set()
-    for match in re.finditer(r'data-i18n(?:-title|-aria-label)?="([^"]+)"', text):
+    for match in re.finditer(r'data-i18n(?:-title|-aria-label|-placeholder|-alt)?="([^"]+)"', text):
         literals.add(match.group(1))
     for match in re.finditer(r"I18N\.t\(", text):
         head = _i18n_head(_i18n_argument(text, match.end() - 1))

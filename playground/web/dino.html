@@ -64,6 +64,7 @@
       <a href="/snake" data-i18n="nav.snake">Snake</a>
       <a href="/dino" data-i18n="nav.dino" aria-current="page">Dino</a>
       <a href="/tetris" data-i18n="nav.tetris">Tetris</a>
+      <a href="/api" data-i18n="nav.api">API</a>
       <a data-repo-link></a>
     </nav>
     <span class="spacer"></span>
@@ -1069,8 +1070,6 @@ Action analysis:
 - run: ${dynamicCriteria.run}`;
       return {
         model: "jev-latest",
-        samples: 1,
-        steps: 1,
         state,
         questions: STATIC_QUESTIONS,
         _uiCriteria: dynamicCriteria
@@ -1177,8 +1176,6 @@ Action analysis:
       // criteria and is not sent, so the console is shown this object and not `payload`.
       const sent = {
         model: payload.model,
-        samples: payload.samples,
-        steps: payload.steps,
         state: payload.state,
         questions: payload.questions
       };
