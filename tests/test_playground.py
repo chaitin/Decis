@@ -428,12 +428,15 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     for hardcoded in ("slice(0, 6)", "slice(0, 16)", "slice(0, 5)"):
         assert hardcoded not in text, f"tetris.html hardcodes the shortlist as {hardcoded}"
     assert text.count("PLACEMENT_SHORTLIST") >= 3, "the constant is declared but no longer used"
-    # The panel that reports the option count has to read the same constant. When the
-    # shortlist was cut from six to five this label kept a literal `6`, and the page went
-    # on claiming one option more than it sent -- a hand-copied constant, which is the
-    # failure this whole guard exists for (AGENTS.md §9).
-    meta = text.split('I18N.t("json.meta"', 1)[1].split("});", 1)[0]
-    assert "PLACEMENT_SHORTLIST" in meta, "the option count in the UI is written out again"
+    # The page used to carry its own copy of the count in a "last call" panel, and when the
+    # shortlist was cut from six to five that label kept a literal `6`: the page went on
+    # claiming one option more than it sent (AGENTS.md §9). There is no such label now --
+    # the shared I/O console prints the body that actually went on the wire -- so what is
+    # left to guard is that the request still sizes itself from the constant, and that the
+    # console is fed the request itself rather than a summary of it.
+    assert "GameShell.observe({ request," in text, "the console is no longer fed the request as sent"
+    body = text.split("function buildQuestions(", 1)[1].split("\n}", 1)[0]
+    assert "PLACEMENT_SHORTLIST" in body, "the request no longer sizes its options from the constant"
     # Only the shortlist's own values, not every clamp in the file: `Math.min(100, pct)` is
     # arithmetic, `Math.min(6, …)` is the shortlist written out a second time.
     leftover = re.search(r"Math\.min\(\s*(?:5|6|16)(?!\d)", text)
@@ -475,14 +478,116 @@ def test_every_page_marks_up_its_translatable_text(name: str) -> None:
 
 
 def test_the_shared_assets_are_served(playground_url: str) -> None:
-    """`theme.css` and `i18n.js` are served by the same file rule as the pages."""
-    for path, content_type in (("/theme.css", "text/css"), ("/i18n.js", "text/javascript")):
+    """`theme.css`, `i18n.js` and `game.js` are served by the same file rule as the pages."""
+    for path, content_type in (
+        ("/theme.css", "text/css"),
+        ("/i18n.js", "text/javascript"),
+        ("/game.js", "text/javascript"),
+    ):
         status, headers, body = get(playground_url + path)
         assert status == 200, path
         assert headers["content-type"].startswith(content_type), path
         assert len(body) > 500, path
     # The rule that serves them still refuses to walk out of the web directory.
     assert get(playground_url + "/../server.py")[0] == 404
+
+
+# --- one shell for the three games --------------------------------------------------
+#
+# The three games are three boards around one API call, so the things that are not the
+# board -- the manual/AI switch, the inference panel, the I/O console, the engine chip and
+# the keyboard shortcuts -- have exactly one implementation (`game.js`) and every game page
+# uses it (AGENTS.md §2). These guards are textual because CI has no browser; the rendering
+# and the interaction are audited for real with `.scratch/final_sweep.py` (every page, both
+# languages, three viewport widths) and `.scratch/uisweep.py` (switch, keys, telemetry).
+
+GAMES = ("snake.html", "dino.html", "tetris.html")
+
+#: What `game.js` paints, so a page must provide every one of these or the shell draws into
+#: a hole. The switch, the telemetry panel and the console are mount points, not ids.
+SHELL_MOUNTS = ("data-ai-switch", "data-telemetry", "data-io-console")
+SHELL_IDS = ("game-dot", "game-status-text", "btn-start", "btn-reset", "dot", "status-text")
+
+
+@pytest.mark.parametrize("name", GAMES)
+def test_every_game_mounts_the_shared_shell(name: str) -> None:
+    text = (WEB / name).read_text(encoding="utf-8")
+    assert 'src="/game.js"' in text, f"{name} does not load the shared game shell"
+    for mount in SHELL_MOUNTS:
+        assert mount in text, f"{name} has no {mount}"
+    for element_id in SHELL_IDS:
+        assert f'id="{element_id}"' in text, f"{name} has no #{element_id} for the shell to paint"
+    assert "GameShell.init(" in text, f"{name} never initialises the shell"
+    # Every page talks to the playground's own proxy; a page that renders its own switch,
+    # its own engine poll or its own call console is the second implementation §2 forbids.
+    assert 'id="mode-select"' not in text, f"{name} grew its own mode control"
+    assert "refreshEngine(" not in text, f"{name} polls the engine itself instead of using game.js"
+    assert "GameShell.mode()" in text, f"{name} does not ask the shell which mode is selected"
+
+
+@pytest.mark.parametrize("name", GAMES)
+def test_no_game_reports_a_performance_number_it_did_not_measure(name: str) -> None:
+    """Latency, tokens and throughput are measured by the shell or not shown at all.
+
+    AGENTS.md §8: a number in the interface has to come from a measurement. dino used to
+    draw two charts with placeholder latencies (116 ms / 139 ms) and a "benchmark
+    comparison" it had never run; those are gone, and this is what keeps them gone.
+    """
+    text = (WEB / name).read_text(encoding="utf-8")
+    for placeholder in ("116 ms", "139 ms", "Benchmark comparison", "m-ms", "m-pipeline"):
+        assert placeholder not in text, f"{name} still carries {placeholder!r}"
+    # The shell is the only thing that counts a call or a token.
+    assert "GameShell.observe(" in text, f"{name} never reports its call to the shell"
+
+
+def test_the_game_bar_is_the_same_on_every_game() -> None:
+    """One layout: title, status, score strip, switch, start/reset -- in that order.
+
+    The games differ in their numbers and their extra options; the primary bar is what a
+    person reads first, and it has to look the same on all three or the playground reads
+    as three different toys (the state this replaces).
+    """
+    bars = {}
+    for name in GAMES:
+        text = (WEB / name).read_text(encoding="utf-8")
+        bar = text.split('<div class="game-bar">', 1)[1].split("</div>\n\n", 1)[0]
+        bars[name] = [part.strip() for part in re.findall(r'class="(game-id|score-strip|top-actions)"', bar)]
+        assert text.count('class="game-bar"') == 1, name
+        assert 'class="game-title"' in bar, name
+        assert 'id="game-status-text"' in bar, name
+        assert 'class="metric-val"' in bar, name
+    assert len(set(map(tuple, bars.values()))) == 1, bars
+    # The three pages share one title style, so the game's name is the whole <h1> and the
+    # engine is announced once, by the chip in the app bar.
+    for name in GAMES:
+        text = (WEB / name).read_text(encoding="utf-8")
+        title = text.split('class="game-title"', 1)[1].split("</h1>", 1)[0]
+        assert "System One" not in title, f"{name} repeats the engine in the game title"
+
+
+def test_the_app_bar_is_the_same_on_every_page() -> None:
+    """The chip, the nav and the language switch are the shell's, not a page's."""
+    heads = {}
+    for name in PAGES:
+        text = (WEB / name).read_text(encoding="utf-8")
+        head = text.split('<header class="app-bar">', 1)[1].split("</header>", 1)[0]
+        # Three things may differ, and only three: which nav link is the current page, the
+        # index page's own id on the chip (the games use the shared one), and the way back,
+        # which the index deliberately does not carry -- it is what the back links point at
+        # (`test_the_index_does_not_link_back_to_itself`).
+        head = (
+            head.replace(' aria-current="page"', "")
+            .replace(' id="status-chip"', "")
+            .replace("      <a data-back-link></a>\n", "")
+        )
+        heads[name] = head
+    assert len(set(heads.values())) == 1, "the app bar differs between pages"
+    # ...and it names the page you are on. The index is the home page, so none of its links
+    # is "current", which is why it is excluded from this half.
+    for name in GAMES:
+        text = (WEB / name).read_text(encoding="utf-8")
+        bar = text.split('<header class="app-bar">', 1)[1].split("</header>", 1)[0]
+        assert "aria-current=" in bar, name
 
 
 def test_the_pages_are_served_without_a_stale_cache(playground_url: str) -> None:
@@ -648,6 +753,87 @@ def test_the_shell_strings_are_complete() -> None:
     for key, value in english.items():
         if chinese[key] == value and _reads_as_prose(value):
             assert key in KEPT_IN_ENGLISH, f"i18n.js left {key!r} in English"
+
+
+def _i18n_argument(text: str, open_index: int) -> str:
+    """The source between the parentheses of `I18N.t(...)`, comments and strings skipped."""
+    depth = 0
+    i = open_index  # at '('
+    while i < len(text):
+        char = text[i]
+        if char in "\"'":
+            _, i = _js_string(text, i)
+            continue
+        if char == "`":
+            i = text.index("`", i + 1) + 1
+            continue
+        if text.startswith("//", i) or text.startswith("/*", i):
+            i = _js_blank(text, i)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1 : i]
+        i += 1
+    raise AssertionError("unbalanced call")
+
+
+def _i18n_head(argument: str) -> str:
+    """The key expression only: the first argument, before any `{...}` of interpolation vars."""
+    depth = 0
+    for i, char in enumerate(argument):
+        if char in "{[(":
+            depth += 1
+        elif char in "}])":
+            depth -= 1
+        elif char == "," and depth == 0:
+            return argument[:i]
+    return argument
+
+
+def _i18n_usages(text: str) -> tuple[set[str], set[str]]:
+    """The string keys a page asks for, and the families it builds at runtime.
+
+    Families are things like `I18N.t("dir." + move)` or ``I18N.t(`health.${level}`)``: the
+    page names them in pieces, so the test can only ask that the family exists at all.
+    """
+    literals: set[str] = set()
+    families: set[str] = set()
+    for match in re.finditer(r'data-i18n(?:-title|-aria-label)?="([^"]+)"', text):
+        literals.add(match.group(1))
+    for match in re.finditer(r"I18N\.t\(", text):
+        head = _i18n_head(_i18n_argument(text, match.end() - 1))
+        for template in re.findall(r"`([^`]*)`", head):
+            if "${" in template:
+                families.add(template.split("${", 1)[0])
+            else:
+                literals.add(template)
+        for literal in re.findall(r"[\"']([^\"']+)[\"']", head):
+            if literal.endswith("."):
+                families.add(literal)
+            else:
+                literals.add(literal)
+    literals = {key for key in literals if re.fullmatch(r"[a-z][A-Za-z0-9_.]*", key)}
+    return literals, families
+
+
+@pytest.mark.parametrize("name", PAGES)
+def test_every_string_a_page_asks_for_is_declared(name: str) -> None:
+    """`I18N.t` falls back to the key, so a dropped string shows up as `desc.holes.none`.
+
+    That is how the unified layout lost the placement-row descriptions: the code kept
+    asking for `desc.holes.none` while the rewritten dictionary no longer had it. The
+    interface still worked, so only a guard like this one finds it.
+    """
+    declared = set(_page_strings(name)["en"]) | set(_shell_strings()["en"])
+    literals, families = _i18n_usages((WEB / name).read_text(encoding="utf-8"))
+    assert not literals - declared, f"{name} asks for undeclared strings: {sorted(literals - declared)}"
+    for family in families:
+        assert any(key.startswith(family) for key in declared), (
+            f"{name} builds {family!r} at runtime but declares no {family}* string"
+        )
 
 
 def test_the_language_comes_from_the_browser_and_can_be_switched() -> None:

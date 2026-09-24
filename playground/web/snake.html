@@ -3,9 +3,14 @@
   Decis playground. Adapted from https://github.com/taeold/djev-run (see NOTICE).
   Changed for Decis: the endpoint is the playground's own origin (it proxies
   /v1/systemone and attaches the API key server-side), and the page now wears the
-  shared /theme.css and translates its interface through /i18n.js. The `state` and
-  the `questions` stay English on purpose -- they are the API's language, and the
-  page was sized against the token budget those exact strings produce.
+  shared /theme.css, /i18n.js and /game.js -- the game bar, the manual/AI switch, the
+  inference panel and the I/O console are the shell's, not this page's. The `state` and
+  the `questions` stay English on purpose -- they are the API's language, and the page was
+  sized against the token budget those exact strings produce.
+
+  Two ways to play: `manual` steers with the arrow keys and sends nothing, `ai` posts the
+  state and plays the model's move. The safety analysis in the panel is computed locally
+  either way, so the tags say why a move is unsafe even when nobody asked the model.
 -->
 <html lang="en">
 <head>
@@ -15,98 +20,17 @@
   <link rel="stylesheet" href="/theme.css">
   <script src="/i18n.js"></script>
   <style>
-    /* Page layout only: the palette, the app bar, the engine chip, the language switch,
-       the panels, the buttons, the probability bars and the tags live in /theme.css. */
-    .shell { width: 100%; max-width: 900px; margin: 0 auto; padding: 22px 20px 44px; }
-
-    /* The game's own bar -- title, live status, metrics, controls. It is not the app bar:
-       that one belongs to the playground and carries the engine chip. */
-    .game-bar {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px 16px;
-      padding: 12px 14px;
-      margin-bottom: 14px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-
-    .game-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
-
-    .game-title {
-      margin: 0;
-      font-size: 17px;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-      white-space: nowrap;
-    }
-
-    .game-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--ink-dim);
-      white-space: nowrap;
-    }
-
-    .game-bar .metrics { display: flex; align-items: center; gap: 16px; margin-left: auto; }
-
-    /* Fixed widths: the numbers change every step, so the bar must not twitch. */
-    #m-score, #m-steps { min-width: 34px; text-align: right; }
-    #m-ms { min-width: 68px; text-align: right; }
-
-    .top-actions { display: flex; align-items: center; gap: 8px; flex: none; }
-
-    /* 360px canvas + the board card's padding and border, then the readout column. */
-    .main-grid {
-      display: grid;
-      grid-template-columns: 384px minmax(0, 1fr);
-      gap: 16px;
-      align-items: start;
-    }
-
+    /* Page layout only: the palette, the app bar, the game bar, the panels, the buttons,
+       the probability bars and the inference panel live in /theme.css. */
     canvas#board { display: block; width: 360px; height: 360px; }
 
-    .right-col {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      height: 382px;
-      min-width: 0;
-    }
-
-    .probs-panel { flex: none; }
+    /* The stage hugs the board instead of stretching to the column: a 360px canvas inside a
+       700px card reads as a mistake. */
+    .game-stage > .board { align-self: center; }
 
     .prob-rows { display: flex; flex-direction: column; gap: 7px; }
 
-    .json-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-
-    /* The payload is the one thing on the page that is never translated: it is what the
-       page sent. It clips rather than scrolls, so a long line cannot push the layout. */
-    pre#live-json {
-      flex: 1;
-      margin: 0;
-      padding: 9px 11px;
-      background: var(--surface-solid);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      white-space: pre;
-      overflow: hidden;
-    }
-
-    .j-key { color: var(--accent); font-weight: 600; }
-    .j-str { color: var(--ok); }
-    .j-num { color: var(--warn); font-weight: 600; }
-
-    @media (max-width: 720px) {
-      .main-grid { grid-template-columns: minmax(0, 1fr); }
-      .right-col { height: auto; }
-      #m-ms { min-width: 0; }
+    @media (max-width: 440px) {
       canvas#board { width: 100%; max-width: 360px; height: auto; }
     }
   </style>
@@ -132,7 +56,7 @@
     <div data-lang-switch></div>
   </header>
 
-  <main class="shell">
+  <main class="game-shell">
     <div class="game-bar">
       <div class="game-id">
         <h1 class="game-title" data-i18n="page.title">Snake</h1>
@@ -141,107 +65,92 @@
           <span id="game-status-text" data-i18n="status.idle" data-i18n-dynamic>Idle</span>
         </span>
       </div>
-      <div class="metrics">
+      <div class="score-strip">
         <span class="metric">
           <span class="metric-label" data-i18n="metric.score">Score</span>
           <span id="m-score" class="metric-val">0</span>
         </span>
         <span class="metric">
-          <span class="metric-label" data-i18n="metric.steps">Step</span>
+          <span class="metric-label" data-i18n="metric.steps">Steps</span>
           <span id="m-steps" class="metric-val">0</span>
-        </span>
-        <span class="metric">
-          <span class="metric-label" data-i18n="metric.latency">Latency</span>
-          <span id="m-ms" class="metric-val">0 ms</span>
         </span>
       </div>
       <div class="top-actions">
-        <button id="btn-start" class="btn btn-primary" type="button"
-                data-i18n="btn.start" data-i18n-dynamic data-i18n-title="btn.start.title">Start</button>
-        <button id="btn-reset" class="btn" type="button"
-                data-i18n="btn.reset" data-i18n-title="btn.reset.title">Reset</button>
+        <div data-ai-switch></div>
+        <button id="btn-start" class="btn btn-primary" type="button" data-i18n="btn.start" data-i18n-dynamic>Start</button>
+        <button id="btn-reset" class="btn" type="button" data-i18n="btn.reset" data-i18n-title="btn.reset.title">Reset</button>
       </div>
     </div>
 
-    <div class="main-grid">
-      <div class="board">
-        <canvas id="board" aria-label="Snake board" data-i18n-aria-label="board.label"></canvas>
+    <div class="game-grid">
+      <div class="game-stage">
+        <div class="board">
+          <canvas id="board" aria-label="Snake board" data-i18n-aria-label="board.label"></canvas>
+        </div>
       </div>
 
-      <div class="right-col">
-        <section class="panel probs-panel">
+      <div class="game-side">
+        <section class="panel">
           <div class="panel-head">
-            <span data-i18n="panel.probs">Move Probabilities</span>
-            <span id="choice-badge" class="panel-sub">choice: right (50.0%)</span>
+            <span data-i18n="panel.probs">Move probabilities</span>
+            <span id="choice-badge" class="panel-sub">&mdash;</span>
           </div>
           <div class="prob-rows">
             <div class="prob-row">
-              <span class="dir-name" id="name-up">↑ up</span>
+              <span class="dir-name" id="name-up">&uarr; up</span>
               <div class="bar-track"><div class="bar-fill" id="bar-up"></div></div>
-              <span class="prob-pct dim" id="val-up">25.0%</span>
+              <span class="prob-pct dim" id="val-up">&mdash;</span>
               <span class="tag ok" id="safe-up">safe</span>
             </div>
             <div class="prob-row">
-              <span class="dir-name" id="name-down">↓ down</span>
+              <span class="dir-name" id="name-down">&darr; down</span>
               <div class="bar-track"><div class="bar-fill" id="bar-down"></div></div>
-              <span class="prob-pct dim" id="val-down">25.0%</span>
+              <span class="prob-pct dim" id="val-down">&mdash;</span>
               <span class="tag ok" id="safe-down">safe</span>
             </div>
             <div class="prob-row">
-              <span class="dir-name" id="name-left">← left</span>
+              <span class="dir-name" id="name-left">&larr; left</span>
               <div class="bar-track"><div class="bar-fill" id="bar-left"></div></div>
-              <span class="prob-pct dim" id="val-left">0.0%</span>
+              <span class="prob-pct dim" id="val-left">&mdash;</span>
               <span class="tag blocked" id="safe-left">neck</span>
             </div>
             <div class="prob-row">
-              <span class="dir-name chosen" id="name-right">→ right</span>
+              <span class="dir-name chosen" id="name-right">&rarr; right</span>
               <div class="bar-track"><div class="bar-fill chosen" id="bar-right"></div></div>
-              <span class="prob-pct" id="val-right">50.0%</span>
+              <span class="prob-pct" id="val-right">&mdash;</span>
               <span class="tag ok" id="safe-right">safe</span>
             </div>
           </div>
         </section>
 
-        <section class="panel json-panel">
-          <div class="panel-head">
-            <span data-i18n="panel.call">Last /v1/systemone Call</span>
-            <span id="coords-text" class="panel-sub">head [5,6] · food [9,3]</span>
-          </div>
-          <pre id="live-json"></pre>
-        </section>
+        <section class="panel" data-telemetry></section>
+        <details class="panel io-console" data-io-console></details>
       </div>
     </div>
 
     <footer class="page-foot">
       <span data-i18n="foot.adapted">Games adapted from</span>
       <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a>.
+      <span data-i18n="foot.keys">Arrow keys steer in manual mode &middot; Space start/pause &middot; R reset &middot; M manual/AI.</span>
     </footer>
   </main>
 
+<script src="/game.js"></script>
 <script>
 // The strings the page adds to the shared dictionary. Two conventions, both deliberate:
-// the move names (`dir.*`), the safety reasons (`reason.*`) and the chosen question id in
-// `badge.choice` are wire values shown as the API spelled them -- only the label around
-// them is translated -- and `metric.ms` carries the number in `{value}` so the unit is a
-// word that can change language while the number stays a number.
+// the move names (`dir.*`), the safety reasons (`reason.*`) and the chosen move in
+// `badge.ai` are wire values shown as the API spelled them -- only the label around them
+// is translated.
 I18N.add({
   en: {
     "page.title": "Snake",
     "page.docTitle": "Decis / snake",
     "board.label": "Snake board",
     "metric.score": "Score",
-    "metric.steps": "Step",
-    "metric.latency": "Latency",
-    "metric.ms": "{value} ms",
-    "btn.start": "Start",
-    "btn.pause": "Pause",
-    "btn.reset": "Reset",
-    "btn.start.title": "Start or pause (Space)",
-    "btn.reset.title": "New game (R)",
-    "panel.probs": "Move Probabilities",
-    "panel.call": "Last /v1/systemone Call",
-    "badge.choice": "choice: {move} ({pct})",
-    "coords": "head [{hx},{hy}] · food [{fx},{fy}]",
+    "metric.steps": "Steps",
+    "panel.probs": "Move probabilities",
+    "badge.ai": "choice: {move} ({pct})",
+    "badge.manual": "manual: {move}",
     "dir.up": "up",
     "dir.down": "down",
     "dir.left": "left",
@@ -253,39 +162,35 @@ I18N.add({
     "status.idle": "Idle",
     "status.running.live": "Running (live)",
     "status.running.sim": "Running (sim)",
+    "status.running.manual": "Running (manual)",
     "status.paused": "Paused",
     "status.collision": "Collision",
+    "foot.keys": "Arrow keys steer in manual mode \u00b7 Space start/pause \u00b7 R reset \u00b7 M manual/AI.",
   },
   zh: {
-    "page.title": "贪吃蛇",
-    "page.docTitle": "Decis / 贪吃蛇",
-    "board.label": "贪吃蛇棋盘",
-    "metric.score": "得分",
-    "metric.steps": "步数",
-    "metric.latency": "延迟",
-    "metric.ms": "{value} 毫秒",
-    "btn.start": "开始",
-    "btn.pause": "暂停",
-    "btn.reset": "重置",
-    "btn.start.title": "开始或暂停（空格）",
-    "btn.reset.title": "重新开始（R）",
-    "panel.probs": "走法概率",
-    "panel.call": "最近一次 /v1/systemone 调用",
-    "badge.choice": "选择：{move}（{pct}）",
-    "coords": "蛇头 [{hx},{hy}] · 食物 [{fx},{fy}]",
-    "dir.up": "上",
-    "dir.down": "下",
-    "dir.left": "左",
-    "dir.right": "右",
-    "reason.safe": "安全",
-    "reason.neck": "脖颈",
-    "reason.wall": "撞墙",
-    "reason.body": "撞身",
-    "status.idle": "空闲",
-    "status.running.live": "运行中（实时）",
-    "status.running.sim": "运行中（本地模拟）",
-    "status.paused": "已暂停",
-    "status.collision": "撞上了",
+    "page.title": "\u8d2a\u5403\u86c7",
+    "page.docTitle": "Decis / \u8d2a\u5403\u86c7",
+    "board.label": "\u8d2a\u5403\u86c7\u68cb\u76d8",
+    "metric.score": "\u5f97\u5206",
+    "metric.steps": "\u6b65\u6570",
+    "panel.probs": "\u8d70\u6cd5\u6982\u7387",
+    "badge.ai": "\u9009\u62e9\uff1a{move}\uff08{pct}\uff09",
+    "badge.manual": "\u624b\u52a8\uff1a{move}",
+    "dir.up": "\u4e0a",
+    "dir.down": "\u4e0b",
+    "dir.left": "\u5de6",
+    "dir.right": "\u53f3",
+    "reason.safe": "\u5b89\u5168",
+    "reason.neck": "\u8116\u9888",
+    "reason.wall": "\u649e\u5899",
+    "reason.body": "\u649e\u8eab",
+    "status.idle": "\u7a7a\u95f2",
+    "status.running.live": "\u8fd0\u884c\u4e2d\uff08\u5b9e\u65f6\uff09",
+    "status.running.sim": "\u8fd0\u884c\u4e2d\uff08\u672c\u5730\u6a21\u62df\uff09",
+    "status.running.manual": "\u8fd0\u884c\u4e2d\uff08\u624b\u52a8\uff09",
+    "status.paused": "\u5df2\u6682\u505c",
+    "status.collision": "\u649e\u4e0a\u4e86",
+    "foot.keys": "\u624b\u52a8\u6a21\u5f0f\u7528\u65b9\u5411\u952e\u64cd\u63a7 \u00b7 \u7a7a\u683c\u5f00\u59cb/\u6682\u505c \u00b7 R \u91cd\u7f6e \u00b7 M \u5207\u6362\u624b\u52a8/AI\u3002",
   }
 });
 
@@ -295,13 +200,17 @@ I18N.add({
 const GRID = 12;
 const CSS_SIZE = 360;
 const DIRS = ["up", "down", "left", "right"];
-const ARROWS = { up: "↑", down: "↓", left: "←", right: "→" };
+const ARROWS = { up: "\u2191", down: "\u2193", left: "\u2190", right: "\u2192" };
 const VEC = {
   up: [0, -1],
   down: [0, 1],
   left: [-1, 0],
   right: [1, 0]
 };
+
+//: Manual play is a tick, not a round trip: the snake moves at a fixed pace instead of as
+//: fast as the engine answers, which is what makes steering possible.
+const MANUAL_TICK_MS = 110;
 
 const QUESTIONS_SCHEMA = {
   move: {
@@ -324,7 +233,7 @@ function resolveEndpointUrl() {
 
 let snake = [];
 let direction = "right";
-let nextChoice = "right";
+let manualDir = "right";
 let food = [9, 3];
 let score = 0;
 let steps = 0;
@@ -332,9 +241,9 @@ let alive = true;
 let running = false;
 let inflight = false;
 let sandboxFallback = false;
-// The live text the page writes itself, kept so a language switch can repaint it.
-let statusKey = "status.idle";
-let lastMs = 0;
+let loopToken = 0;
+// The last thing the page wrote into the live readout, kept so a language switch can
+// repaint it: `data-i18n` only covers the markup.
 let lastDecision = null;
 
 function spawnFood(body) {
@@ -477,6 +386,8 @@ function simulateSystemOne(state) {
   };
 }
 
+// One POST, and the one call `GameShell.observe` hears about. The body it reports is the
+// body it sent, so the I/O console shows the request and not the page's bookkeeping.
 async function requestDecision(state) {
   const reqBody = {
     model: "jev-latest",
@@ -487,6 +398,7 @@ async function requestDecision(state) {
     questions: QUESTIONS_SCHEMA
   };
   const t0 = performance.now();
+  let reported = false;
   try {
     const resp = await fetch(resolveEndpointUrl(), {
       method: "POST",
@@ -494,70 +406,54 @@ async function requestDecision(state) {
       body: JSON.stringify(reqBody)
     });
     const ms = Math.round(performance.now() - t0);
-    const data = await resp.json();
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch (ignored) {
+      data = null;
+    }
+    GameShell.observe({ request: reqBody, response: data, status: resp.status, latencyMs: ms });
+    reported = true;
+    if (!resp.ok) {
+      // A 422 (over budget) or a 503 (engine still loading) is not a crash: the game falls
+      // back to the local simulation and says `sim` in the status.
+      sandboxFallback = true;
+      return { data: simulateSystemOne(state), ms };
+    }
     sandboxFallback = false;
     return { data, ms };
   } catch (err) {
     const ms = Math.max(11, Math.round(performance.now() - t0));
+    if (!reported) GameShell.observe({ request: reqBody, error: err, latencyMs: ms });
     sandboxFallback = true;
     return { data: simulateSystemOne(state), ms };
   }
 }
 
-function setStatus(key, kind) {
-  statusKey = key;
-  $("game-status-text").textContent = I18N.t(statusKey);
-  $("game-dot").className = "dot" + (kind ? " " + kind : "");
-}
+/* The move names, the safety reasons and the chosen move are wire values. They are shown
+   as the API spelled them; only the label around them is translated.
 
-function setStartLabel() {
-  $("btn-start").textContent = I18N.t(running ? "btn.pause" : "btn.start");
-}
-
-function renderJson(state, finalChoice, probs) {
-  const safeList = state.safe_moves.map(m => `<span class="j-str">"${m}"</span>`).join(", ");
-  const conf = (probs[finalChoice] || 0).toFixed(3);
-  $("live-json").innerHTML =
-`{
-  <span class="j-key">"state"</span>: {
-    <span class="j-key">"head"</span>: [<span class="j-num">${state.head[0]}</span>, <span class="j-num">${state.head[1]}</span>], <span class="j-key">"food"</span>: [<span class="j-num">${state.food[0]}</span>, <span class="j-num">${state.food[1]}</span>],
-    <span class="j-key">"food_delta"</span>: { <span class="j-key">"dx"</span>: <span class="j-num">${state.food_delta.dx}</span>, <span class="j-key">"dy"</span>: <span class="j-num">${state.food_delta.dy}</span> },
-    <span class="j-key">"safe_moves"</span>: [${safeList}]
-  },
-  <span class="j-key">"move"</span>: { <span class="j-key">"choice"</span>: <span class="j-str">"${finalChoice}"</span>, <span class="j-key">"confidence"</span>: <span class="j-num">${conf}</span> }
-}`;
-}
-
-/* Everything the script writes as text is repainted from here, so switching language
-   mid-game updates the live readout too -- `data-i18n` only covers the markup. */
-function renderTexts() {
-  document.title = I18N.t("page.docTitle");
-  setStartLabel();
-  $("game-status-text").textContent = I18N.t(statusKey);
-  $("m-ms").textContent = I18N.t("metric.ms", { value: lastMs });
-  paintDecision();
-}
-
-/* The move names, the safety reasons and the chosen question id are wire values. They
-   are shown as the API spelled them; only the label around them is translated. */
+   `source` says where the number came from: `ai` is the model's probability, `manual` is a
+   human's key press, `none` is "no call has happened yet". Only `ai` gets bars -- a
+   probability of 0.0% would be a measurement nobody made. */
 function paintDecision() {
   if (!lastDecision) return;
-  const { state, probs, finalChoice } = lastDecision;
-  const [hx, hy] = state.head;
-  const [fx, fy] = state.food;
-  $("coords-text").textContent = I18N.t("coords", { hx, hy, fx, fy });
-
-  const chosenPct = ((probs[finalChoice] || 0) * 100).toFixed(1) + "%";
-  $("choice-badge").textContent = I18N.t("badge.choice", { move: finalChoice, pct: chosenPct });
+  const { state, probs, finalChoice, source } = lastDecision;
+  $("choice-badge").textContent = source === "ai"
+    ? I18N.t("badge.ai", {
+        move: finalChoice,
+        pct: ((probs[finalChoice] || 0) * 100).toFixed(1) + "%"
+      })
+    : source === "manual"
+      ? I18N.t("badge.manual", { move: ARROWS[finalChoice] + " " + I18N.t("dir." + finalChoice) })
+      : "\u2014";
 
   for (const d of DIRS) {
-    const p = Math.max(0, Math.min(1, Number(probs[d] || 0)));
-    const pct = (p * 100).toFixed(1) + "%";
     const info = state.move_analysis[d];
     const isSelected = d === finalChoice;
+    const p = source === "ai" ? Math.max(0, Math.min(1, Number(probs[d] || 0))) : 0;
 
-    $("name-" + d).className = "dir-name" + (isSelected ? " chosen" : "");
+    $("name-" + d).className = "dir-name" + (isSelected && source !== "none" ? " chosen" : "");
     $("name-" + d).textContent = `${ARROWS[d]} ${I18N.t("dir." + d)}`;
 
     const safeEl = $("safe-" + d);
@@ -565,23 +461,26 @@ function paintDecision() {
     safeEl.className = "tag " + (info.safe ? "ok" : "blocked");
 
     const barEl = $("bar-" + d);
-    barEl.style.width = (p * 100).toFixed(1) + "%";
-    barEl.className = "bar-fill" + (isSelected ? " chosen" : "");
+    barEl.style.width = source === "ai" ? (p * 100).toFixed(1) + "%" : "0%";
+    barEl.className = "bar-fill" + (source === "ai" && isSelected ? " chosen" : "");
 
-    $("val-" + d).className = "prob-pct" + (isSelected ? "" : " dim");
-    $("val-" + d).textContent = pct;
+    $("val-" + d).className = "prob-pct" + (source === "ai" && isSelected ? "" : " dim");
+    $("val-" + d).textContent = source === "ai" ? (p * 100).toFixed(1) + "%" : "\u2014";
   }
 }
 
-function updateUI(state, probs, finalChoice, ms) {
-  lastMs = ms;
-  lastDecision = { state, probs, finalChoice };
+/* Everything the script writes as text is repainted from here, so switching language
+   mid-game updates the live readout too -- `data-i18n` only covers the markup. */
+function renderTexts() {
+  document.title = I18N.t("page.docTitle");
+  paintDecision();
+}
+
+function updateUI(state, probs, finalChoice, source) {
+  lastDecision = { state, probs, finalChoice, source };
   $("m-score").textContent = String(score);
   $("m-steps").textContent = String(steps);
-  $("m-ms").textContent = I18N.t("metric.ms", { value: ms });
-
   paintDecision();
-  renderJson(state, finalChoice, probs);
 }
 
 function drawBoard() {
@@ -666,8 +565,9 @@ function applyMove(chosenDir) {
   if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID || bodyObstacles.has(nx + "," + ny)) {
     alive = false;
     running = false;
-    setStartLabel();
-    setStatus("status.collision", "err");
+    loopToken += 1;
+    GameShell.setRunning(false);
+    GameShell.setStatus("status.collision", null, "err");
     drawBoard();
     return;
   }
@@ -685,17 +585,19 @@ function applyMove(chosenDir) {
 
 function resetGame() {
   running = false;
-  setStartLabel();
+  loopToken += 1;
+  GameShell.setRunning(false);
   snake = [[5, 6], [4, 6], [3, 6], [2, 6]];
   direction = "right";
-  nextChoice = "right";
+  manualDir = "right";
   score = 0;
   steps = 0;
   alive = true;
+  lastDecision = null;
   food = spawnFood(snake);
-  setStatus("status.idle", "");
-  const st = buildState();
-  updateUI(st, { up: 0.25, down: 0.25, left: 0.0, right: 0.50 }, "right", 0);
+  GameShell.resetTelemetry();
+  GameShell.setStatus("status.idle", null, "");
+  updateUI(buildState(), null, "right", "none");
   drawBoard();
 }
 
@@ -712,76 +614,70 @@ async function stepOnce() {
   if (state.safe_moves.length > 0 && !state.safe_moves.includes(rawChoice)) {
     finalChoice = state.safe_moves.reduce((a, b) => ((probs[a] || 0) >= (probs[b] || 0) ? a : b));
   }
-  nextChoice = finalChoice;
 
   applyMove(finalChoice);
   if (alive) {
-    setStatus(sandboxFallback ? "status.running.sim" : "status.running.live", "live");
+    GameShell.setStatus(sandboxFallback ? "status.running.sim" : "status.running.live", null, "live");
   }
-  updateUI(state, probs, finalChoice, ms);
+  updateUI(state, probs, finalChoice, "ai");
   drawBoard();
   inflight = false;
 }
 
-async function loop() {
-  while (running && alive) {
+async function loop(token) {
+  while (running && alive && token === loopToken) {
     const tStart = performance.now();
-    await stepOnce();
-    if (!running || !alive) break;
+    const manual = GameShell.mode() === "manual";
+    if (manual) {
+      const state = buildState();
+      applyMove(manualDir);
+      if (alive) GameShell.setStatus("status.running.manual", null, "live");
+      updateUI(state, null, manualDir, "manual");
+      drawBoard();
+    } else {
+      await stepOnce();
+    }
+    if (!running || !alive || token !== loopToken) break;
     const elapsed = performance.now() - tStart;
-    const wait = Math.max(0, 50 - elapsed);
+    const wait = Math.max(0, (manual ? MANUAL_TICK_MS : 50) - elapsed);
     if (wait > 0) {
       await new Promise(r => setTimeout(r, wait));
     }
   }
 }
 
-$("btn-start").onclick = () => {
+function toggleStart() {
   if (!alive) resetGame();
   running = !running;
-  setStartLabel();
+  GameShell.setRunning(running);
   if (running) {
-    loop();
+    const token = ++loopToken;
+    loop(token);
   } else {
-    setStatus("status.paused", "");
-  }
-};
-
-$("btn-reset").onclick = () => resetGame();
-
-window.addEventListener("keydown", e => {
-  if (e.code === "Space") {
-    e.preventDefault();
-    $("btn-start").click();
-  } else if (e.key === "r" || e.key === "R") {
-    e.preventDefault();
-    resetGame();
-  }
-});
-
-// The engine chip: which engine this page is actually talking to. The wiring is the same
-// on every page so the four pages cannot disagree about what is up.
-async function refreshEngine() {
-  try {
-    const config = await (await fetch("/api/config", { cache: "no-store" })).json();
-    const dot = document.getElementById("dot"), text = document.getElementById("status-text");
-    if (config.ready) {
-      dot.className = "dot live";
-      text.textContent = I18N.t("status.ready", { engine: config.engine });
-    } else {
-      dot.className = "dot warn";
-      text.textContent = I18N.t("status.searching");
-    }
-  } catch (err) {
-    document.getElementById("dot").className = "dot err";
-    document.getElementById("status-text").textContent = I18N.t("status.unreachable", { message: err.message });
+    GameShell.setStatus("status.paused", null, "");
   }
 }
 
+window.addEventListener("keydown", e => {
+  const dir = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" }[e.key];
+  if (!dir || GameShell.mode() !== "manual") return;
+  e.preventDefault();
+  // No 180-degree turn: the neck is where the head just was, so that move is death.
+  const opposite = { up: "down", down: "up", left: "right", right: "left" }[direction];
+  if (dir !== opposite) manualDir = dir;
+});
+
+GameShell.init({
+  game: "snake",
+  onStart: toggleStart,
+  onReset: resetGame,
+  onMode: mode => {
+    // Entering manual mode starts from the current heading, so the first arrow press
+    // cannot be a 180-degree turn into the snake's own neck.
+    if (mode === "manual") manualDir = direction;
+  }
+});
 I18N.onChange(renderTexts);
-I18N.onChange(refreshEngine);
-refreshEngine();
-setInterval(refreshEngine, 5000);
 
 resetGame();
 renderTexts();

@@ -2,82 +2,30 @@
 <!--
   Decis playground. Adapted from https://github.com/taeold/djev-run (see NOTICE).
   Changed for Decis: the endpoint is the playground's own origin (it proxies
-  /v1/systemone and attaches the API key server-side), the engine comparison that
-  quoted another deployment's latencies is gone, and the page now wears the shared
-  /theme.css and translates its interface through /i18n.js. The `state`, the planner
-  notes and the `questions` stay English on purpose -- they are the API's language,
-  and the page was sized against the token budget those exact strings produce.
+  /v1/systemone and attaches the API key server-side), the engine comparison that quoted
+  another deployment's latencies is gone, and the page now wears the shared /theme.css,
+  /i18n.js and /game.js -- the game bar, the manual/AI switch, the inference panel and the
+  I/O console are the shell's. The `state`, the planner notes and the `questions` stay
+  English on purpose -- they are the API's language, and the page was sized against the
+  token budget those exact strings produce.
+
+  Two ways to play: `manual` drives with space (jump) and the down arrow (duck) and sends
+  nothing, `ai` posts the planner's analysis and plays the model's action. The planner runs
+  either way -- it is what draws the safe/best tags, and in AI mode its "safety net" veto
+  can overrule an action it can prove crashes.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title data-i18n="dino.title">Decis / dino arena</title>
+  <title data-i18n="page.docTitle">Decis / dino</title>
   <link rel="stylesheet" href="/theme.css" />
   <script src="/i18n.js"></script>
   <style>
-    /* Page layout only. The palette, the app bar, the panels, the buttons, the probability
-       bars and the metrics come from /theme.css, which every page shares: this file styles
-       the arena's own grid and nothing that appears twice. */
-    .shell { width: 100%; max-width: 1180px; margin: 0 auto; padding: 26px 20px 48px; }
-
-    .arena-title {
-      margin: 0;
-      font-size: clamp(20px, 3vw, 30px);
-      font-weight: 700;
-      letter-spacing: -0.025em;
-      line-height: 1.15;
-    }
-    .arena-title .grad {
-      background: linear-gradient(100deg, var(--accent) 10%, var(--accent-3) 48%, var(--accent-2));
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
-    }
-    .arena-subtitle { margin: 10px 0 0; max-width: 82ch; color: var(--ink-dim); font-size: 13.5px; }
-
-    .controls { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-top: 18px; }
-    .ctrl-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-dim); }
-
-    /* theme.css has no form-control primitive, so the arena dresses the two it uses in the
-       shared tokens instead of introducing a second palette. */
-    .controls select,
-    .controls input[type="text"] {
-      height: 32px;
-      padding: 0 9px;
-      font-family: var(--sans);
-      font-size: 12.5px;
-      color: var(--ink);
-      background: var(--surface-2);
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-sm);
-    }
-    .controls input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent); }
-    #endpointInput { width: 152px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; }
-
-    .game-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
-    .player-chip {
-      width: 13px;
-      height: 13px;
-      border-radius: 4px;
-      background: linear-gradient(135deg, var(--accent), var(--accent-2));
-      flex: none;
-    }
-    .player-name { font-size: 15px; font-weight: 650; }
-    .player-detail { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
-    .pipeline-line { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--accent-2); }
-
-    .main-row {
-      display: grid;
-      grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr);
-      gap: 18px;
-      align-items: start;
-      margin-top: 12px;
-    }
-    @media (max-width: 1040px) { .main-row { grid-template-columns: minmax(0, 1fr); } }
-
+    /* Page layout only: the palette, the app bar, the game bar, the panels, the buttons,
+       the probability bars, the inference panel and the I/O console live in /theme.css. */
     .board-wrap { position: relative; }
-    .board-wrap canvas#dinoCanvas { width: 100%; height: auto; }
+    canvas#dinoCanvas { display: block; width: 100%; height: auto; }
 
     .event-badge {
       position: absolute;
@@ -95,46 +43,7 @@
       font-weight: 600;
     }
 
-    .side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
     .prob-row .tag { justify-self: end; }
-
-    .kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
-    .kpi-tile { display: flex; flex-direction: column; min-width: 0; }
-    .kpi-sub {
-      margin-top: 1px;
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .payload-drawer { margin-top: 14px; }
-    .payload-drawer summary { cursor: pointer; font-size: 11.5px; color: var(--ink-dim); font-weight: 600; }
-    .payload-pre {
-      margin-top: 9px;
-      max-height: 190px;
-      padding: 10px;
-      background: var(--surface-solid);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-    }
-
-    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 18px; }
-    .chart-card .panel-head { margin-bottom: 9px; }
-    .chart-note {
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0;
-      text-transform: none;
-      color: var(--muted);
-    }
-    .chart-card .board { padding: 8px; }
-    canvas.mini-chart { width: 100%; height: 150px; display: block; }
-
-    .foot-links { margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -158,259 +67,163 @@
     <div data-lang-switch></div>
   </header>
 
-  <main class="shell">
-    <h1 class="arena-title"><span class="grad" data-i18n="dino.title">Decis / dino arena</span></h1>
-    <p class="arena-subtitle" data-i18n="dino.subtitle">Authentic Chromium 2x sprite sheet + exact laya_mlx.trex physics &amp; safety planner, deciding through the Decis System One API</p>
-
-    <div class="controls">
-      <button id="startBtn" class="btn btn-primary"></button>
-      <button id="resetBtn" class="btn" data-i18n="dino.btn.reset">Reset</button>
-      <label class="ctrl-label">
-        <span data-i18n="dino.ctrl.crash">On Crash:</span>
-        <select id="crashModeSelect">
-          <option value="gameover" selected data-i18n="dino.crash.gameover">Stop on Crash (Classic Game Over)</option>
-          <option value="continuous" data-i18n="dino.crash.continuous">Auto-Restart &amp; Count Deaths (Arena Mode)</option>
-        </select>
-      </label>
-      <label class="ctrl-label">
-        <span data-i18n="dino.ctrl.shield">Shield:</span>
-        <select id="shieldSelect">
-          <option value="unassisted" selected data-i18n="dino.shield.unassisted">unassisted (Raw /v1/systemone)</option>
-          <option value="assisted" data-i18n="dino.shield.assisted">model + live shield (Planner + Arrival + Emergency)</option>
-        </select>
-      </label>
-      <label class="ctrl-label">
-        <span data-i18n="dino.ctrl.inflight">In-Flight:</span>
-        <select id="inflightSelect">
-          <option value="1" data-i18n="dino.inflight.1">1 request</option>
-          <option value="2" data-i18n="dino.inflight.2">2 requests in flight</option>
-          <option value="3" selected data-i18n="dino.inflight.3">3 requests in flight</option>
-          <option value="4" data-i18n="dino.inflight.4">4 requests in flight</option>
-        </select>
-      </label>
-      <label class="ctrl-label">
-        <input type="checkbox" id="hitboxToggle" />
-        <span data-i18n="dino.ctrl.hitboxes">Show Hitboxes</span>
-      </label>
-      <input id="endpointInput" type="text" value="/v1/systemone" data-i18n-title="dino.endpoint.title" title="POST /v1/systemone endpoint" />
-    </div>
-
+  <main class="game-shell">
     <div class="game-bar">
-      <span class="player-chip"></span>
-      <span class="player-name" data-i18n="dino.player.name">Decis engine</span>
-      <span class="player-detail" id="playerDetailText"></span>
-      <span class="spacer"></span>
-      <span class="status-chip">
-        <span id="game-dot" class="dot"></span>
-        <span id="game-state"></span>
-      </span>
+      <div class="game-id">
+        <h1 class="game-title" data-i18n="page.title">Dino</h1>
+        <span class="game-status">
+          <span id="game-dot" class="dot"></span>
+          <span id="game-status-text" data-i18n="dino.state.idle" data-i18n-dynamic>Idle</span>
+        </span>
+      </div>
+      <div class="score-strip">
+        <span class="metric">
+          <span class="metric-label" data-i18n="dino.kpi.score">Score</span>
+          <span id="m-score" class="metric-val">0</span>
+        </span>
+        <span class="metric">
+          <span class="metric-label" data-i18n="dino.kpi.best">Best</span>
+          <span id="m-best" class="metric-val">0</span>
+        </span>
+        <span class="metric">
+          <span class="metric-label" data-i18n="dino.kpi.deaths">Deaths</span>
+          <span id="m-deaths" class="metric-val">0</span>
+        </span>
+        <span class="metric">
+          <span class="metric-label" data-i18n="dino.kpi.speed">Speed</span>
+          <span id="m-speed" class="metric-val">6.0</span>
+        </span>
+      </div>
+      <div class="top-actions">
+        <div data-ai-switch></div>
+        <button id="btn-start" class="btn btn-primary" type="button" data-i18n="btn.start" data-i18n-dynamic>Start</button>
+        <button id="btn-reset" class="btn" type="button" data-i18n="btn.reset" data-i18n-title="btn.reset.title">Reset</button>
+      </div>
     </div>
-    <div class="pipeline-line" id="pipelineText"></div>
 
-    <div class="main-row">
-      <div>
+    <div class="game-options">
+      <label class="opt">
+        <span data-i18n="dino.opt.inflight">Requests in flight</span>
+        <select id="inflightSelect">
+          <option value="1" data-i18n="dino.inflight.1">1</option>
+          <option value="2" data-i18n="dino.inflight.2">2</option>
+          <option value="3" selected data-i18n="dino.inflight.3">3</option>
+          <option value="4" data-i18n="dino.inflight.4">4</option>
+        </select>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="assistToggle" checked />
+        <span data-i18n="dino.opt.assist" data-i18n-title="dino.opt.assist.title">Safety net</span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="autorestartToggle" />
+        <span data-i18n="dino.opt.autorestart">Restart after a crash</span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="hitboxToggle" />
+        <span data-i18n="dino.opt.hitboxes">Show hitboxes</span>
+      </label>
+    </div>
+
+    <div class="game-grid">
+      <div class="game-stage">
         <div class="board-wrap">
-          <div class="board"><canvas id="dinoCanvas" width="1200" height="300"></canvas></div>
+          <div class="board">
+            <canvas id="dinoCanvas" width="1200" height="300" aria-label="Dino runner" data-i18n-aria-label="board.label"></canvas>
+          </div>
           <div class="event-badge" id="eventBadge"></div>
         </div>
-        <details class="payload-drawer">
-          <summary data-i18n="dino.payload.summary">Inspect live POST /v1/systemone request &amp; response JSON</summary>
-          <pre class="payload-pre" id="payloadInspector"></pre>
-        </details>
       </div>
 
-      <div class="side">
-        <div class="panel">
-          <div class="panel-head"><span data-i18n="dino.panel.moves">Next move · model probabilities</span></div>
+      <div class="game-side">
+        <section class="panel">
+          <div class="panel-head">
+            <span data-i18n="dino.panel.moves">Next action &middot; model probabilities</span>
+            <span id="agree-badge" class="panel-sub">&mdash;</span>
+          </div>
           <div class="prob-row" id="row-jump">
-            <span class="dir-name" id="name-jump" data-i18n="dino.move.jump">JUMP ↑</span>
+            <span class="dir-name" id="name-jump" data-i18n="dino.move.jump">JUMP &uarr;</span>
             <div class="bar-track"><div class="bar-fill" id="bar-jump"></div></div>
-            <span class="prob-pct" id="pct-jump">0%</span>
+            <span class="prob-pct" id="pct-jump">&mdash;</span>
             <span class="tag" id="tag-jump"></span>
           </div>
           <div class="prob-row" id="row-duck">
-            <span class="dir-name" id="name-duck" data-i18n="dino.move.duck">DUCK ↓</span>
+            <span class="dir-name" id="name-duck" data-i18n="dino.move.duck">DUCK &darr;</span>
             <div class="bar-track"><div class="bar-fill" id="bar-duck"></div></div>
-            <span class="prob-pct" id="pct-duck">0%</span>
+            <span class="prob-pct" id="pct-duck">&mdash;</span>
             <span class="tag" id="tag-duck"></span>
           </div>
           <div class="prob-row" id="row-run">
             <span class="dir-name" id="name-run" data-i18n="dino.move.run">RUN</span>
             <div class="bar-track"><div class="bar-fill" id="bar-run"></div></div>
-            <span class="prob-pct" id="pct-run">0%</span>
+            <span class="prob-pct" id="pct-run">&mdash;</span>
             <span class="tag" id="tag-run"></span>
           </div>
-        </div>
+        </section>
 
-        <div class="panel">
-          <div class="panel-head"><span data-i18n="dino.panel.session">Live session</span></div>
-          <div class="kpi-grid">
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.score">Score</span>
-              <span class="metric-val" id="tileScore">0</span>
-              <span class="kpi-sub" id="tileSpeed"></span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.best">Best</span>
-              <span class="metric-val" id="tileBest">0</span>
-              <span class="kpi-sub" data-i18n="dino.sub.sessionHigh">session high</span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.deaths">Deaths</span>
-              <span class="metric-val" id="tileDeaths">0</span>
-              <span class="kpi-sub" id="tileCrashNote"></span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.answerTime">Answer time</span>
-              <span class="metric-val" id="tileMs">116 ms</span>
-              <span class="kpi-sub" id="tileP95">p95 139 ms</span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.survival">Survival</span>
-              <span class="metric-val" id="tileSurvival">0.0s</span>
-              <span class="kpi-sub" id="tileSituation"></span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.bestMove">Best move</span>
-              <span class="metric-val" id="tileAgree">100%</span>
-              <span class="kpi-sub" data-i18n="dino.sub.plannerMatch">planner match</span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.saves">Live saves</span>
-              <span class="metric-val" id="tileSaves">0</span>
-              <span class="kpi-sub" id="tileVetoes"></span>
-            </div>
-            <div class="kpi-tile">
-              <span class="metric-label" data-i18n="dino.kpi.throughput">Throughput</span>
-              <span class="metric-val" id="tileHz">8.2/s</span>
-              <span class="kpi-sub" id="tileDecisions"></span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="charts">
-      <div class="panel chart-card">
-        <div class="panel-head">
-          <span data-i18n="dino.panel.score">Score over time</span>
-          <span class="chart-note" data-i18n="dino.legend.engine">Decis engine</span>
-        </div>
-        <div class="board"><canvas id="scoreChart" class="mini-chart" width="400" height="150"></canvas></div>
-      </div>
-      <div class="panel chart-card">
-        <div class="panel-head">
-          <span data-i18n="dino.panel.latency">Answer time per move, ms</span>
-          <span class="chart-note" data-i18n="dino.chart.sessionP50">p50 of this session</span>
-        </div>
-        <div class="board"><canvas id="latencyChart" class="mini-chart" width="400" height="150"></canvas></div>
-      </div>
-      <div class="panel chart-card">
-        <div class="panel-head">
-          <span data-i18n="dino.panel.compare">Benchmark comparison (seed 7)</span>
-          <span class="chart-note" data-i18n="dino.chart.realtime">60 FPS real-time</span>
-        </div>
-        <div class="board"><canvas id="compareChart" class="mini-chart" width="400" height="150"></canvas></div>
+        <section class="panel" data-telemetry></section>
+        <details class="panel io-console" data-io-console></details>
       </div>
     </div>
 
     <footer class="page-foot">
-      <div data-i18n="dino.foot.course">Course: staged random · seed 7 · exact Chromium hitboxes (TREX_BOXES + OBSTACLE_TYPES)</div>
-      <div data-i18n="dino.foot.keys">space start/pause · R reset · H toggle hitboxes</div>
-      <div class="foot-links">
-        <span data-i18n="dino.foot.adapted">Adapted from</span>
-        <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a>
-        ·
-        <a href="https://github.com/virajbhartiya/laya-vs-jev" target="_blank" rel="noopener">virajbhartiya/laya-vs-jev</a>
-      </div>
+      <span data-i18n="dino.foot.course">Course: staged random &middot; exact Chromium hitboxes (TREX_BOXES + OBSTACLE_TYPES)</span>
+      <span data-i18n="dino.foot.keys">Space start/pause &middot; manual: space jump, &darr; duck &middot; R reset &middot; H hitboxes &middot; M manual/AI.</span>
+      <span data-i18n="foot.adapted">Games adapted from</span>
+      <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a>
+      &middot;
+      <a href="https://github.com/virajbhartiya/laya-vs-jev" target="_blank" rel="noopener">virajbhartiya/laya-vs-jev</a>
     </footer>
   </main>
+  <script src="/game.js"></script>
   <script>
     // ---- interface text -----------------------------------------------------------
     // Every string a person reads, in both languages. Deliberately absent: the `state`,
     // the criteria and the planner's notes. Those *are* the request, they are English on
-    // the wire, and the pages were sized against the tokens they produce (README, "the
+    // the wire, and the page was sized against the tokens they produce (README, "the
     // three games"), so none of them is touched here or anywhere below.
     I18N.add({
       en: {
-        "dino.title": "Decis / dino arena",
-        "dino.subtitle": "Authentic Chromium 2x sprite sheet + exact laya_mlx.trex physics & safety planner, deciding through the Decis System One API",
-        "dino.btn.start": "Start Autopilot (Space)",
-        "dino.btn.pause": "Pause Autopilot (Space)",
-        "dino.btn.restart": "Restart Autopilot (Space)",
-        "dino.btn.reset": "Reset",
-        "dino.ctrl.crash": "On Crash:",
-        "dino.crash.gameover": "Stop on Crash (Classic Game Over)",
-        "dino.crash.continuous": "Auto-Restart & Count Deaths (Arena Mode)",
-        "dino.ctrl.shield": "Shield:",
-        "dino.shield.unassisted": "unassisted (Raw /v1/systemone)",
-        "dino.shield.assisted": "model + live shield (Planner + Arrival + Emergency)",
-        "dino.ctrl.inflight": "In-Flight:",
-        "dino.inflight.1": "1 request",
-        "dino.inflight.2": "2 requests in flight",
-        "dino.inflight.3": "3 requests in flight",
-        "dino.inflight.4": "4 requests in flight",
-        "dino.ctrl.hitboxes": "Show Hitboxes",
-        "dino.endpoint.title": "POST /v1/systemone endpoint",
-        "dino.player.name": "Decis engine",
-        "dino.player.detail": "Decis engine · {shield} · {inflight}",
-        "dino.shield.short.unassisted": "unassisted",
-        "dino.shield.short.assisted": "model + live shield",
-        "dino.inflight.short": "{count} in flight",
-        "dino.pipeline": "THINKING {thinking} → ANSWER {answer} → ACTION {action} · skipped {skipped}",
+        "page.title": "Dino",
+        "page.docTitle": "Decis / dino",
+        "board.label": "Dino runner",
+        "dino.kpi.score": "Score",
+        "dino.kpi.best": "Best",
+        "dino.kpi.deaths": "Deaths",
+        "dino.kpi.speed": "Speed",
+        "dino.opt.inflight": "Requests in flight",
+        "dino.opt.assist": "Safety net",
+        "dino.opt.assist.title": "The planner vetoes an action it can prove crashes; the model's own choice stays in the panel",
+        "dino.opt.autorestart": "Restart after a crash",
+        "dino.opt.hitboxes": "Show hitboxes",
+        "dino.inflight.1": "1",
+        "dino.inflight.2": "2",
+        "dino.inflight.3": "3",
+        "dino.inflight.4": "4",
         "dino.state.idle": "Idle",
         "dino.state.running": "Running",
         "dino.state.paused": "Paused",
         "dino.state.over": "Game over",
         "dino.state.restarting": "Restarting",
-        "dino.move.jump": "JUMP ↑",
-        "dino.move.duck": "DUCK ↓",
+        "dino.state.manual": "Manual",
+        "dino.move.jump": "JUMP \u2191",
+        "dino.move.duck": "DUCK \u2193",
         "dino.move.run": "RUN",
         "dino.tag.safe": "safe",
         "dino.tag.best": "BEST",
         "dino.tag.collision": "collision",
         "dino.tag.vetoed": "vetoed",
-        "dino.tag.shield": "SHIELD",
-        "dino.panel.moves": "Next move · model probabilities",
-        "dino.panel.session": "Live session",
-        "dino.panel.score": "Score over time",
-        "dino.panel.latency": "Answer time per move, ms",
-        "dino.panel.compare": "Benchmark comparison (seed 7)",
-        "dino.legend.engine": "Decis engine",
-        "dino.chart.sessionP50": "p50 of this session",
-        "dino.chart.realtime": "60 FPS real-time",
-        "dino.kpi.score": "Score",
-        "dino.kpi.best": "Best",
-        "dino.kpi.deaths": "Deaths",
-        "dino.kpi.answerTime": "Answer time",
-        "dino.kpi.survival": "Survival",
-        "dino.kpi.bestMove": "Best move",
-        "dino.kpi.saves": "Live saves",
-        "dino.kpi.throughput": "Throughput",
-        "dino.sub.speed": "speed {v}",
-        "dino.sub.sessionHigh": "session high",
-        "dino.sub.zeroCollisions": "zero collisions",
-        "dino.sub.ms": "{ms} ms",
-        "dino.sub.p95": "p95 {ms} ms",
-        "dino.sub.plannerMatch": "planner match",
-        "dino.sub.vetoes": "{count} model vetoes",
-        "dino.sub.decisions": "{count} decisions",
-        "dino.sub.nothingAhead": "Nothing ahead",
-        "dino.sub.ahead": "{label} ({distance}px)",
-        "dino.sub.crashNote": "hit {label} at {score}",
-        "dino.badge.shieldVeto": "SHIELD VETO · {from} → {to}",
-        "dino.badge.emergency": "EMERGENCY SHIELD · {action}",
-        "dino.badge.gameOver": "GAME OVER · HIT {label} AT SCORE {score}",
-        "dino.badge.crash": "CRASH #{n} · HIT {label} (AUTO-RESTARTING)",
+        "dino.tag.shield": "SAFETY NET",
+        "dino.panel.moves": "Next action \u00b7 model probabilities",
+        "dino.badge.agree": "planner match {pct}% \u00b7 vetoes {vetoes}",
+        "dino.note.pipeline": "in flight {inflight} \u00b7 proposed {proposed} \u2192 played {played} \u00b7 skipped {skipped}",
+        "dino.badge.shieldVeto": "SHIELD VETO \u00b7 {from} \u2192 {to}",
+        "dino.badge.emergency": "EMERGENCY SHIELD \u00b7 {action}",
+        "dino.badge.gameOver": "GAME OVER \u00b7 HIT {label} AT SCORE {score}",
+        "dino.badge.crash": "CRASH #{n} \u00b7 HIT {label} (AUTO-RESTARTING)",
         "dino.badge.apiError": "API Error: {message}",
-        "dino.payload.summary": "Inspect live POST /v1/systemone request & response JSON",
-        "dino.payload.idle": "Press Start Autopilot (or Space) to stream live decisions from the Decis engine…",
-        "dino.foot.course": "Course: staged random · seed 7 · exact Chromium hitboxes (TREX_BOXES + OBSTACLE_TYPES)",
-        "dino.foot.keys": "space start/pause · R reset · H toggle hitboxes",
-        "dino.foot.adapted": "Adapted from",
-        "dino.chart.p50Line": "This session p50: {ms} ms",
-        "dino.chart.p50Label": "This session p50",
-        "dino.chart.bar": "{label}: {ms} ms ({frames} frames)",
+        "dino.foot.course": "Course: staged random \u00b7 exact Chromium hitboxes (TREX_BOXES + OBSTACLE_TYPES)",
+        "dino.foot.keys": "Space start/pause \u00b7 manual: space jump, \u2193 duck \u00b7 R reset \u00b7 H hitboxes \u00b7 M manual/AI.",
         "dino.obst.smallCactus": "small cactus",
         "dino.obst.twoSmallCacti": "2 small cacti",
         "dino.obst.largeCactus": "large cactus",
@@ -420,91 +233,53 @@
         "dino.obst.highBird": "high bird"
       },
       zh: {
-        "dino.title": "Decis / 恐龙竞技场",
-        "dino.subtitle": "原版 Chromium 2x 精灵图，加上精确复刻的 laya_mlx.trex 物理与安全规划器，通过 Decis System One API 做决策",
-        "dino.btn.start": "启动自动驾驶（空格）",
-        "dino.btn.pause": "暂停自动驾驶（空格）",
-        "dino.btn.restart": "重新启动自动驾驶（空格）",
-        "dino.btn.reset": "重置",
-        "dino.ctrl.crash": "撞毁时：",
-        "dino.crash.gameover": "撞毁即停止（经典结束）",
-        "dino.crash.continuous": "自动重开并统计死亡数（竞技场模式）",
-        "dino.ctrl.shield": "护盾：",
-        "dino.shield.unassisted": "不干预（原始 /v1/systemone）",
-        "dino.shield.assisted": "模型 + 实时护盾（规划器 + 到达 + 紧急）",
-        "dino.ctrl.inflight": "在途请求：",
-        "dino.inflight.1": "1 个请求",
-        "dino.inflight.2": "2 个请求在途",
-        "dino.inflight.3": "3 个请求在途",
-        "dino.inflight.4": "4 个请求在途",
-        "dino.ctrl.hitboxes": "显示碰撞盒",
-        "dino.endpoint.title": "POST /v1/systemone 端点",
-        "dino.player.name": "Decis 引擎",
-        "dino.player.detail": "Decis 引擎 · {shield} · {inflight}",
-        "dino.shield.short.unassisted": "不干预",
-        "dino.shield.short.assisted": "模型 + 实时护盾",
-        "dino.inflight.short": "{count} 个在途",
-        "dino.pipeline": "思考 {thinking} → 回答 {answer} → 动作 {action} · 跳过 {skipped}",
-        "dino.state.idle": "空闲",
-        "dino.state.running": "运行中",
-        "dino.state.paused": "已暂停",
-        "dino.state.over": "游戏结束",
-        "dino.state.restarting": "重新开始中",
-        "dino.move.jump": "跳 ↑",
-        "dino.move.duck": "蹲 ↓",
-        "dino.move.run": "跑",
-        "dino.tag.safe": "安全",
-        "dino.tag.best": "最优",
-        "dino.tag.collision": "碰撞",
-        "dino.tag.vetoed": "已否决",
-        "dino.tag.shield": "护盾",
-        "dino.panel.moves": "下一步 · 模型概率",
-        "dino.panel.session": "本局数据",
-        "dino.panel.score": "得分随时间变化",
-        "dino.panel.latency": "每次决策的应答时间（毫秒）",
-        "dino.panel.compare": "对比基准（种子 7）",
-        "dino.legend.engine": "Decis 引擎",
-        "dino.chart.sessionP50": "本次会话的 p50",
-        "dino.chart.realtime": "60 FPS 实时",
-        "dino.kpi.score": "得分",
-        "dino.kpi.best": "最高分",
-        "dino.kpi.deaths": "死亡",
-        "dino.kpi.answerTime": "应答时间",
-        "dino.kpi.survival": "存活",
-        "dino.kpi.bestMove": "最优动作",
-        "dino.kpi.saves": "实时救场",
-        "dino.kpi.throughput": "吞吐",
-        "dino.sub.speed": "速度 {v}",
-        "dino.sub.sessionHigh": "本次会话最高",
-        "dino.sub.zeroCollisions": "零碰撞",
-        "dino.sub.ms": "{ms} 毫秒",
-        "dino.sub.p95": "p95 {ms} 毫秒",
-        "dino.sub.plannerMatch": "与规划器一致",
-        "dino.sub.vetoes": "{count} 次模型否决",
-        "dino.sub.decisions": "{count} 次决策",
-        "dino.sub.nothingAhead": "前方无障碍",
-        "dino.sub.ahead": "{label}（{distance}px）",
-        "dino.sub.crashNote": "在 {score} 分时撞上{label}",
-        "dino.badge.shieldVeto": "护盾否决 · {from} → {to}",
-        "dino.badge.emergency": "紧急护盾 · {action}",
-        "dino.badge.gameOver": "游戏结束 · 在 {score} 分时撞上{label}",
-        "dino.badge.crash": "第 {n} 次撞毁 · 撞上{label}（自动重开）",
-        "dino.badge.apiError": "API 错误：{message}",
-        "dino.payload.summary": "查看实时的 POST /v1/systemone 请求与响应 JSON",
-        "dino.payload.idle": "按“启动自动驾驶”（或空格），即可实时查看 Decis 引擎的决策…",
-        "dino.foot.course": "赛道：分阶段随机 · 种子 7 · 精确的 Chromium 碰撞盒（TREX_BOXES + OBSTACLE_TYPES）",
-        "dino.foot.keys": "空格 启动/暂停 · R 重置 · H 切换碰撞盒",
-        "dino.foot.adapted": "改编自",
-        "dino.chart.p50Line": "本次会话 p50：{ms} 毫秒",
-        "dino.chart.p50Label": "本次会话 p50",
-        "dino.chart.bar": "{label}：{ms} 毫秒（{frames} 帧）",
-        "dino.obst.smallCactus": "小仙人掌",
-        "dino.obst.twoSmallCacti": "2 株小仙人掌",
-        "dino.obst.largeCactus": "大仙人掌",
-        "dino.obst.twoLargeCacti": "2 株大仙人掌",
-        "dino.obst.lowBird": "低空翼龙",
-        "dino.obst.headBird": "齐头高翼龙",
-        "dino.obst.highBird": "高空翼龙"
+        "page.title": "\u6050\u9f99",
+        "page.docTitle": "Decis / \u6050\u9f99",
+        "board.label": "\u6050\u9f99\u8dd1\u9177\u753b\u5e03",
+        "dino.kpi.score": "\u5f97\u5206",
+        "dino.kpi.best": "\u6700\u9ad8\u5206",
+        "dino.kpi.deaths": "\u6b7b\u4ea1",
+        "dino.kpi.speed": "\u901f\u5ea6",
+        "dino.opt.inflight": "\u5728\u9014\u8bf7\u6c42",
+        "dino.opt.assist": "\u5b89\u5168\u515c\u5e95",
+        "dino.opt.assist.title": "\u89c4\u5212\u5668\u4f1a\u5426\u51b3\u5b83\u80fd\u8bc1\u660e\u4f1a\u649e\u7684\u52a8\u4f5c\uff1b\u6a21\u578b\u81ea\u5df1\u7684\u9009\u62e9\u4ecd\u7136\u663e\u793a\u5728\u9762\u677f\u91cc",
+        "dino.opt.autorestart": "\u649e\u6bc1\u540e\u81ea\u52a8\u91cd\u5f00",
+        "dino.opt.hitboxes": "\u663e\u793a\u78b0\u649e\u76d2",
+        "dino.inflight.1": "1",
+        "dino.inflight.2": "2",
+        "dino.inflight.3": "3",
+        "dino.inflight.4": "4",
+        "dino.state.idle": "\u7a7a\u95f2",
+        "dino.state.running": "\u8fd0\u884c\u4e2d",
+        "dino.state.paused": "\u5df2\u6682\u505c",
+        "dino.state.over": "\u6e38\u620f\u7ed3\u675f",
+        "dino.state.restarting": "\u91cd\u65b0\u5f00\u59cb\u4e2d",
+        "dino.state.manual": "\u624b\u52a8",
+        "dino.move.jump": "\u8df3 \u2191",
+        "dino.move.duck": "\u8e72 \u2193",
+        "dino.move.run": "\u8dd1",
+        "dino.tag.safe": "\u5b89\u5168",
+        "dino.tag.best": "\u6700\u4f18",
+        "dino.tag.collision": "\u78b0\u649e",
+        "dino.tag.vetoed": "\u5df2\u5426\u51b3",
+        "dino.tag.shield": "\u5b89\u5168\u515c\u5e95",
+        "dino.panel.moves": "\u4e0b\u4e00\u6b65 \u00b7 \u6a21\u578b\u6982\u7387",
+        "dino.badge.agree": "\u4e0e\u89c4\u5212\u5668\u4e00\u81f4 {pct}% \u00b7 \u5426\u51b3 {vetoes}",
+        "dino.note.pipeline": "\u5728\u9014 {inflight} \u00b7 \u63d0\u8bae {proposed} \u2192 \u6267\u884c {played} \u00b7 \u8df3\u8fc7 {skipped}",
+        "dino.badge.shieldVeto": "\u5b89\u5168\u515c\u5e95\u5426\u51b3 \u00b7 {from} \u2192 {to}",
+        "dino.badge.emergency": "\u7d27\u6025\u5b89\u5168\u515c\u5e95 \u00b7 {action}",
+        "dino.badge.gameOver": "\u6e38\u620f\u7ed3\u675f \u00b7 \u5728 {score} \u5206\u65f6\u649e\u4e0a{label}",
+        "dino.badge.crash": "\u7b2c {n} \u6b21\u649e\u6bc1 \u00b7 \u649e\u4e0a{label}\uff08\u81ea\u52a8\u91cd\u5f00\uff09",
+        "dino.badge.apiError": "API \u9519\u8bef\uff1a{message}",
+        "dino.foot.course": "\u8d5b\u9053\uff1a\u5206\u9636\u6bb5\u968f\u673a \u00b7 \u7cbe\u786e\u7684 Chromium \u78b0\u649e\u76d2\uff08TREX_BOXES + OBSTACLE_TYPES\uff09",
+        "dino.foot.keys": "\u7a7a\u683c \u5f00\u59cb/\u6682\u505c \u00b7 \u624b\u52a8\uff1a\u7a7a\u683c\u8df3\u3001\u2193 \u8e72 \u00b7 R \u91cd\u7f6e \u00b7 H \u78b0\u649e\u76d2 \u00b7 M \u5207\u6362\u624b\u52a8/AI\u3002",
+        "dino.obst.smallCactus": "\u5c0f\u4ed9\u4eba\u638c",
+        "dino.obst.twoSmallCacti": "2 \u682a\u5c0f\u4ed9\u4eba\u638c",
+        "dino.obst.largeCactus": "\u5927\u4ed9\u4eba\u638c",
+        "dino.obst.twoLargeCacti": "2 \u682a\u5927\u4ed9\u4eba\u638c",
+        "dino.obst.lowBird": "\u4f4e\u7a7a\u7ffc\u9f99",
+        "dino.obst.headBird": "\u9f50\u5934\u9ad8\u7ffc\u9f99",
+        "dino.obst.highBird": "\u9ad8\u7a7a\u7ffc\u9f99"
       }
     });
 
@@ -554,10 +329,6 @@
     const MAX_SPEED = 13.0;
     const ACCELERATION = 0.001;
     const DISTANCE_COEFFICIENT = 0.025;
-
-    // The mini charts label themselves with translated text, so their canvas font has to be
-    // able to draw Chinese; "monospace" alone falls back per glyph and looks broken.
-    const CHART_FONT = 'ui-monospace, Menlo, Consolas, "Noto Sans CJK SC", "PingFang SC", monospace';
 
     const SHEET = {
       cactusSmall: [446, 2],
@@ -699,12 +470,9 @@
     let running = false;
     let game = null;
     let highScore = 0;
-    let latencies = [];
     let observedFrames = Array(16).fill(4);
     let latencyFrames = 4;
     let jitterFrames = 1;
-    let scoreHistory = [{ t: 0, v: 0 }];
-    let latencyHistory = [];
     let totalDecisions = 0;
     let matchedBestCount = 0;
     let shieldSaves = 0;
@@ -712,7 +480,6 @@
     let skippedStale = 0;
     let inflightCount = 0;
     let lastRequestAt = 0;
-    let startTimeMs = performance.now();
     let obsSerial = 0;
 
     // The last thing the script wrote into the DOM, so a language switch can redraw it
@@ -1300,14 +1067,19 @@ Action analysis:
     }
 
     function renderGameState() {
-      document.getElementById("game-dot").className = {
-        idle: "dot",
-        running: "dot live",
-        paused: "dot warn",
-        over: "dot err",
-        restarting: "dot err"
-      }[gameState] || "dot";
-      document.getElementById("game-state").textContent = I18N.t("dino.state." + gameState);
+      // Manual play reports itself as such instead of as "Running": the state is the same,
+      // who is deciding is not.
+      const key = gameState === "running" && GameShell.mode() === "manual"
+        ? "dino.state.manual"
+        : "dino.state." + gameState;
+      const kind = {
+        idle: "",
+        running: "live",
+        paused: "warn",
+        over: "err",
+        restarting: "err"
+      }[gameState] || "";
+      GameShell.setStatus(key, null, kind);
     }
 
     function setGameState(next) {
@@ -1336,43 +1108,48 @@ Action analysis:
     }
 
     function renderStartButton() {
-      document.getElementById("startBtn").textContent = I18N.t(
-        game && game.crashed ? "dino.btn.restart" : (running ? "dino.btn.pause" : "dino.btn.start")
-      );
-    }
-
-    function renderDetail() {
-      const shieldMode = document.getElementById("shieldSelect").value;
-      document.getElementById("playerDetailText").textContent = I18N.t("dino.player.detail", {
-        shield: I18N.t(shieldMode === "assisted" ? "dino.shield.short.assisted" : "dino.shield.short.unassisted"),
-        inflight: I18N.t("dino.inflight.short", { count: document.getElementById("inflightSelect").value })
-      });
+      GameShell.setRunning(running);
     }
 
     function renderPipeline() {
-      document.getElementById("pipelineText").textContent = I18N.t("dino.pipeline", {
-        thinking: inflightCount,
-        answer: String(pipelineSnap.prop || "run").toUpperCase(),
-        action: String(pipelineSnap.exec || "run").toUpperCase(),
+      // The pipeline line describes the API call, so it is an AI-mode line; in manual mode
+      // the panel says nothing rather than "0 in flight" forever.
+      if (GameShell.mode() !== "ai") {
+        GameShell.setNote("");
+        return;
+      }
+      GameShell.setNote("dino.note.pipeline", {
+        inflight: inflightCount,
+        proposed: String(pipelineSnap.prop || "run").toUpperCase(),
+        played: String(pipelineSnap.exec || "run").toUpperCase(),
         skipped: pipelineSnap.skipped
       });
+    }
+
+    // "Does the model agree with the planner, and how often did the safety net fire" --
+    // the one readout of this page that is about the model rather than the dinosaur.
+    function renderAgree() {
+      const acc = totalDecisions ? Math.round(100 * matchedBestCount / totalDecisions) : null;
+      document.getElementById("agree-badge").textContent = acc === null
+        ? "\u2014"
+        : I18N.t("dino.badge.agree", { pct: acc, vetoes: modelVetoes });
     }
 
     // Whatever the script itself wrote into the DOM is redrawn here: i18n.js only swaps
     // the nodes that carry a data-i18n attribute, and the live panels are not those.
     function renderTexts() {
-      document.title = I18N.t("dino.title");
-      renderStartButton();
+      document.title = I18N.t("page.docTitle");
       renderGameState();
-      renderDetail();
       renderPipeline();
       renderBadge();
+      renderAgree();
       if (hudSnap) renderHud();
       else renderIdleLabels();
     }
 
     async function querySystemOne() {
       if (!running || !game || game.crashed) return;
+      if (GameShell.mode() !== "ai") return;
       const maxInflight = parseInt(document.getElementById("inflightSelect").value, 10) || 1;
       if (inflightCount >= maxInflight) return;
 
@@ -1385,26 +1162,36 @@ Action analysis:
       const follow = [latencyFrames + stepFrames, latencyFrames + stepFrames + jitterFrames];
       const plan = planAction(game, first, follow);
       const payload = buildQuestion(plan);
+      // What goes on the wire. `payload._uiCriteria` is the page's display copy of the
+      // criteria and is not sent, so the console is shown this object and not `payload`.
+      const sent = {
+        model: payload.model,
+        samples: payload.samples,
+        steps: payload.steps,
+        state: payload.state,
+        questions: payload.questions
+      };
 
       inflightCount++;
       updatePipeline(plan, game.lastProposed, game.held);
       const t0 = performance.now();
+      let reported = false;
       try {
-        const endpoint = document.getElementById("endpointInput").value.trim() || "/v1/systemone";
-        const resp = await fetch(endpoint, {
+        const resp = await fetch("/v1/systemone", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: payload.model,
-            samples: payload.samples,
-            steps: payload.steps,
-            state: payload.state,
-            questions: payload.questions
-          })
+          body: JSON.stringify(sent)
         });
         const elapsed = performance.now() - t0;
+        let body = null;
+        try {
+          body = await resp.json();
+        } catch (ignored) {
+          body = null;
+        }
+        GameShell.observe({ request: sent, response: body, status: resp.status, latencyMs: elapsed });
+        reported = true;
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const body = await resp.json();
         if (!running || !game || game.crashed) return;
 
         // Observe timing in frames (exact Pilot.observe_timing from pilot.py)
@@ -1432,19 +1219,17 @@ Action analysis:
           }
         }
         game.lastProposed = chosen;
-        latencies.push(elapsed);
-        if (latencies.length > 100) latencies.shift();
-        const tSec = (performance.now() - startTimeMs) / 1000;
-        latencyHistory.push({ t: tSec, v: elapsed });
-        if (latencyHistory.length > 120) latencyHistory.shift();
 
         totalDecisions++;
         if (chosen === plan.best) matchedBestCount++;
 
-        const shieldMode = document.getElementById("shieldSelect").value;
+        // The safety net. It is the planner's arrival check, not a second model: an action
+        // the model picked that the planner can prove crashes is replaced by the safe one,
+        // and the panel says so (`vetoed` / `SHIELD`).
+        const assist = document.getElementById("assistToggle").checked;
         let finalAction = chosen;
         let vetoed = false;
-        if (shieldMode === "assisted") {
+        if (assist) {
           const arrivalPlan = planAction(game, [0, 1], [latencyFrames, latencyFrames + jitterFrames]);
           if (!arrivalPlan.safe[chosen]) {
             finalAction = arrivalPlan.best;
@@ -1463,6 +1248,8 @@ Action analysis:
         applyPilotAction(game, finalAction);
         updateHUD(plan, payload, probs, chosen, finalAction, vetoed, elapsed);
       } catch (err) {
+        const elapsed = Math.max(1, performance.now() - t0);
+        if (!reported) GameShell.observe({ request: sent, error: err, latencyMs: elapsed });
         showBadge("dino.badge.apiError", { message: err.message });
       } finally {
         inflightCount--;
@@ -1474,38 +1261,33 @@ Action analysis:
 
     function updatePipeline(plan, prop, exec) {
       pipelineSnap = { prop, exec, skipped: skippedStale };
-      renderDetail();
       renderPipeline();
     }
 
     function renderIdleLabels() {
+      // No measurement has happened, so no bar is drawn: the rows show what the local
+      // planner knows (which action is safe) and a dash where a probability would go.
       for (const a of ["jump", "duck", "run"]) {
         const best = a === "run";
-        document.getElementById(`bar-${a}`).style.width = best ? "100%" : "0%";
-        document.getElementById(`bar-${a}`).className = "bar-fill" + (best ? " chosen" : "");
-        document.getElementById(`pct-${a}`).textContent = best ? "100%" : "0%";
+        document.getElementById(`bar-${a}`).style.width = "0%";
+        document.getElementById(`bar-${a}`).className = "bar-fill";
+        document.getElementById(`pct-${a}`).textContent = "\u2014";
         document.getElementById(`row-${a}`).className = "prob-row" + (best ? " chosen" : "");
         document.getElementById(`name-${a}`).className = "dir-name" + (best ? " chosen" : "");
         const tag = document.getElementById(`tag-${a}`);
-        tag.textContent = I18N.t(best ? "dino.tag.best" : "dino.tag.safe");
-        tag.className = best ? "tag ok" : "tag";
+        tag.textContent = I18N.t("dino.tag.safe");
+        tag.className = "tag";
       }
-      document.getElementById("tileSpeed").textContent =
-        I18N.t("dino.sub.speed", { v: (game ? game.speed : SPEED_START).toFixed(1) });
-      // The two latency tiles carry a placeholder until the first answer; the unit is part
-      // of the string so a Chinese page says 毫秒 rather than ms.
-      document.getElementById("tileMs").textContent = I18N.t("dino.sub.ms", { ms: 116 });
-      document.getElementById("tileP95").textContent = I18N.t("dino.sub.p95", { ms: 139 });
-      document.getElementById("tileCrashNote").textContent = I18N.t("dino.sub.zeroCollisions");
-      document.getElementById("tileSituation").textContent = I18N.t("dino.sub.nothingAhead");
-      document.getElementById("tileVetoes").textContent = I18N.t("dino.sub.vetoes", { count: modelVetoes });
-      document.getElementById("tileDecisions").textContent = I18N.t("dino.sub.decisions", { count: totalDecisions });
-      document.getElementById("payloadInspector").textContent = I18N.t("dino.payload.idle");
+      document.getElementById("m-score").textContent = "0";
+      document.getElementById("m-best").textContent = String(highScore);
+      document.getElementById("m-deaths").textContent = "0";
+      document.getElementById("m-speed").textContent = "\u2014";
+      renderAgree();
     }
 
     function renderHud() {
       if (!hudSnap) return;
-      const { plan, probs, chosen, finalAction, vetoed, payload, elapsed, p50, p95, acc } = hudSnap;
+      const { plan, probs, chosen, finalAction, vetoed } = hudSnap;
       for (const a of ["jump", "duck", "run"]) {
         const p = Math.round((probs[a] || 0) * 100);
         document.getElementById(`bar-${a}`).style.width = `${Math.max(0, p)}%`;
@@ -1531,45 +1313,20 @@ Action analysis:
           tag.className = "tag";
         }
       }
-      document.getElementById("tileMs").textContent = I18N.t("dino.sub.ms", { ms: Math.round(p50) });
-      document.getElementById("tileP95").textContent = I18N.t("dino.sub.p95", { ms: Math.round(p95) });
-      document.getElementById("tileAgree").textContent = `${acc}%`;
-      document.getElementById("tileSituation").textContent = plan.ahead
-        ? I18N.t("dino.sub.ahead", { label: displayLabel(plan.ahead), distance: plan.distance })
-        : I18N.t("dino.sub.nothingAhead");
-      document.getElementById("tileSaves").textContent = String(shieldSaves);
-      document.getElementById("tileVetoes").textContent = I18N.t("dino.sub.vetoes", { count: modelVetoes });
-      document.getElementById("tileHz").textContent = `${(1000 / Math.max(1, p50)).toFixed(1)}/s`;
-      document.getElementById("tileDecisions").textContent = I18N.t("dino.sub.decisions", { count: totalDecisions });
-      document.getElementById("payloadInspector").textContent = JSON.stringify(
-        {
-          state: payload.state,
-          probabilities: probs,
-          chosen_by_model: chosen,
-          executed_action: finalAction,
-          window_frames: [latencyFrames, latencyFrames + jitterFrames],
-          latency_ms: Math.round(elapsed)
-        },
-        null,
-        2
-      );
+      renderAgree();
     }
 
     function updateHUD(plan, payload, probs, chosen, finalAction, vetoed, elapsed) {
       updatePipeline(plan, chosen, finalAction);
-      const sorted = latencies.slice().sort((a, b) => a - b);
-      const p50 = sorted[Math.floor(sorted.length * 0.5)] || elapsed;
-      const p95 = sorted[Math.floor(sorted.length * 0.95)] || elapsed;
-      const acc = totalDecisions ? Math.round(100 * matchedBestCount / totalDecisions) : 100;
-      hudSnap = { plan, probs, chosen, finalAction, vetoed, payload, elapsed, p50, p95, acc };
+      hudSnap = { plan, probs, chosen, finalAction, vetoed };
       renderHud();
     }
 
     function tickPhysics() {
       if (running && game) {
         if (game.crashed) {
-          const crashMode = document.getElementById("crashModeSelect").value;
-          if (crashMode === "continuous") {
+          const autorestart = document.getElementById("autorestartToggle").checked;
+          if (autorestart) {
             game.crashCooldownFrames--;
             if (game.crashCooldownFrames <= 0) {
               game.crashed = false;
@@ -1596,8 +1353,9 @@ Action analysis:
             }
           }
         } else {
-          const shieldMode = document.getElementById("shieldSelect").value;
-          if (shieldMode === "assisted") {
+          // The safety net is part of AI mode: it must not overrule a person's keys.
+          const assist = document.getElementById("assistToggle").checked && GameShell.mode() === "ai";
+          if (assist) {
             const nowPlan = planAction(game, [0, 1], [latencyFrames, latencyFrames + jitterFrames]);
             if (!nowPlan.safe[game.held] && nowPlan.safe[nowPlan.best]) {
               game.epoch++;
@@ -1666,11 +1424,9 @@ Action analysis:
               game.lastHit = { ...hit, obstacle: o };
               game.trex.sprite = 220;
               game.deaths++;
-              document.getElementById("tileDeaths").textContent = String(game.deaths);
-              document.getElementById("tileCrashNote").textContent =
-                I18N.t("dino.sub.crashNote", { label: displayLabel(o.label), score: game.score });
-              const crashMode = document.getElementById("crashModeSelect").value;
-              if (crashMode === "gameover") {
+              document.getElementById("m-deaths").textContent = String(game.deaths);
+              const autorestart = document.getElementById("autorestartToggle").checked;
+              if (!autorestart) {
                 running = false;
                 setGameState("over");
                 renderStartButton();
@@ -1686,16 +1442,9 @@ Action analysis:
             }
           }
 
-          const tSec = (performance.now() - startTimeMs) / 1000;
-          if (!scoreHistory.length || tSec - scoreHistory[scoreHistory.length - 1].t >= 0.25) {
-            scoreHistory.push({ t: tSec, v: game.score });
-            if (scoreHistory.length > 160) scoreHistory.shift();
-          }
-
-          document.getElementById("tileScore").textContent = game.score.toLocaleString();
-          document.getElementById("tileBest").textContent = highScore.toLocaleString();
-          document.getElementById("tileSpeed").textContent = I18N.t("dino.sub.speed", { v: game.speed.toFixed(1) });
-          document.getElementById("tileSurvival").textContent = `${(game.survivalFrames / 60).toFixed(1)}s`;
+          document.getElementById("m-score").textContent = game.score.toLocaleString();
+          document.getElementById("m-best").textContent = highScore.toLocaleString();
+          document.getElementById("m-speed").textContent = game.speed.toFixed(1);
 
           const now = performance.now();
           const maxInflight = parseInt(document.getElementById("inflightSelect").value, 10) || 3;
@@ -1709,7 +1458,6 @@ Action analysis:
       }
 
       renderCanvas();
-      drawCharts();
     }
 
     // Blit from the 2x Chromium sprite sheet exactly as GameView.sprite() in laya_mlx/trex/app.py
@@ -1814,94 +1562,6 @@ Action analysis:
       }
     }
 
-    function drawCharts() {
-      // 1. Score chart
-      const sc = document.getElementById("scoreChart");
-      const sctx = sc.getContext("2d");
-      sctx.fillStyle = "#ffffff";
-      sctx.fillRect(0, 0, sc.width, sc.height);
-      sctx.strokeStyle = "#e2e4e8";
-      sctx.lineWidth = 1;
-      for (const frac of [0.2, 0.55, 0.9]) {
-        sctx.beginPath();
-        sctx.moveTo(32, sc.height * frac);
-        sctx.lineTo(sc.width - 12, sc.height * frac);
-        sctx.stroke();
-      }
-      if (scoreHistory.length > 1) {
-        const maxV = Math.max(100, ...scoreHistory.map(p => p.v));
-        const minT = scoreHistory[0].t;
-        const maxT = Math.max(minT + 10, scoreHistory[scoreHistory.length - 1].t);
-        sctx.strokeStyle = "#eb6834";
-        sctx.lineWidth = 2;
-        sctx.beginPath();
-        scoreHistory.forEach((p, idx) => {
-          const x = 32 + ((p.t - minT) / (maxT - minT)) * (sc.width - 48);
-          const y = sc.height * 0.9 - (p.v / maxV) * (sc.height * 0.7);
-          if (idx === 0) sctx.moveTo(x, y);
-          else sctx.lineTo(x, y);
-        });
-        sctx.stroke();
-      }
-
-      // 2. Latency chart
-      const lc = document.getElementById("latencyChart");
-      const lctx = lc.getContext("2d");
-      lctx.fillStyle = "#ffffff";
-      lctx.fillRect(0, 0, lc.width, lc.height);
-      const maxLat = 420;
-      // This session's p50. The reference deployment drew a borrowed 369 ms baseline
-      // here; the playground has no measured comparison of its own, so it draws only
-      // what it observed (AGENTS.md §8: no performance number without raw data).
-      const latSorted = latencies.slice().sort((a, b) => a - b);
-      const p50 = latSorted.length ? Math.round(latSorted[Math.floor(latSorted.length / 2)]) : 0;
-      const yBase = lc.height * 0.9 - (Math.min(maxLat, p50) / maxLat) * (lc.height * 0.7);
-      lctx.strokeStyle = "#9aa0a6";
-      lctx.setLineDash([4, 4]);
-      lctx.beginPath();
-      lctx.moveTo(32, yBase);
-      lctx.lineTo(lc.width - 12, yBase);
-      lctx.stroke();
-      lctx.setLineDash([]);
-      lctx.fillStyle = "#5f6368";
-      lctx.font = `10px ${CHART_FONT}`;
-      lctx.fillText(I18N.t("dino.chart.p50Line", { ms: p50 }), 38, yBase - 5);
-
-      if (latencyHistory.length > 0) {
-        lctx.strokeStyle = "#eb6834";
-        lctx.lineWidth = 2;
-        lctx.beginPath();
-        latencyHistory.forEach((p, idx) => {
-          const x = 32 + (idx / Math.max(1, latencyHistory.length - 1)) * (lc.width - 48);
-          const y = lc.height * 0.9 - (Math.min(maxLat, p.v) / maxLat) * (lc.height * 0.7);
-          if (idx === 0) lctx.moveTo(x, y);
-          else lctx.lineTo(x, y);
-        });
-        lctx.stroke();
-      }
-
-      // 3. Head-to-Head bar comparison chart
-      const cc = document.getElementById("compareChart");
-      const cctx = cc.getContext("2d");
-      cctx.fillStyle = "#ffffff";
-      cctx.fillRect(0, 0, cc.width, cc.height);
-      const sorted = latencies.slice().sort((a, b) => a - b);
-      const ourP50 = sorted.length ? Math.round(sorted[Math.floor(sorted.length * 0.5)]) : 116;
-      const rows = [
-        { label: I18N.t("dino.chart.p50Label"), ms: ourP50, color: "#eb6834" }
-      ];
-      cctx.font = `11px ${CHART_FONT}`;
-      rows.forEach((r, idx) => {
-        const y = 24 + idx * 40;
-        cctx.fillStyle = "#202124";
-        cctx.fillText(I18N.t("dino.chart.bar", { label: r.label, ms: r.ms, frames: (r.ms / FRAME_MS).toFixed(1) }), 12, y);
-        cctx.fillStyle = "#f1f3f4";
-        cctx.fillRect(12, y + 6, cc.width - 24, 12);
-        cctx.fillStyle = r.color;
-        cctx.fillRect(12, y + 6, Math.max(8, ((cc.width - 24) * r.ms) / 400), 12);
-      });
-    }
-
     function toggleStartOrRestart() {
       if (!game || game.crashed) {
         game = createGame();
@@ -1915,55 +1575,65 @@ Action analysis:
       renderStartButton();
     }
 
-    document.getElementById("startBtn").addEventListener("click", toggleStartOrRestart);
     document.getElementById("dinoCanvas").addEventListener("click", () => {
       if (game && game.crashed) toggleStartOrRestart();
     });
-    document.getElementById("resetBtn").addEventListener("click", () => {
+
+    function resetGame() {
       game = createGame();
       shieldSaves = 0;
       modelVetoes = 0;
+      totalDecisions = 0;
+      matchedBestCount = 0;
+      skippedStale = 0;
+      inflightCount = 0;
+      observedFrames = Array(16).fill(4);
+      latencyFrames = 4;
+      jitterFrames = 1;
+      hudSnap = null;
       hideBadge();
-      document.getElementById("tileScore").textContent = "0";
-      document.getElementById("tileDeaths").textContent = "0";
-      document.getElementById("tileSaves").textContent = "0";
+      GameShell.resetTelemetry();
       setGameState(running ? "running" : "idle");
       renderStartButton();
-    });
+    }
+
+    // Manual play drives the same `game.held` the pilot drives, so the physics, the planner
+    // tags and the collision detection are untouched: only who picks the action changes.
     window.addEventListener("keydown", (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-      if (e.code === "Space") {
-        e.preventDefault();
-        toggleStartOrRestart();
-      } else if (e.key === "r" || e.key === "R") {
-        document.getElementById("resetBtn").click();
-      } else if (e.key === "h" || e.key === "H") {
+      if (e.key === "h" || e.key === "H") {
         const cb = document.getElementById("hitboxToggle");
         cb.checked = !cb.checked;
+        return;
+      }
+      if (GameShell.mode() !== "manual") return;
+      if (e.code === "Space" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!running) toggleStartOrRestart();
+        else if (game && !game.crashed) applyPilotAction(game, "jump");
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (running && game && !game.crashed) applyPilotAction(game, "duck");
       }
     });
+    window.addEventListener("keyup", (e) => {
+      // Releasing the down arrow stops the duck; `enforcePilotKeys` reads `held`.
+      if (GameShell.mode() === "manual" && e.key === "ArrowDown" && game) game.held = "run";
+    });
 
-    // The chip in the app bar answers "which engine am I connected to". That question is
-    // the shell's, not the arena's, and it is the same on every page.
-    async function refreshEngine() {
-      try {
-        const config = await (await fetch("/api/config", { cache: "no-store" })).json();
-        const dot = document.getElementById("dot"), text = document.getElementById("status-text");
-        if (config.ready) {
-          dot.className = "dot live";
-          text.textContent = I18N.t("status.ready", { engine: config.engine });
-        } else {
-          dot.className = "dot warn";
-          text.textContent = I18N.t("status.searching");
-        }
-      } catch (err) {
-        document.getElementById("dot").className = "dot err";
-        document.getElementById("status-text").textContent = I18N.t("status.unreachable", { message: err.message });
+    // The shell owns the app-bar chip, the switch, the inference panel and the console;
+    // this page owns the dinosaur.
+    GameShell.init({
+      game: "dino",
+      manualSpace: true,
+      onStart: toggleStartOrRestart,
+      onReset: resetGame,
+      onMode: () => {
+        if (game) game.held = "run";
+        renderGameState();
+        renderPipeline();
       }
-    }
-    I18N.onChange(refreshEngine);
-    refreshEngine();
-    setInterval(refreshEngine, 5000);
+    });
 
     game = createGame();
     setGameState("idle");

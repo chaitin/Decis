@@ -4,9 +4,9 @@
 
 [Documentation index](../README.md#documentation) · [Deployment](deployment.md) · [API](api.md)
 
-The playground is three small browser games that play themselves by calling a live engine.
-Every move is a real `POST /v1/systemone` request, and the probability bars are the model's
-actual answers, so you can watch a decision model play a game instead of reading JSON.
+The playground is three small browser games you can play yourself or hand to a live engine.
+In AI mode every move is a real `POST /v1/systemone` request, and the probability bars are the
+model's actual answers, so you can watch a decision model play a game instead of reading JSON.
 
 `docker compose up` starts it next to the engine at <http://localhost:8080>.
 
@@ -17,9 +17,10 @@ actual answers, so you can watch a decision model play a game instead of reading
 | `/tetris` | A `choice` over five placements, a `choice` strategy, a `score` stack health, and a `noul` fit |
 
 On a CPU-only host the games are slower than the original GPU deployment and each paces
-itself around the latency it measures. Dino and tetris show a `sim` badge when they fall
-back to a local heuristic — that means the API refused or could not be reached, not that the
-model moved.
+itself around the latency it measures. A failed call is never passed off as a model decision:
+snake plays its own simulation and says `Running (sim)`, dino shows an `API Error` badge and
+keeps its planner's safety net, and tetris falls back to its local heuristic or retries. The
+console holds the request and the error either way.
 
 ## How it is wired
 
@@ -60,9 +61,22 @@ the service name at all, so a dependency on a stopped engine would fail to start
 
 ## Interface
 
-The four pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css))
-and one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)). Each page
-carries its own strings and layout; no page restates the palette.
+The four pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css)),
+one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)) and one shell
+([`playground/web/game.js`](../playground/web/game.js)). A page carries its own strings, its own
+board and its own options; the manual/AI switch, the inference panel, the console for the last
+call, the engine chip and the keyboard shortcuts come from the shell, so no page restates the
+palette or re-implements a mode control.
+
+One switch (`M`) decides who plays: you, or the model. `enter` starts and pauses on every page
+and `R` resets. In manual mode snake and tetris take the arrow keys — `space` is the hard drop in
+tetris — and dino takes `space` or the up arrow to jump and the down arrow to duck.
+
+The inference panel is fed only by the API's own `usage` and the browser's clock. Latency and
+throughput are end-to-end, because the contract has no server-side timing; p50 and p95 describe
+the last 200 calls, and a page that has not called anything yet shows dashes rather than a
+plausible-looking number. The collapsible console below it prints the body of the last
+`/v1/systemone` call as it went on the wire, then the response or the error.
 
 The interface is bilingual, English and Simplified Chinese. The language comes from
 `navigator.languages` unless `?lang=zh` says otherwise; the switch in the app bar overrides
@@ -83,8 +97,13 @@ checkpoint can fall back to.
 
 Measured through the engine's own `measure()`: the placement question is **178 tokens at
 five options** and the whole request is **415 of a 512-token** `state + question` budget,
-against a fallback of 512/192. Six options would be about 207 and would get a 422. The page
-drops to its own heuristic if an engine still says no — which is what the `sim` badge means.
+against a fallback of 512/192. Six options would be about 207 and would get a 422. If an engine
+still says no the page drops to its own heuristic, rather than showing a guess as an answer.
+
+Re-measuring after changing a page's questions does not need a tokenizer: an over-budget question
+comes back as ``Question 'placement' is about N tokens, over this model's limit of M per
+question``, and a successful response reports the same figures under `usage.input_tokens` and the
+`decis` namespace. Send the page's own payload and read them off the console.
 
 ## Credits
 
@@ -127,5 +146,6 @@ make up-playground
 [`tests/test_playground.py`](../tests/test_playground.py) stands up the playground and a
 fake engine on loopback and checks the proxy without importing `decis`, because the
 playground's image does not contain it. It asserts the pages are self-contained, that every
-string is translated, that the proxied request carries the playground's token and the
+string a page asks for is declared, that the three games mount the same shell instead of their
+own mode switch or engine poll, that the proxied request carries the playground's token and the
 rewritten model id, and that the repository URL has one home.

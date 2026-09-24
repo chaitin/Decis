@@ -11,8 +11,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、
 > `docker/Dockerfile` 与 CI 均已实现。
 >
-> **测试**：`uv run pytest -q` 跑无权重的那套（**646 通过 / 33 跳过**，约 25 秒，不联网）；
-> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **670 通过 / 28 跳过**（多出来的 24 个用例
+> **测试**：`uv run pytest -q` 跑无权重的那套（**658 通过 / 33 跳过**，约 25 秒，不联网）；
+> 装了真实 `laya` 的环境（`.scratch/venv`）跑同一套是 **682 通过 / 28 跳过**（多出来的 24 个用例
 > 是引擎可用后才参数化出来的依赖分支）；
 > `uv run pytest -m weights` 跑真实权重的那套（**27 个**：14 个 Laya + 10 个 kev + 3 个真实权重批不变性，CPU 上约 5 分钟）。
 > 另有 `tests/test_contract_sdk.py` 里由 `TYPESAFE_LIVE_API_KEY` 门控的线上差分测试。
@@ -115,7 +115,7 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 的 config 提供而非代码默认）：snake 的 head 79 / 序列 287，dino 78 / 128，tetris 的四个问题
 > 分别 178、100、97、69，state 233、序列 415——**全部落在代码兜底的 512/192 之内**。
 > 正是这个测量把 tetris 的落点候选从 6 压到 5：6 个约 207 > 192。
-> **playground 的界面已实测**（2026-09-23，headless Chromium 1223 走 CDP，工具是 `.scratch/webcheck.py`；
+> **playground 的界面（统一外壳之前那一版）已实测**（2026-09-23，headless Chromium 1223 走 CDP，工具是 `.scratch/webcheck.py`；
 > 页面连的是本机 8299 上那个替身引擎，所以棋真的在下）：四个页面 × 中英各跑一遍（`.scratch/final_sweep.py`
 > 一把跑完八次并把结果留在 `.scratch/final_sweep.json`），**`bad` 全空**——没有未捕获异常、没有 console
 > 输出、没有横向溢出（`documentScrollWidth == viewport`）、没有看不见的字、每个 canvas 都真有像素
@@ -126,12 +126,38 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > `?lang=en` 覆盖它，点顶栏开关切换后**刷新仍是切换后的语言**。真实页面在浏览器里发出的请求被
 > 替身引擎记了下来：snake 9 次 `move`、dino 28 次 `action`、tetris 8 次四问，`state`/`instructions`/
 > `criteria` 仍是英文原文，tetris 的落点候选**恰好 5 个**。
-> **这轮验证抓到并修掉两个真实缺陷**，两个都不是改版引入的、是原来就在的：
-> 一是 tetris 的 `#json-meta` 把候选数写成**字面量 6**——短名单从 6 压到 5 时这句没跟着改，
-> 于是页面显示的选项数比它实际发出去的多一个（已改成读 `PLACEMENT_SHORTLIST`，并在
-> `tests/test_playground.py` 里加了守卫：面板里的数字必须是那个常量，且 `Math.min(5|6|16, …)`
-> 这种写法不许再出现）；二是 tetris 在 380–430px 会横向溢出（stage 是 282px 棋盘 + 96px 侧栏，
-> 而媒体查询只把外层压成一列），已加 440px 断点让 stage 竖排、操作栏换行。
+> **那一轮验证抓到并修掉两个真实缺陷**，两个都不是改版引入的、是原来就在的：
+> 一是 tetris 的"最近一次调用"面板把候选数写成**字面量 6**——短名单从 6 压到 5 时这句没跟着改，
+> 于是页面显示比它实际发出去的选项多一个；二是 tetris 在 380–430px 会横向溢出（stage 是 282px
+> 棋盘 + 96px 侧栏，而媒体查询只把外层压成一列），已加 440px 断点让 stage 竖排、操作栏换行。
+> 统一外壳之后前者那块面板没有了（控制台直接印发出去的请求体），于是守卫改成盯住"请求仍按
+> `PLACEMENT_SHORTLIST` 定量"，且 `Math.min(5|6|16, …)` 这种二次写法不存在。
+> **三个页面的外壳已统一并重新实测**（同一台机器，headless Chromium 1223 走 CDP）：
+> 手动/AI 是**一个开关**（`data-ai-switch`，快捷键 `M`），推理面板的延迟与吞吐只由真实 `usage`
+> 和浏览器时钟算出（延迟是客户端端到端，吞吐 `(input + output) / latency`，p50/p95 取最近
+> 200 次，第一次调用之前显示破折号），"最近一次调用"在一个可折叠的控制台里、印的是**发出去的
+> 请求体本身**；dino 那个 `/v1/systemone` 端点输入与三张基准图
+> （`scoreChart`/`latencyChart`/`compareChart`，于是 dino 的 canvas 从 4 个变成 1 个）随
+> "地址可以改"这件事一起删掉了。
+> 交互实测（`.scratch/uisweep.py`，三游戏 × 中英，`bad` 全空）：AI 档 telemetry 有真数
+> （snake `125 ms` / `421 → 0` / `3368 tok/s`，`0 failed`，控制台里有 `state` 与 `questions`），
+> 切到手动档并等 2 s 后计数器**不再增长**（snake/tetris 停在破折号、dino 停在 115），按键能改变
+> 棋盘或分数，切语言后再读状态文案也跟着变。`final_sweep.py --narrow` 的宽窄视口（1440 与
+> 380/700）结果：四个页面 × 中英共 24 次运行 **`bad` 全空**——未捕获异常 0、console 输出 0、
+> 横向溢出 0、i18n 缺键 0、对比度不合格 0、canvas 都有像素（index 0、snake 1、dino 1、tetris 2）。
+> **合入 master 之后又跑了一遍同一对 sweep**（master 在此期间给顶栏加了"返回/仓库"两个链接，
+> 那是 `.scratch` 那一轮没见过的）：24 次运行仍全部干净，交互 6 次运行的 `bad` 也全空，
+> 对比度样本 index 41 / snake 41 / dino 47–48 / tetris 46，没有一个低于阈值。
+> **这一遍抓到一个合并带出来的真实缺陷**：380px 下三个游戏页横向溢出，
+> `a.link-repo` 跑到 [345..413]（视口 380）——顶栏在 ≤720px 时把导航整行放下，而它现在有五个
+> 链接（返回 + 三个游戏 + 仓库），一行放不下。已让 `.app-nav` 在那一档 `flex-wrap: wrap`
+> （`playground/web/theme.css`），复测 24 次运行 0 溢出。索引页没有这个链接，所以它当时是过的。
+> **这一轮抓到并修掉三个真实缺陷**：tetris 手动档每落一个方块仍向模型要一次"该放哪"的建议
+> （改成只用页面自己的启发式画幽灵，调用归 AI 档）；tetris 的 `renderMetrics()` 往一个从不存在的
+> `#agree-badge` 写值，AI 每做一次决策就抛一个未捕获的 `TypeError`（补齐了那块面板头部）；
+> 上一轮改版丢了 tetris 的 8 条文案（`desc.clear*`、`desc.holes*`、`surface.*`），而 `i18n.js`
+> 缺键只警告不抛，所以只有真在浏览器里跑才会看到页面印出键名——现在 `tests/test_playground.py`
+> 逐页检查页面问过的每个键都已声明。
 > **playground 未验证**：没有用 `docker compose up` 起过（是 `docker run` 起在等价网络上），
 > 所以 compose 的 profile 交互与健康检查只经 `docker compose config` 校验；kev profile 下没跑过；
 > 那条 CI job 也还没在 GitHub 上跑过。界面这一层**没有任何人眼看过**（截图在 `.scratch/shots/`，
@@ -199,6 +225,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
 | playground 页面的调色板 / 字体 / 组件样式 | `playground/web/theme.css` | 页面在自己的 `<style>` 里再抄一套颜色或按钮样式（`tests/test_playground.py` 盯着） |
 | playground 的界面语言（检测、切换、顶栏文案） | `playground/web/i18n.js` | 页面自己实现语言检测或切换；把要发给模型的 `state`/`instructions`/`criteria` 翻译掉——那是 API 的语言，也是上面那些 token 数字量出来的那份字符串 |
+| 三个小游戏共用的界面外壳（手动/AI 开关、推理面板、最近一次调用的控制台、快捷键、引擎状态灯、开始/重置按钮） | `playground/web/game.js`（`window.GameShell`） | 页面各自实现模式开关、自己轮询引擎、自己算延迟与吞吐；页面里再抄一份"最近一次调用"的面板（`tests/test_playground.py` 盯着） |
 | 「怎么构建、怎么起服务」的快捷方式 | `Makefile`（目标全部转调 Compose） | 在 Makefile 里重写镜像 tag / 引擎 id / 构建参数（归 compose 与工作流）；在文档里写一个不存在的 `make` 目标（`tests/test_makefile.py` 两条都盯着） |
 | 对外 API 的 JSON Schema / OpenAPI | `docs/schema/export.py`（由 `src/decis/schema.py` 的模型生成） | 手改 `docs/schema/*.json`（生成物；`tests/test_api_schema.py` 盯着）。改线格式要改 `schema.py` 再 `export.py --write` |
 | 用户文档的语言版本 | `docs/<name>.md` + `docs/<name>.zh-CN.md` 成对存在 | 只改一种语言；两侧的相对链接 / `DECIS_*` 变量 / 代码块语言 / 生成标记不一致（`tests/test_docs.py` 盯着） |
@@ -312,7 +339,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
-uv run pytest -q                     # 无权重测试（CI 跑这个：646 通过 / 33 跳过，约 25 秒）
+uv run pytest -q                     # 无权重测试（CI 跑这个：658 通过 / 33 跳过，约 25 秒）
 uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）

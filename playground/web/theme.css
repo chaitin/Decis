@@ -1,9 +1,10 @@
 /* The playground's design system: one palette, one set of primitives.
  *
  * Every page links this file and styles only its own layout. Anything that appears on
- * more than one page -- the app bar, the engine chip, the language switch, panels,
- * buttons, probability bars, metrics -- lives here, so the four pages cannot drift into
- * four different products, and a colour is changed in one place (AGENTS.md §2).
+ * more than one page -- the app bar, the engine chip, the language switch, the game bar
+ * and its score strip, the manual/AI switch, the panels, buttons, probability bars,
+ * metrics, the inference panel and the I/O console -- lives here, so the four pages cannot
+ * drift into four different products, and a colour is changed in one place (AGENTS.md §2).
  *
  * Two deliberate choices:
  *
@@ -301,6 +302,16 @@ pre {
   color: var(--ink-dim);
 }
 
+/* Two right-hand readings in one head (a game can have a badge and a summary). Wrapping keeps
+   them from pushing the title off a narrow panel instead of overflowing it. */
+.panel-subs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
 .metric { display: inline-flex; align-items: baseline; gap: 5px; font-variant-numeric: tabular-nums; }
 .metric-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
 .metric-val { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--ink); }
@@ -455,13 +466,231 @@ pre {
 .page-foot a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
 .page-foot a:hover { color: var(--ink); }
 
+/* ---------------------------------------------------------- the game chrome -- */
+/*
+ * Everything a game page wraps around its board: the game bar, the score strip, the
+ * manual/AI switch, the per-game options row, the two-column stage, the inference panel
+ * and the I/O console. It lives here, not in the three pages, because the whole point is
+ * that snake, dino and tetris are one product with three boards -- the pages keep their
+ * layout constants (how wide their canvas is) and nothing that appears twice
+ * (AGENTS.md §2).
+ */
+
+.game-shell { width: 100%; max-width: 1080px; margin: 0 auto; padding: 22px 20px 44px; }
+
+/* The game's own bar -- title, live status, score, switch, controls. It is not the app
+   bar: that one belongs to the playground and carries the engine chip. */
+.game-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.game-bar .game-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+.game-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.game-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+/* The per-game numbers. They change every step, so the column is right-aligned and the
+   value keeps a floor width: a score going 9 -> 10 must not push the bar around. */
+.game-bar .score-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-left: auto;
+}
+
+.game-bar .metric-val { min-width: 3ch; text-align: right; }
+
+.game-bar .top-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* manual | AI -- one switch, the same three words on every page. */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+}
+
+.seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.seg-btn:hover { color: var(--ink); }
+
+.seg-btn[aria-pressed="true"] {
+  color: var(--bg);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+/* Per-game extras (dino's crash behaviour, hitboxes, in-flight depth). A game with none
+   simply omits the element; nothing here is required. */
+.game-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+
+.opt { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; white-space: nowrap; }
+.opt input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent); }
+.opt select {
+  height: 28px;
+  padding: 0 8px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+
+.opt-hint { color: var(--muted); font-size: 11.5px; }
+
+/* The stage hugs its board; the readout column is fixed so all three games read the
+   same way round. A page sizes its own canvas inside `.game-stage`. */
+.game-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(296px, 348px);
+  gap: 16px;
+  align-items: start;
+}
+
+.game-stage { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.game-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* --------------------------------------------------------------- inference -- */
+
+.tele-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.tele-item { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+
+.tele-val {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tele-note {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-2);
+  word-break: break-word;
+}
+
+/* ------------------------------------------------------------- I/O console -- */
+
+.io-console { padding: 0; overflow: hidden; }
+
+.io-console > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+}
+
+.io-console > summary::-webkit-details-marker { display: none; }
+.io-console > summary .panel-head { margin: 0; }
+.io-console[open] > summary { border-bottom: 1px solid var(--line); }
+.io-console > summary:hover .panel-head { color: var(--ink-dim); }
+
+.io-body { display: flex; flex-direction: column; gap: 10px; padding: 11px 14px 14px; }
+.io-block { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+
+.io-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The payload is the one thing on the page that is never translated: it is what the page
+   sent. It scrolls rather than clips, because a truncated board is a lie. */
+.io-pre {
+  max-height: 210px;
+  padding: 9px 11px;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  white-space: pre;
+  overflow: auto;
+  font-size: 11px;
+}
+
+.io-empty { color: var(--muted); font-size: 12px; }
+
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   .card:hover { transform: none; }
 }
 
+@media (max-width: 900px) {
+  .game-grid { grid-template-columns: minmax(0, 1fr); }
+  .game-bar .score-strip { margin-left: 0; }
+}
+
 @media (max-width: 720px) {
   .app-bar { flex-wrap: wrap; gap: 8px 12px; }
-  .app-nav { order: 3; width: 100%; }
+  /* The nav gets its own row, and at 380px five links (back, three games, repo) no longer
+     fit on one: without wrapping, the repository link runs off the right edge. */
+  .app-nav { order: 3; width: 100%; flex-wrap: wrap; }
   .status-chip { max-width: 60vw; }
+  .game-bar .top-actions { flex-wrap: wrap; }
 }

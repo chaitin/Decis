@@ -4,9 +4,9 @@
 
 [文档索引](../README.zh-CN.md#文档) · [部署](deployment.zh-CN.md) · [API](api.zh-CN.md)
 
-playground 是三个浏览器小游戏，它们通过调用一个正在运行的引擎来自行推进。每一步都是一次真实的
-`POST /v1/systemone` 请求，概率条就是模型真实的答案，所以你可以看着一个决策模型玩游戏，而不是
-读 JSON。
+playground 是三个浏览器小游戏，你可以自己玩，也可以交给一个正在运行的引擎。AI 档下每一步都是
+一次真实的 `POST /v1/systemone` 请求，概率条就是模型真实的答案，所以你可以看着一个决策模型玩游戏，
+而不是读 JSON。
 
 `docker compose up` 会把它和引擎一起起在 <http://localhost:8080>。
 
@@ -16,9 +16,10 @@ playground 是三个浏览器小游戏，它们通过调用一个正在运行的
 | `/dino` | 一次 `choice`，在物理规划器标出的 jump/duck/run 里选 |
 | `/tetris` | 一次从五个落点中选一个的 `choice`、一个 `choice`（策略）、一个 `score`（堆叠健康度）、一个 `noul`（契合度） |
 
-在只有 CPU 的机器上，游戏比最初的 GPU 部署慢，每个游戏都按自己测到的延迟来调整节奏。
-dino 和 tetris 退回本地启发式时会显示 `sim` 标记——那意味着 API 拒绝了或连不上，不是模型在
-走棋。
+在只有 CPU 的机器上，游戏比最初的 GPU 部署慢，每个游戏都按自己测到的延迟来调整节奏。调用失败时
+页面不会把它装成模型的决定：贪吃蛇跑自己的模拟并把状态写成 `运行中（本地模拟）`，恐龙显示
+`API 错误` 标记并让规划器的安全兜底继续生效，俄罗斯方块退回本地启发式或重试。无论哪种，控制台里
+都留着那次请求和错误。
 
 ## 它是怎么接起来的
 
@@ -55,9 +56,18 @@ playground 找引擎不需要任何配置：它按候选清单依次打 `/readyz
 
 ## 界面
 
-四个页面共用一份样式表（[`playground/web/theme.css`](../playground/web/theme.css)）和一套 i18n
-机制（[`playground/web/i18n.js`](../playground/web/i18n.js)）。每个页面只带自己的文案和布局，
-没有任何一页重抄调色板。
+四个页面共用一份样式表（[`playground/web/theme.css`](../playground/web/theme.css)）、一套 i18n
+机制（[`playground/web/i18n.js`](../playground/web/i18n.js)）和一个外壳
+（[`playground/web/game.js`](../playground/web/game.js)）。页面只带自己的文案、自己的棋盘和自己的
+选项；手动/AI 开关、推理面板、"最近一次调用"的控制台、引擎状态灯和快捷键都来自外壳，所以没有任何
+一页重抄调色板，也没有任何一页自己再实现一遍模式开关。
+
+一个开关（`M`）决定谁来玩：你，或者模型。`回车` 在每一页都是开始/暂停，`R` 重置。手动档下贪吃蛇和
+俄罗斯方块用方向键——俄罗斯方块里 `空格` 是硬降——恐龙用 `空格` 或上方向键跳、下方向键蹲。
+
+推理面板只由 API 自己报的 `usage` 和浏览器的时钟喂出来。契约里没有服务端计时，所以延迟与吞吐都是
+端到端的；p50 和 p95 描述最近 200 次调用；还没调用过的页面显示破折号，而不是一个看起来很合理的数。
+它下面那个可折叠的控制台印的是最近一次 `/v1/systemone` 调用**发出去时的请求体**，然后是响应或错误。
 
 界面是中英双语的。默认按 `navigator.languages` 选，`?lang=zh` 可以指定；顶栏的开关会覆盖它，
 选过之后记在 `localStorage` 里。
@@ -73,7 +83,12 @@ playground 找引擎不需要任何配置：它按候选清单依次打 `/readyz
 
 用引擎自己的 `measure()` 实测：落点问题在五个选项下是 **178 token**，整个请求用掉 512 token 的
 `state + 问题` 预算中的 **415**，兜底预算是 512/192。六个落点约 207，会被 422 拒掉。引擎仍然
-拒绝时页面会退回自己的启发式——`sim` 标记就是这个意思。
+拒绝时页面会退回自己的启发式，而不是把一个猜测当成答案显示出来。
+
+改了页面的问题之后重新量并不需要 tokenizer：超预算的问题会以
+``Question 'placement' is about N tokens, over this model's limit of M per question`` 的形式返回，
+而成功的响应会在 `usage.input_tokens` 和 `decis` 命名空间里报出同一组数字。把页面自己发的请求体
+发一次，从控制台里读出来即可。
 
 ## 致谢
 
@@ -114,5 +129,5 @@ make up-playground
 
 [`tests/test_playground.py`](../tests/test_playground.py) 在回环地址上起一个 playground 和一个
 假引擎，并在不 import `decis` 的前提下检查代理，因为 playground 的镜像里没有它。它断言页面是
-自包含的、每条文案都翻译过、转发出去的请求带的是 playground 的 token 和改写后的 model id，
-以及仓库 URL 只有一处。
+自包含的、每个页面问到的文案都已声明、三个游戏挂的是同一个外壳而不是各自实现模式开关或轮询引擎、
+转发出去的请求带的是 playground 的 token 和改写后的 model id，以及仓库 URL 只有一处。

@@ -1,88 +1,34 @@
 <!DOCTYPE html>
 <!--
-  Decis playground. Adapted from https://github.com/taeold/djev-run (see NOTICE).
+  Decis playground. Adapted from https://github.com/trungdq88/jev-tetris and
+  https://github.com/taeold/djev-run (see NOTICE).
   Changed for Decis: the endpoint is the playground's own origin (it proxies
-  /v1/systemone and attaches the API key server-side), the engine comparison that
-  quoted another deployment's latencies is gone, and tetris asks with five terse
-  options instead of sixteen verbose ones so that it fits the engine's per-question
-  token budget. It also wears the shared /theme.css and translates its interface through
-  /i18n.js; the `state` and the `questions` stay English on purpose -- they are the API's
-  language, and the option count was measured against those exact strings.
+  /v1/systemone and attaches the API key server-side), the "last call" panel is the shared
+  I/O console, and the page wears the shared /theme.css, /i18n.js and /game.js -- the game
+  bar, the manual/AI switch, the inference panel and the console are the shell's. The
+  `state`, the `criteria` and the placement descriptions stay English on purpose: they are
+  the API's language, and the token budget was measured against exactly those strings.
+
+  Two ways to play: `manual` moves with the arrow keys and drops with space and sends
+  nothing, `ai` asks the model for a placement and plays it. The page's own heuristic is not
+  a mode -- it is the yardstick the agreement badge measures the model against, and the
+  fallback when the API is unreachable.
 -->
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Decis / tetris</title>
-  <link rel="stylesheet" href="/theme.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title data-i18n="page.docTitle">Decis / tetris</title>
+  <link rel="stylesheet" href="/theme.css" />
   <script src="/i18n.js"></script>
   <style>
-    /* Page layout only: the palette, the app bar, the engine chip, the language switch,
-       the panels, the buttons and the probability bars live in /theme.css. The board keeps
-       its own canvas art, so nothing here recolours what the canvas draws. */
-    .wrap { width: 100%; max-width: 980px; margin: 0 auto; padding: 22px 20px 40px; }
+    /* Page layout only: the palette, the app bar, the game bar, the panels, the buttons,
+       the probability bars, the inference panel and the I/O console live in /theme.css. The
+       board keeps its own canvas art, so nothing here recolours what the canvas draws. */
+    .game-stage { align-self: start; }
 
-    /* The game's own bar -- title, live status, mode, controls. It is not the app bar:
-       that one belongs to the playground and carries the engine chip. */
-    .game-bar {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px 14px;
-      padding: 12px 14px;
-      margin-bottom: 14px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-
-    .game-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
-
-    .game-title {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 700;
-      letter-spacing: -0.01em;
-      white-space: nowrap;
-    }
-
-    .game-title .game-sub { color: var(--muted); font-weight: 500; }
-
-    .game-status {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--ink-dim);
-      white-space: nowrap;
-    }
-
-    .game-bar .top-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
-
-    select#mode-select {
-      height: 32px;
-      padding: 0 10px;
-      background: var(--surface-2);
-      color: var(--ink);
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-sm);
-      font-family: var(--sans);
-      font-size: 13px;
-      cursor: pointer;
-    }
-
-    /* 282px board card + 12px gap + 96px rail; the readout column takes what is left. */
-    .main-grid {
-      display: grid;
-      grid-template-columns: 390px minmax(0, 1fr);
-      gap: 16px;
-      align-items: start;
-    }
-
-    .left-stage {
-      height: 562px;
+    /* 282px board card + 12px gap + 96px next-piece rail. */
+    .stage-row {
       display: grid;
       grid-template-columns: 282px 96px;
       gap: 12px;
@@ -119,19 +65,16 @@
 
     .overlay.hidden { display: none; }
 
-    .side-rail {
-      height: 562px;
+    .next-block {
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
+      gap: 6px;
       padding: 12px 10px;
       background: var(--surface);
       border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
     }
-
-    .next-block { display: flex; flex-direction: column; gap: 6px; }
 
     .rail-label {
       font-family: var(--mono);
@@ -152,40 +95,6 @@
     }
 
     canvas#next { display: block; width: 74px; height: 56px; }
-
-    .stat-stack {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      padding-top: 14px;
-      border-top: 1px solid var(--line);
-    }
-
-    .stat-item { display: flex; flex-direction: column; gap: 2px; }
-
-    .stat-val {
-      font-family: var(--mono);
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--ink);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .stat-sub {
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .right-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-
-    /* Fixed heights: the three panels fill the 562px column beside the board, so a longer
-       translation or a new placement cannot make the page jump. The board read is the
-       panel whose content is fixed, so the payload panel takes the slack. */
-    .probs-panel { height: 216px; display: flex; flex-direction: column; justify-content: space-between; }
-    .reads-panel { height: 178px; display: flex; flex-direction: column; justify-content: space-between; }
-    .json-panel { height: 144px; display: flex; flex-direction: column; }
 
     .prob-rows { display: flex; flex-direction: column; gap: 6px; }
 
@@ -257,49 +166,16 @@
 
     .strat-cell.active { color: var(--accent); border-color: var(--accent); }
 
-    pre#live-json {
-      flex: 1;
-      padding: 9px 11px;
-      background: var(--surface-solid);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      font-size: 11px;
-      overflow: hidden;
-      white-space: pre;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .foot-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 6px 14px;
-      margin-top: 18px;
-      padding-top: 12px;
-      border-top: 1px solid var(--line);
-      font-family: var(--mono);
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .foot-bar a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px solid var(--line); }
-    .foot-bar a:hover { color: var(--ink); }
-
-    @media (max-width: 880px) {
-      .main-grid { grid-template-columns: minmax(0, 1fr); }
-      .left-stage, .side-rail, .board-box { height: auto; }
-      .probs-panel, .reads-panel, .json-panel { height: auto; }
-      pre#live-json { min-height: 84px; }
+    @media (max-width: 900px) {
+      .board-box { height: auto; }
     }
 
     /* The stage is a 282px board plus a 96px rail, so below 440px of viewport it cannot
        fit side by side and the page scrolls sideways. Stack it instead of shrinking the
        canvas: the board is drawn at a fixed 280x560 and scaling it would blur the grid. */
     @media (max-width: 440px) {
-      .left-stage { grid-template-columns: minmax(0, 1fr); }
+      .stage-row { grid-template-columns: minmax(0, 1fr); }
       .board-box { width: 100%; max-width: 282px; }
-      /* The mode select and two buttons stop fitting on one line here. */
       .game-bar { flex-wrap: wrap; }
       .game-bar .top-actions { flex-wrap: wrap; margin-left: 0; }
     }
@@ -326,167 +202,135 @@
     <div data-lang-switch></div>
   </header>
 
-  <div class="wrap">
+  <main class="game-shell">
     <div class="game-bar">
       <div class="game-id">
-        <h1 class="game-title">Decis <span class="game-sub">(System One)</span> · <span data-i18n="page.title">Tetris</span></h1>
+        <h1 class="game-title" data-i18n="page.title">Tetris</h1>
         <span class="game-status">
           <span id="game-dot" class="dot"></span>
           <span id="game-status-text" data-i18n="game.ready" data-i18n-dynamic>Ready</span>
         </span>
       </div>
-
+      <div class="score-strip">
+        <span class="metric">
+          <span class="metric-label" data-i18n="rail.score">Score</span>
+          <span id="m-score" class="metric-val">0</span>
+        </span>
+        <span class="metric">
+          <span class="metric-label" data-i18n="rail.lines">Lines</span>
+          <span id="m-lines" class="metric-val">0</span>
+        </span>
+        <span class="metric">
+          <span class="metric-label" data-i18n="rail.pieces">Pieces</span>
+          <span id="m-pieces" class="metric-val">0</span>
+        </span>
+      </div>
       <div class="top-actions">
-        <select id="mode-select" aria-label="Control Mode" data-i18n-aria-label="mode.label">
-          <option value="jev" selected data-i18n="mode.engine">Decis engine</option>
-          <option value="heuristic" data-i18n="mode.heuristic">Heuristic (0 ms)</option>
-          <option value="manual" data-i18n="mode.manual">Manual (Arrows + Space)</option>
-        </select>
+        <div data-ai-switch></div>
         <button id="btn-start" class="btn btn-primary" type="button"
-                data-i18n="btn.start" data-i18n-dynamic data-i18n-title="btn.start.title">Start Autopilot</button>
+                data-i18n="btn.start" data-i18n-dynamic data-i18n-title="btn.start.title">Start</button>
         <button id="btn-reset" class="btn" type="button"
                 data-i18n="btn.reset" data-i18n-title="btn.reset.title">Reset</button>
       </div>
     </div>
 
-    <main class="main-grid">
-      <section class="left-stage" aria-label="Tetris board and metrics" data-i18n-aria-label="stage.label">
-        <div class="board board-box">
-          <canvas id="board" aria-label="Tetris board" data-i18n-aria-label="board.label"></canvas>
-          <div id="overlay" class="overlay hidden">
-            <div id="overlay-title" data-i18n="overlay.title" data-i18n-dynamic>Game Over</div>
-            <div id="overlay-sub" class="stat-sub" data-i18n="overlay.sub" data-i18n-dynamic>Press Reset to play again</div>
+    <div class="game-grid">
+      <div class="game-stage">
+        <div class="stage-row">
+          <div class="board board-box">
+            <canvas id="board" width="560" height="1120" aria-label="Tetris board" data-i18n-aria-label="board.label"></canvas>
+            <div id="overlay" class="overlay hidden">
+              <div id="overlay-title" data-i18n="overlay.title" data-i18n-dynamic>Game Over</div>
+              <div id="overlay-sub" class="stat-sub" data-i18n="overlay.sub" data-i18n-dynamic>Press Reset to play again</div>
+            </div>
           </div>
-        </div>
-
-        <aside class="side-rail">
-          <div class="next-block">
+          <aside class="next-block">
             <span class="rail-label" data-i18n="rail.next">Next Piece</span>
             <div class="next-canvas-wrap">
               <canvas id="next" aria-label="Next piece" data-i18n-aria-label="rail.next"></canvas>
             </div>
-          </div>
+          </aside>
+        </div>
+      </div>
 
-          <div class="stat-stack">
-            <div class="stat-item">
-              <span class="rail-label" data-i18n="rail.score">Score</span>
-              <span id="m-score" class="stat-val">0</span>
-            </div>
-            <div class="stat-item">
-              <span class="rail-label" data-i18n="rail.lines">Lines</span>
-              <span id="m-lines" class="stat-val">0</span>
-            </div>
-            <div class="stat-item">
-              <span class="rail-label" data-i18n="rail.pieces">Pieces</span>
-              <span id="m-pieces" class="stat-val">0</span>
-            </div>
-            <div class="stat-item">
-              <span class="rail-label" data-i18n="rail.latency">Latency</span>
-              <span id="m-ms" class="stat-val">0 ms</span>
-              <span id="m-pipeline" class="stat-sub" data-i18n="pipeline.pending" data-i18n-dynamic>pipelined</span>
-            </div>
-            <div class="stat-item">
-              <span class="rail-label" data-i18n="rail.agreement">Agreement</span>
-              <span id="m-agree" class="stat-val">100%</span>
-            </div>
-          </div>
-        </aside>
-      </section>
-
-      <section class="right-col" aria-label="Decis single-pass telemetry" data-i18n-aria-label="right.label">
-        <div class="panel probs-panel">
+      <div class="game-side">
+        <section class="panel">
           <div class="panel-head">
-            <span data-i18n="panel.probs">Placement Probability Distribution (choice)</span>
-            <span id="choice-summary" class="panel-sub">rot 0, col 4 (0.0%)</span>
+            <span data-i18n="panel.probs">Placement probabilities</span>
+            <span class="panel-subs">
+              <span id="agree-badge" class="panel-sub">&mdash;</span>
+              <span id="choice-summary" class="panel-sub">&mdash;</span>
+            </span>
           </div>
           <div id="prob-rows" class="prob-rows"></div>
-        </div>
+        </section>
 
-        <div class="panel reads-panel">
+        <section class="panel">
           <div class="panel-head">
-            <span data-i18n="panel.reads">Board Read</span>
-            <span id="read-summary" class="panel-sub" data-i18n="read.summary">4 questions · strategy · board_health · next_piece_fits</span>
+            <span data-i18n="panel.reads">Model reads</span>
+            <span id="read-summary" class="panel-sub" data-i18n="read.summary">strategy &middot; board_health &middot; next_piece_fits</span>
           </div>
           <div class="read-rows">
             <div class="read-row">
               <span class="read-key" data-i18n="read.strategy">Strategy</span>
-              <span id="read-strat-val" class="read-val">build_clean</span>
-              <div class="bar-track"><div id="read-strat-bar" class="bar-fill chosen" style="width: 50%"></div></div>
-              <span id="read-strat-pct" class="prob-pct">50.0%</span>
+              <span id="read-strat-val" class="read-val">&mdash;</span>
+              <div class="bar-track"><div id="read-strat-bar" class="bar-fill"></div></div>
+              <span id="read-strat-pct" class="prob-pct dim">&mdash;</span>
             </div>
             <div class="read-row">
               <span class="read-key" data-i18n="read.health">Board Health</span>
-              <span id="read-health-val" class="read-val">Clean (1.00)</span>
-              <div class="bar-track"><div id="read-health-bar" class="bar-fill good" style="width: 95%"></div></div>
-              <span id="read-health-score" class="prob-pct">1.0 / 4</span>
+              <span id="read-health-val" class="read-val">&mdash;</span>
+              <div class="bar-track"><div id="read-health-bar" class="bar-fill"></div></div>
+              <span id="read-health-score" class="prob-pct dim">&mdash;</span>
             </div>
             <div class="read-row">
               <span class="read-key" data-i18n="read.fit">Next Piece Fits</span>
-              <span id="read-fit-val" class="read-val">YES (clean spot)</span>
-              <div class="bar-track"><div id="read-fit-bar" class="bar-fill good" style="width: 88%"></div></div>
-              <span id="read-fit-pct" class="prob-pct">88.0%</span>
+              <span id="read-fit-val" class="read-val">&mdash;</span>
+              <div class="bar-track"><div id="read-fit-bar" class="bar-fill"></div></div>
+              <span id="read-fit-pct" class="prob-pct dim">&mdash;</span>
             </div>
           </div>
           <div class="strategy-strip">
-            <div id="st-build_clean" class="strat-cell active"><span data-i18n="strat.short.build_clean">build</span><span id="stp-build_clean">50%</span></div>
-            <div id="st-clear_lines" class="strat-cell"><span data-i18n="strat.short.clear_lines">clear</span><span id="stp-clear_lines">25%</span></div>
-            <div id="st-repair_surface" class="strat-cell"><span data-i18n="strat.short.repair_surface">repair</span><span id="stp-repair_surface">15%</span></div>
-            <div id="st-survive" class="strat-cell"><span data-i18n="strat.short.survive">survive</span><span id="stp-survive">10%</span></div>
+            <div id="st-build_clean" class="strat-cell"><span data-i18n="strat.short.build_clean">build</span><span id="stp-build_clean">&mdash;</span></div>
+            <div id="st-clear_lines" class="strat-cell"><span data-i18n="strat.short.clear_lines">clear</span><span id="stp-clear_lines">&mdash;</span></div>
+            <div id="st-repair_surface" class="strat-cell"><span data-i18n="strat.short.repair_surface">repair</span><span id="stp-repair_surface">&mdash;</span></div>
+            <div id="st-survive" class="strat-cell"><span data-i18n="strat.short.survive">survive</span><span id="stp-survive">&mdash;</span></div>
           </div>
-        </div>
+        </section>
 
-        <div class="panel json-panel">
-          <div class="panel-head">
-            <span data-i18n="panel.call">Last /v1/systemone Call</span>
-            <span id="json-meta" class="panel-sub">Decis engine · 0 ms</span>
-          </div>
-          <pre id="live-json"></pre>
-        </div>
-      </section>
-    </main>
+        <section class="panel" data-telemetry></section>
+        <details class="panel io-console" data-io-console></details>
+      </div>
+    </div>
 
-    <footer class="foot-bar">
-      <span><span data-i18n="foot.adapted">Games adapted from</span> <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a></span>
-      <span id="calls-counter">0 /v1/systemone calls · 0 tokens</span>
+    <footer class="page-foot">
+      <span><span data-i18n="foot.adapted">Games adapted from</span> <a href="https://github.com/taeold/djev-run" target="_blank" rel="noopener">taeold/djev-run</a> &amp; <a href="https://github.com/trungdq88/jev-tetris" target="_blank" rel="noopener">trungdq88/jev-tetris</a>.</span>
+      <span data-i18n="foot.keys">Space start/pause (AI) &middot; manual: arrows + space hard drop &middot; Enter start/pause &middot; R reset &middot; M manual/AI.</span>
     </footer>
-  </div>
-
-<script>
+  </main>
+  <script src="/game.js"></script>
+  <script>
+/* ---- interface text -------------------------------------------------------------
+   Every string a person reads, in both languages. Deliberately absent: the `state`,
+   the `criteria` and the placement descriptions. Those *are* the request, they are
+   English on the wire, and the token budget was measured against them (README, "the
+   three games"), so none of them is touched here or anywhere below. */
 I18N.add({
   en: {
     "page.title": "Tetris",
     "page.docTitle": "Decis / tetris",
     "board.label": "Tetris board",
-    "stage.label": "Tetris board and metrics",
-    "right.label": "Decis single-pass telemetry",
-    "mode.label": "Control Mode",
-    "mode.engine": "Decis engine",
-    "mode.heuristic": "Heuristic (0 ms)",
-    "mode.manual": "Manual (Arrows + Space)",
-    "btn.start": "Start Autopilot",
-    "btn.pause": "Pause",
-    "btn.reset": "Reset",
-    "btn.start.title": "Start or pause the autopilot",
-    "btn.reset.title": "New game",
     "rail.next": "Next Piece",
     "rail.score": "Score",
     "rail.lines": "Lines",
     "rail.pieces": "Pieces",
-    "rail.latency": "Latency",
-    "rail.agreement": "Agreement",
-    "metric.ms": "{value} ms",
-    "pipeline.pending": "pipelined",
-    "pipeline.prefetched": "prefetched (0 ms wait)",
-    "pipeline.live": "live /v1/systemone",
-    "panel.probs": "Placement Probability Distribution (choice)",
-    "panel.reads": "Board Read",
-    "panel.call": "Last /v1/systemone Call",
-    "read.summary": "4 questions · strategy · board_health · next_piece_fits",
+    "panel.probs": "Placement probabilities",
+    "panel.reads": "Model reads",
+    "read.summary": "strategy \u00b7 board_health \u00b7 next_piece_fits",
     "read.strategy": "Strategy",
     "read.health": "Board Health",
     "read.fit": "Next Piece Fits",
     "summary.placement": "rot {rot}, col {col} ({pct})",
-    "slot.id": "r{rot} · c{col}",
     "desc.clear": "clear {n}",
     "desc.clear.none": "0 clear",
     "desc.holes": "+{n} hole",
@@ -495,105 +339,92 @@ I18N.add({
     "surface.slightlyUneven": "slightly uneven",
     "surface.bumpy": "bumpy",
     "surface.jagged": "very jagged",
-    "strat.build_clean": "build_clean",
-    "strat.clear_lines": "clear_lines",
-    "strat.repair_surface": "repair_surface",
-    "strat.survive": "survive",
+    "slot.id": "r{rot} \u00b7 c{col}",
+    "agree.badge": "agrees with the page's heuristic {pct}%",
+    "strat.build_clean": "Build clean",
+    "strat.clear_lines": "Clear lines",
+    "strat.repair_surface": "Repair surface",
+    "strat.survive": "Survive",
     "strat.short.build_clean": "build",
     "strat.short.clear_lines": "clear",
     "strat.short.repair_surface": "repair",
     "strat.short.survive": "survive",
     "health.0": "Clean",
-    "health.1": "Fine",
-    "health.2": "Rough",
+    "health.1": "Rough",
+    "health.2": "Messy",
     "health.3": "Critical",
     "health.val": "{label} ({score})",
     "fit.yes": "YES (clean spot)",
     "fit.no": "NO (tight surface)",
-    "json.meta": "Decis engine · {n} options · {ms} ms",
     "game.ready": "Ready",
+    "game.running": "Running",
+    "game.manual": "Manual",
     "game.paused": "Paused",
     "game.over": "Game over",
-    "game.retry": "Retry",
-    "game.ms.live": "{value} ms · live",
-    "game.ms.sim": "{value} ms · sim",
-    "game.ms.heuristic": "{value} ms · heuristic",
+    "game.retry": "Retrying",
     "overlay.title": "Game Over",
-    "overlay.title.score": "Game Over · {score} pts",
+    "overlay.title.score": "Game Over \u00b7 {score} points",
     "overlay.sub": "Press Reset to play again",
-    "overlay.sub.stats": "{lines} lines · {pieces} pieces",
-    "calls.counter": "{calls} /v1/systemone calls · {tokens} tokens",
+    "overlay.sub.stats": "{lines} lines \u00b7 {pieces} pieces",
+    "pipeline.pending": "pipelined",
+    "pipeline.live": "live request",
+    "pipeline.prefetched": "prefetched while dropping",
+    "foot.keys": "Space start/pause (AI) \u00b7 manual: arrows + space hard drop \u00b7 Enter start/pause \u00b7 R reset \u00b7 M manual/AI.",
   },
   zh: {
-    "page.title": "俄罗斯方块",
-    "page.docTitle": "Decis / 俄罗斯方块",
-    "board.label": "俄罗斯方块棋盘",
-    "stage.label": "俄罗斯方块棋盘与指标",
-    "right.label": "Decis 单次调用遥测",
-    "mode.label": "控制模式",
-    "mode.engine": "Decis 引擎",
-    "mode.heuristic": "启发式（0 毫秒）",
-    "mode.manual": "手动（方向键 + 空格）",
-    "btn.start": "开始自动游玩",
-    "btn.pause": "暂停",
-    "btn.reset": "重置",
-    "btn.start.title": "开始或暂停自动游玩",
-    "btn.reset.title": "重开一局",
-    "rail.next": "下一块",
-    "rail.score": "得分",
-    "rail.lines": "消行",
-    "rail.pieces": "方块数",
-    "rail.latency": "延迟",
-    "rail.agreement": "一致率",
-    "metric.ms": "{value} 毫秒",
-    "pipeline.pending": "流水线中",
-    "pipeline.prefetched": "已预取（无需等待）",
-    "pipeline.live": "实时 /v1/systemone",
-    "panel.probs": "落点概率分布（choice）",
-    "panel.reads": "棋盘读数",
-    "panel.call": "最近一次 /v1/systemone 调用",
-    "read.summary": "4 个问题 · strategy · board_health · next_piece_fits",
-    "read.strategy": "策略",
-    "read.health": "棋盘健康度",
-    "read.fit": "下一块有位置",
-    "summary.placement": "旋转 {rot}，列 {col}（{pct}）",
-    "slot.id": "旋{rot}·列{col}",
-    "desc.clear": "消 {n} 行",
-    "desc.clear.none": "无消行",
-    "desc.holes": "+{n} 洞",
-    "desc.holes.none": "无洞",
-    "surface.flat": "平整",
-    "surface.slightlyUneven": "略不平",
-    "surface.bumpy": "起伏",
-    "surface.jagged": "非常崎岖",
-    "strat.build_clean": "堆叠",
-    "strat.clear_lines": "消行",
-    "strat.repair_surface": "修整",
-    "strat.survive": "求生",
-    "strat.short.build_clean": "堆叠",
-    "strat.short.clear_lines": "消行",
-    "strat.short.repair_surface": "修整",
-    "strat.short.survive": "求生",
-    "health.0": "健康",
-    "health.1": "尚可",
-    "health.2": "粗糙",
-    "health.3": "危急",
-    "health.val": "{label}（{score}）",
-    "fit.yes": "有（位置干净）",
-    "fit.no": "无（表面紧张）",
-    "json.meta": "Decis 引擎 · {n} 个落点 · {ms} 毫秒",
-    "game.ready": "就绪",
-    "game.paused": "已暂停",
-    "game.over": "游戏结束",
-    "game.retry": "重试",
-    "game.ms.live": "{value} 毫秒 · 实时",
-    "game.ms.sim": "{value} 毫秒 · 本地模拟",
-    "game.ms.heuristic": "{value} 毫秒 · 启发式",
-    "overlay.title": "游戏结束",
-    "overlay.title.score": "游戏结束 · {score} 分",
-    "overlay.sub": "按“重置”再来一局",
-    "overlay.sub.stats": "消除 {lines} 行 · {pieces} 块",
-    "calls.counter": "{calls} 次 /v1/systemone 调用 · {tokens} 个 token",
+    "page.title": "\u4fc4\u7f57\u65af\u65b9\u5757",
+    "page.docTitle": "Decis / \u4fc4\u7f57\u65af\u65b9\u5757",
+    "board.label": "\u4fc4\u7f57\u65af\u65b9\u5757\u68cb\u76d8",
+    "rail.next": "\u4e0b\u4e00\u5757",
+    "rail.score": "\u5f97\u5206",
+    "rail.lines": "\u6d88\u884c",
+    "rail.pieces": "\u65b9\u5757",
+    "panel.probs": "\u843d\u70b9\u6982\u7387",
+    "panel.reads": "\u6a21\u578b\u8bfb\u6570",
+    "read.summary": "\u7b56\u7565 \u00b7 \u68cb\u76d8\u5065\u5eb7 \u00b7 \u4e0b\u4e00\u5757\u80fd\u5426\u5b89\u653e",
+    "read.strategy": "\u7b56\u7565",
+    "read.health": "\u68cb\u76d8\u5065\u5eb7",
+    "read.fit": "\u4e0b\u4e00\u5757\u80fd\u5426\u5b89\u653e",
+    "summary.placement": "\u65cb\u8f6c {rot}\uff0c\u5217 {col}\uff08{pct}\uff09",
+    "desc.clear": "\u6d88 {n} \u884c",
+    "desc.clear.none": "\u65e0\u6d88\u884c",
+    "desc.holes": "+{n} \u6d1e",
+    "desc.holes.none": "\u65e0\u6d1e",
+    "surface.flat": "\u5e73\u6574",
+    "surface.slightlyUneven": "\u7565\u4e0d\u5e73",
+    "surface.bumpy": "\u8d77\u4f0f",
+    "surface.jagged": "\u975e\u5e38\u5d0e\u5c96",
+    "slot.id": "\u65cb{rot} \u00b7 \u5217{col}",
+    "agree.badge": "\u4e0e\u9875\u9762\u542f\u53d1\u5f0f\u4e00\u81f4 {pct}%",
+    "strat.build_clean": "\u5806\u5f97\u5e72\u51c0",
+    "strat.clear_lines": "\u6d88\u884c",
+    "strat.repair_surface": "\u4fee\u6574\u8868\u9762",
+    "strat.survive": "\u6c42\u751f",
+    "strat.short.build_clean": "\u5806\u53e0",
+    "strat.short.clear_lines": "\u6d88\u884c",
+    "strat.short.repair_surface": "\u4fee\u6574",
+    "strat.short.survive": "\u6c42\u751f",
+    "health.0": "\u5065\u5eb7",
+    "health.1": "\u5c1a\u53ef",
+    "health.2": "\u7c97\u7cd9",
+    "health.3": "\u5371\u6025",
+    "health.val": "{label}\uff08{score}\uff09",
+    "fit.yes": "\u80fd\uff08\u4f4d\u7f6e\u5e72\u51c0\uff09",
+    "fit.no": "\u4e0d\u80fd\uff08\u8868\u9762\u7d27\u5f20\uff09",
+    "game.ready": "\u5c31\u7eea",
+    "game.running": "\u8fd0\u884c\u4e2d",
+    "game.manual": "\u624b\u52a8",
+    "game.paused": "\u5df2\u6682\u505c",
+    "game.over": "\u6e38\u620f\u7ed3\u675f",
+    "game.retry": "\u91cd\u8bd5\u4e2d",
+    "overlay.title": "\u6e38\u620f\u7ed3\u675f",
+    "overlay.title.score": "\u6e38\u620f\u7ed3\u675f \u00b7 {score} \u5206",
+    "overlay.sub": "\u6309\u201c\u91cd\u7f6e\u201d\u518d\u6765\u4e00\u5c40",
+    "overlay.sub.stats": "\u6d88\u9664 {lines} \u884c \u00b7 {pieces} \u5757",
+    "pipeline.pending": "\u9884\u53d6\u4e2d",
+    "pipeline.live": "\u5b9e\u65f6\u8bf7\u6c42",
+    "pipeline.prefetched": "\u4e0b\u843d\u65f6\u5df2\u9884\u53d6",
+    "foot.keys": "\u7a7a\u683c \u5f00\u59cb/\u6682\u505c\uff08AI\uff09\u00b7 \u624b\u52a8\uff1a\u65b9\u5411\u952e + \u7a7a\u683c\u786c\u964d \u00b7 \u56de\u8f66 \u5f00\u59cb/\u6682\u505c \u00b7 R \u91cd\u7f6e \u00b7 M \u5207\u6362\u624b\u52a8/AI\u3002",
   }
 });
 
@@ -1017,12 +848,21 @@ async function askJev(request, placements, gameInfo, signal) {
         body: JSON.stringify(request),
         signal,
       });
+      const elapsed = performance.now() - t0;
+      let body = null;
+      try {
+        body = await res.json();
+      } catch (ignored) {
+        body = null;
+      }
+      // The console shows the request as sent and the body as received, error or not.
+      GameShell.observe({ request, response: body, status: res.status, latencyMs: elapsed });
       if (res.ok) {
-        const body = await res.json();
-        return { response: body, latencyMs: Math.round(performance.now() - t0), live: true };
+        return { response: body, latencyMs: Math.round(elapsed), live: true };
       }
     } catch (e) {
       if (signal?.aborted) throw e;
+      GameShell.observe({ request, error: e, latencyMs: performance.now() - t0 });
       sandboxFallback = true;
     }
   }
@@ -1130,10 +970,9 @@ const game = {
   flashRows: [],
 };
 
+// The only counters this page keeps: the model's latency, tokens and call count are the
+// shared inference panel's business now (game.js counts them from the real responses).
 const stats = {
-  calls: 0,
-  lastLatency: 0,
-  tokens: 0,
   agreements: 0,
   decisions: 0,
 };
@@ -1148,6 +987,7 @@ let prefetchEntry = null; // { key, promise }
 // `data-i18n` only covers the markup, and every one of these is rewritten per decision.
 let statusKey = "game.ready";
 let statusVars = null;
+let statusState = "live";
 let pipelineKey = "pipeline.pending";
 let overlayState = null;
 let lastPanelDecision = null;
@@ -1174,12 +1014,44 @@ function requestDecisionFor(board, piece, nextPiece, linesCleared, signal) {
   });
 }
 
+function clearProbabilityPanel() {
+  lastPanelDecision = null;
+  lastPanelSource = null;
+  $("choice-summary").textContent = "\u2014";
+  for (let i = 0; i < 6; i++) {
+    $(`pslot-${i}`).textContent = "\u2013";
+    $(`pslot-${i}`).className = "slot-id";
+    $(`pdesc-${i}`).textContent = "\u2013";
+    $(`pdesc-${i}`).className = "slot-desc";
+    $(`pbar-${i}`).style.width = "0%";
+    $(`pbar-${i}`).className = "bar-fill";
+    $(`pval-${i}`).textContent = "\u2014";
+    $(`pval-${i}`).className = "prob-pct dim";
+  }
+  for (const id of ["read-strat", "read-health", "read-fit"]) {
+    $(`${id}-val`).textContent = "\u2014";
+    $(`${id}-bar`).style.width = "0%";
+    $(`${id}-bar`).className = "bar-fill";
+  }
+  $("read-strat-pct").textContent = "\u2014";
+  $("read-health-score").textContent = "\u2014";
+  $("read-fit-pct").textContent = "\u2014";
+  for (const k of ["build_clean", "clear_lines", "repair_surface", "survive"]) {
+    const cell = $(`st-${k}`);
+    const pctSpan = $(`stp-${k}`);
+    if (cell && pctSpan) {
+      cell.className = "strat-cell";
+      pctSpan.textContent = "\u2014";
+    }
+  }
+}
+
 function renderProbabilityPanel(decision, source) {
   if (!decision) return;
   // Kept so a language switch can repaint the whole panel from the same decision.
   lastPanelDecision = decision;
   lastPanelSource = source;
-  const { chosen, ranked, confidence, answers, request, response, latencyMs } = decision;
+  const { chosen, ranked, confidence, answers } = decision;
   const topRanked = ranked.slice(0, PLACEMENT_SHORTLIST);
   $("choice-summary").textContent = I18N.t("summary.placement", {
     rot: chosen.rotation,
@@ -1194,13 +1066,13 @@ function renderProbabilityPanel(decision, source) {
     const barEl = $(`pbar-${i}`);
     const valEl = $(`pval-${i}`);
     if (!item) {
-      slotEl.textContent = "–";
+      slotEl.textContent = "\u2013";
       slotEl.className = "slot-id";
-      descEl.textContent = "–";
+      descEl.textContent = "\u2013";
       descEl.className = "slot-desc";
       barEl.style.width = "0%";
       barEl.className = "bar-fill";
-      valEl.textContent = "0.0%";
+      valEl.textContent = "\u2014";
       valEl.className = "prob-pct dim";
       continue;
     }
@@ -1225,7 +1097,9 @@ function renderProbabilityPanel(decision, source) {
       // The strategy id is the wire value; only its label is translated.
       $("read-strat-val").textContent = I18N.t(`strat.${topChoice}`);
       $("read-strat-bar").style.width = `${Math.max(2, topProb).toFixed(1)}%`;
+      $("read-strat-bar").className = "bar-fill chosen";
       $("read-strat-pct").textContent = `${topProb.toFixed(1)}%`;
+      $("read-strat-pct").className = "prob-pct";
       for (const k of ["build_clean", "clear_lines", "repair_surface", "survive"]) {
         const cell = $(`st-${k}`);
         const pctSpan = $(`stp-${k}`);
@@ -1253,6 +1127,7 @@ function renderProbabilityPanel(decision, source) {
       bar.style.width = `${fillPct.toFixed(1)}%`;
       bar.className = raw < 1.2 ? "bar-fill good" : raw < 2.1 ? "bar-fill warn" : "bar-fill bad";
       $("read-health-score").textContent = `${displayScale.toFixed(1)} / 4`;
+      $("read-health-score").className = "prob-pct";
     }
 
     const fit = answers.next_piece_fits;
@@ -1264,43 +1139,21 @@ function renderProbabilityPanel(decision, source) {
       bar.style.width = `${pct.toFixed(1)}%`;
       bar.className = isYes ? "bar-fill good" : "bar-fill warn";
       $("read-fit-pct").textContent = `${pct.toFixed(1)}%`;
+      $("read-fit-pct").className = "prob-pct";
     }
-  } else {
-    // No answers (the local heuristic, or a fresh reset): the three readings fall back to
-    // their default labels, so a language switch still has something coherent to repaint.
-    $("read-strat-val").textContent = I18N.t("strat.build_clean");
-    $("read-health-val").textContent = I18N.t("health.val", { label: I18N.t("health.0"), score: "1.00" });
-    $("read-fit-val").textContent = I18N.t("fit.yes");
   }
-
-  const healthRounded = typeof answers?.board_health?.score === "number" ? Number((4 - answers.board_health.score).toFixed(2)) : 4.0;
-  const fitRounded = typeof answers?.next_piece_fits?.noul === "number" ? Number(answers.next_piece_fits.noul.toFixed(2)) : 1.0;
-  $("live-json").textContent =
-    `{\n` +
-    `  "model": "${MODEL}", "piece": "${chosen.piece}", "choice": "${chosen.id}",\n` +
-    `  "strategy": "${answers?.strategy?.choice ?? "heuristic"}", "health": ${healthRounded}, "fits": ${fitRounded}\n` +
-    `}`;
-  $("json-meta").textContent = I18N.t("json.meta", {
-    // The count the panel reports is the count the request carried, so it is the same
-    // constant the question is built from. It used to be a literal 6, left behind when
-    // the shortlist was cut to PLACEMENT_SHORTLIST: the page claimed one option more
-    // than it sent.
-    n: decision.placements?.length ? Math.min(PLACEMENT_SHORTLIST, decision.placements.length) : PLACEMENT_SHORTLIST,
-    ms: latencyMs ?? 0,
-  });
 }
 
 function renderMetrics() {
   $("m-score").textContent = game.score;
   $("m-lines").textContent = game.lines;
   $("m-pieces").textContent = game.pieces;
-  $("m-ms").textContent = I18N.t("metric.ms", { value: stats.lastLatency });
-  const agreePct = stats.decisions ? Math.round((stats.agreements / stats.decisions) * 100) : 100;
-  $("m-agree").textContent = `${agreePct}%`;
-  $("calls-counter").textContent = I18N.t("calls.counter", {
-    calls: stats.calls,
-    tokens: stats.tokens.toLocaleString(),
-  });
+  // The badge is about the model, not the board: how often it picked what this page's own
+  // heuristic would have picked. With no decisions yet there is nothing to average.
+  const agreePct = stats.decisions ? Math.round((stats.agreements / stats.decisions) * 100) : null;
+  $("agree-badge").textContent = agreePct === null
+    ? "\u2014"
+    : I18N.t("agree.badge", { pct: agreePct });
 }
 
 // The game's own bar and the app bar's engine chip answer two different questions, so
@@ -1308,16 +1161,16 @@ function renderMetrics() {
 function setStatus(key, vars, state = "live") {
   statusKey = key;
   statusVars = vars || null;
-  paintStatus();
-  $("game-dot").className = `dot ${state}`;
+  statusState = state;
+  GameShell.setStatus(key, vars, state);
 }
 
 function paintStatus() {
-  $("game-status-text").textContent = I18N.t(statusKey, statusVars);
+  GameShell.setStatus(statusKey, statusVars, statusState);
 }
 
 function paintStartLabel() {
-  $("btn-start").textContent = I18N.t(game.running ? "btn.pause" : "btn.start");
+  GameShell.setRunning(game.running);
 }
 
 function setPipeline(key) {
@@ -1325,8 +1178,10 @@ function setPipeline(key) {
   paintPipeline();
 }
 
+// The pipeline line describes the API call, so it is an AI-mode line: in manual mode the
+// note stays empty rather than reporting requests the page is not making.
 function paintPipeline() {
-  $("m-pipeline").textContent = I18N.t(pipelineKey);
+  GameShell.setNote(GameShell.mode() === "ai" ? pipelineKey : "");
 }
 
 function paintOverlay() {
@@ -1463,14 +1318,11 @@ function animateDrop60Fps(target, signal) {
 }
 
 function getMode() {
-  return $("mode-select").value;
+  // One switch for all three games; this page's own heuristic is a fallback, not a mode.
+  return GameShell.mode();
 }
 
 async function resolveMoveDecision(placements, signal) {
-  const mode = getMode();
-  if (mode === "heuristic") {
-    return { ...heuristicDecision(placements), latencyMs: 0, live: true, placements };
-  }
   const key = stateKey(game.board, game.current, game.next);
   let promise;
   if (prefetchEntry && prefetchEntry.key === key) {
@@ -1486,8 +1338,7 @@ async function resolveMoveDecision(placements, signal) {
 
 async function runAutopilotLoop(signal) {
   while (game.running && !game.over && !signal.aborted) {
-    const mode = getMode();
-    if (mode === "manual") {
+    if (getMode() !== "ai") {
       await new Promise((r) => setTimeout(r, 50));
       continue;
     }
@@ -1510,24 +1361,11 @@ async function runAutopilotLoop(signal) {
     }
     if (!decision || signal.aborted || !game.running) return;
 
-    if (mode === "jev") {
-      stats.calls += 1;
-      stats.lastLatency = decision.latencyMs;
-      stats.tokens += decision.response?.usage?.input_tokens || 412;
-      setStatus(
-        decision.live ? "game.ms.live" : "game.ms.sim",
-        { value: decision.latencyMs },
-        decision.live ? "live" : "warn"
-      );
-    } else {
-      stats.lastLatency = 0;
-      setStatus("game.ms.heuristic", { value: 0 }, "live");
-    }
-
     stats.decisions += 1;
     if (decision.chosen.id === heur.chosen.id) stats.agreements += 1;
 
-    renderProbabilityPanel(decision, mode);
+    setStatus("game.running", null, "live");
+    renderProbabilityPanel(decision, getMode());
     renderMetrics();
 
     const chosen = decision.chosen;
@@ -1541,7 +1379,7 @@ async function runAutopilotLoop(signal) {
     const nextPiece = game.next;
     const pieceAfterNext = peekBag();
     const nextLines = game.lines + chosen.linesCleared;
-    if (mode === "jev") {
+    if (getMode() === "ai") {
       const pfKey = stateKey(nextBoard, nextPiece, pieceAfterNext);
       prefetchEntry = {
         key: pfKey,
@@ -1596,13 +1434,14 @@ function spawnManualActive() {
   game.active = { piece: game.current, rotation: rot, x, y };
   const placements = enumeratePlacements(game.board, game.current);
   if (placements.length) {
-    requestDecisionFor(game.board, game.current, game.next, game.lines, abortCtrl?.signal).then((dec) => {
-      if (dec && getMode() === "manual") {
-        renderProbabilityPanel(dec, "jev");
-        game.ghosts = [{ cells: dec.chosen.cells, probability: 1, chosen: true }];
-        drawBoard();
-      }
-    });
+    // Manual play asks the model nothing: the panel and the ghost show what this page's own
+    // heuristic would do with the piece, and `clearProbabilityPanel` drops the model reads
+    // (there are none behind them in this mode).
+    clearProbabilityPanel();
+    const heur = heuristicDecision(placements);
+    renderProbabilityPanel(heur, "heuristic");
+    game.ghosts = [{ cells: heur.chosen.cells, probability: 1, chosen: true }];
+    setStatus("game.manual", null, "live");
   }
   drawBoard();
 }
@@ -1623,16 +1462,17 @@ function resetGame() {
   game.active = { piece: game.current, rotation: 0, x: 3, y: 0 };
   game.ghosts = [];
   game.flashRows = [];
-  Object.assign(stats, { calls: 0, lastLatency: 0, tokens: 0, agreements: 0, decisions: 0 });
+  Object.assign(stats, { agreements: 0, decisions: 0 });
   overlayState = null;
   $("overlay").classList.add("hidden");
+  GameShell.resetTelemetry();
   paintStartLabel();
   setStatus("game.ready", null, "live");
 
-  const initialPlacements = enumeratePlacements(game.board, game.current);
-  const initHeur = heuristicDecision(initialPlacements);
-  game.ghosts = [{ cells: initHeur.chosen.cells, probability: 1, chosen: true }];
-  renderProbabilityPanel({ ...initHeur, placements: initialPlacements, latencyMs: 0 }, "heuristic");
+  // Nothing has been measured yet, so the panels show dashes instead of a guess: the ghost
+  // appears with the first real decision.
+  game.ghosts = [];
+  clearProbabilityPanel();
   renderMetrics();
   drawBoard();
   drawNextPiece();
@@ -1656,17 +1496,12 @@ function startGame() {
   runAutopilotLoop(abortCtrl.signal);
 }
 
-$("btn-start").addEventListener("click", startGame);
-$("btn-reset").addEventListener("click", resetGame);
-$("mode-select").addEventListener("change", () => {
-  prefetchEntry = null;
-  if (getMode() === "manual" && game.running) {
-    spawnManualActive();
-  }
-});
-
+// Manual play: the same piece objects and collision checks the autopilot drops with, driven
+// by a person. Space is the hard drop here, so the shell leaves Space to this page
+// (`manualSpace`) and takes Enter as start/pause in both modes.
 document.addEventListener("keydown", (e) => {
   if (getMode() !== "manual" || !game.active || game.over) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   const { piece, rotation, x, y } = game.active;
   const rots = PIECES[piece];
   if (e.key === "ArrowLeft") {
@@ -1703,29 +1538,32 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// The engine chip: which engine this page is actually talking to. The wiring is the same
-// on every page so the four pages cannot disagree about what is up.
-async function refreshEngine() {
-  try {
-    const config = await (await fetch("/api/config", { cache: "no-store" })).json();
-    const dot = document.getElementById("dot"), text = document.getElementById("status-text");
-    if (config.ready) {
-      dot.className = "dot live";
-      text.textContent = I18N.t("status.ready", { engine: config.engine });
+$("btn-start").addEventListener("click", startGame);
+$("btn-reset").addEventListener("click", resetGame);
+GameShell.init({
+  game: "tetris",
+  manualSpace: true,
+  onStart: startGame,
+  onReset: resetGame,
+  onMode: () => {
+    prefetchEntry = null;
+    if (getMode() === "manual" && game.running) {
+      spawnManualActive();
+    } else if (getMode() === "ai" && game.running) {
+      setStatus("game.running", null, "live");
+      if (abortCtrl) abortCtrl.abort();
+      abortCtrl = new AbortController();
+      runAutopilotLoop(abortCtrl.signal);
     } else {
-      dot.className = "dot warn";
-      text.textContent = I18N.t("status.searching");
+      setStatus("game.ready", null, "live");
     }
-  } catch (err) {
-    document.getElementById("dot").className = "dot err";
-    document.getElementById("status-text").textContent = I18N.t("status.unreachable", { message: err.message });
-  }
-}
+    paintPipeline();
+  },
+});
 
+/* Everything the script writes as text is repainted from here, so switching language
+   mid-game updates the live readout too -- `data-i18n` only covers the markup. */
 I18N.onChange(renderTexts);
-I18N.onChange(refreshEngine);
-refreshEngine();
-setInterval(refreshEngine, 5000);
 
 resetGame();
 renderTexts();

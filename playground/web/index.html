@@ -106,9 +106,11 @@
       <h1><span class="grad" data-i18n="hero.title">Decis playground</span></h1>
     </div>
     <p class="lede" data-i18n="hero.lede">
-      Three games that play themselves by asking a real decision model. Every move is a
-      POST /v1/systemone call; the playground serves the pages and forwards those calls to
-      the running engine with the API key attached, so the browser never holds one.
+      Three games that ask a real decision model for every move, and that you can also play
+      yourself from the keyboard. Each move is a POST /v1/systemone call; the playground
+      serves the pages and forwards those calls to the running engine with the API key
+      attached, so the browser never holds one. All three pages use the same shell: one
+      manual/AI switch, one inference panel, one console for the last call.
     </p>
     <div class="status-note" id="status-note"></div>
 
@@ -116,8 +118,9 @@
       <a class="card" href="/snake">
         <h2><span class="glyph">&#9679;</span><span data-i18n="card.snake.title">Snake</span></h2>
         <p data-i18n="card.snake.desc">
-          A 12&times;12 grid with a flood-fill safety analysis. The model picks between four
-          moves from the safe-move set; the probability bars show what it weighed.
+          A 12&times;12 grid with a flood-fill safety analysis. In AI mode the model picks
+          between four moves from the safe-move set; the arrow keys play it by hand. Either
+          way the probability bars show what the model weighed.
         </p>
         <div class="api mono">choice &middot; 4 options</div>
       </a>
@@ -125,15 +128,17 @@
         <h2><span class="glyph">&#9650;</span><span data-i18n="card.dino.title">Dino</span></h2>
         <p data-i18n="card.dino.desc">
           The Chromium offline runner, with a physics planner that marks jump, duck and run
-          safe, unsafe or best. The model chooses; an optional shield vetoes.
+          safe, unsafe or best. Space and the arrow keys play it by hand; in AI mode the model
+          chooses, with an optional safety net that refuses a move the planner calls unsafe.
         </p>
         <div class="api mono">choice &middot; 3 options</div>
       </a>
       <a class="card" href="/tetris">
         <h2><span class="glyph">&#9638;</span><span data-i18n="card.tetris.title">Tetris</span></h2>
         <p data-i18n="card.tetris.desc">
-          Each turn the page enumerates the placements of the current piece and asks which
-          to play, plus a strategy, a stack-health score and a boolean.
+          Each turn the page enumerates the placements of the current piece and asks which to
+          play, plus a strategy, a stack-health score and a boolean. The arrow keys and space
+          play it by hand; in AI mode the model plays the shortlist it was given.
         </p>
         <div class="api mono">choice &middot; score &middot; noul</div>
       </a>
@@ -151,6 +156,10 @@
       <div>
         <b data-i18n="how.three.title">The key stays server-side</b>
         <span data-i18n="how.three.body">The browser calls this origin; the proxy attaches the token. No page holds a key.</span>
+      </div>
+      <div>
+        <b data-i18n="how.four.title">One shell, three boards</b>
+        <span data-i18n="how.four.body">The switch, the inference panel (latency, tokens per second) and the last-call console are the same on every page.</span>
       </div>
     </section>
 
@@ -179,19 +188,21 @@
     I18N.add({
       en: {
         "hero.title": "Decis playground",
-        "hero.lede": "Three games that play themselves by asking a real decision model. Every move is a POST /v1/systemone call; the playground serves the pages and forwards those calls to the running engine with the API key attached, so the browser never holds one.",
+        "hero.lede": "Three games that ask a real decision model for every move, and that you can also play yourself from the keyboard. Each move is a POST /v1/systemone call; the playground serves the pages and forwards those calls to the running engine with the API key attached, so the browser never holds one. All three pages use the same shell: one manual/AI switch, one inference panel, one console for the last call.",
         "card.snake.title": "Snake",
-        "card.snake.desc": "A 12\u00d712 grid with a flood-fill safety analysis. The model picks between four moves from the safe-move set; the probability bars show what it weighed.",
+        "card.snake.desc": "A 12\u00d712 grid with a flood-fill safety analysis. In AI mode the model picks between four moves from the safe-move set; the arrow keys play it by hand. Either way the probability bars show what the model weighed.",
         "card.dino.title": "Dino",
-        "card.dino.desc": "The Chromium offline runner, with a physics planner that marks jump, duck and run safe, unsafe or best. The model chooses; an optional shield vetoes.",
+        "card.dino.desc": "The Chromium offline runner, with a physics planner that marks jump, duck and run safe, unsafe or best. Space and the arrow keys play it by hand; in AI mode the model chooses, with an optional safety net that refuses a move the planner calls unsafe.",
         "card.tetris.title": "Tetris",
-        "card.tetris.desc": "Each turn the page enumerates the placements of the current piece and asks which to play, plus a strategy, a stack-health score and a boolean.",
+        "card.tetris.desc": "Each turn the page enumerates the placements of the current piece and asks which to play, plus a strategy, a stack-health score and a boolean. The arrow keys and space play it by hand; in AI mode the model plays the shortlist it was given.",
         "how.one.title": "One request per decision",
-        "how.one.body": "No batching and no cache: the payload of the last call is shown on every page.",
+        "how.one.body": "No batching and no cache: every page shows the body of the last call in its console.",
         "how.two.title": "The engine is discovered",
         "how.two.body": "The playground probes /readyz and connects to whichever engine answers first.",
         "how.three.title": "The key stays server-side",
         "how.three.body": "The browser calls this origin; the proxy attaches the token. No page ever holds a key.",
+        "how.four.title": "One shell, three boards",
+        "how.four.body": "The switch, the inference panel (latency, tokens per second) and the last-call console are the same on every page.",
         "status.readyPrefix": "Connected to ",
         "status.candidates": "waiting on {candidates}",
         "status.upstream": "upstream {upstream}",
@@ -207,19 +218,21 @@
       },
       zh: {
         "hero.title": "Decis \u6f14\u793a\u573a",
-        "hero.lede": "\u4e09\u4e2a\u6e38\u620f\uff0c\u9760\u771f\u5b9e\u7684\u51b3\u7b56\u6a21\u578b\u81ea\u5df1\u73a9\u81ea\u5df1\u3002\u6bcf\u4e00\u6b65\u90fd\u662f\u4e00\u6b21 POST /v1/systemone\uff1bplayground \u8d1f\u8d23\u63d0\u4f9b\u9875\u9762\uff0c\u5e76\u5728\u8f6c\u53d1\u65f6\u9644\u4e0a API \u5bc6\u94a5\uff0c\u6240\u4ee5\u6d4f\u89c8\u5668\u91cc\u59cb\u7ec8\u6ca1\u6709\u5bc6\u94a5\u3002",
+        "hero.lede": "\u4e09\u4e2a\u6e38\u620f\uff0c\u6bcf\u4e00\u6b65\u90fd\u95ee\u4e00\u6b21\u771f\u5b9e\u7684\u51b3\u7b56\u6a21\u578b\uff0c\u4e5f\u53ef\u4ee5\u81ea\u5df1\u7528\u952e\u76d8\u73a9\u3002\u6bcf\u4e00\u6b65\u90fd\u662f\u4e00\u6b21 POST /v1/systemone\uff1bplayground \u8d1f\u8d23\u63d0\u4f9b\u9875\u9762\uff0c\u5e76\u5728\u8f6c\u53d1\u65f6\u9644\u4e0a API \u5bc6\u94a5\uff0c\u6240\u4ee5\u6d4f\u89c8\u5668\u91cc\u59cb\u7ec8\u6ca1\u6709\u5bc6\u94a5\u3002\u4e09\u4e2a\u9875\u9762\u5171\u7528\u540c\u4e00\u5957\u5916\u58f3\uff1a\u4e00\u4e2a\u624b\u52a8/AI \u5f00\u5173\u3001\u4e00\u4e2a\u63a8\u7406\u9762\u677f\u3001\u4e00\u4e2a\u6700\u8fd1\u4e00\u6b21\u8c03\u7528\u7684\u63a7\u5236\u53f0\u3002",
         "card.snake.title": "\u8d2a\u5403\u86c7",
-        "card.snake.desc": "12\u00d712 \u68cb\u76d8\uff0c\u914d\u4e00\u4e2a flood-fill \u5b89\u5168\u6027\u5206\u6790\u3002\u6a21\u578b\u5728\u5b89\u5168\u65b9\u5411\u96c6\u91cc\u56db\u9009\u4e00\uff1b\u6982\u7387\u6761\u5c55\u793a\u5b83\u6743\u8861\u4e86\u4ec0\u4e48\u3002",
+        "card.snake.desc": "12\u00d712 \u68cb\u76d8\uff0c\u914d\u4e00\u4e2a flood-fill \u5b89\u5168\u6027\u5206\u6790\u3002AI \u6a21\u5f0f\u4e0b\u6a21\u578b\u5728\u5b89\u5168\u65b9\u5411\u96c6\u91cc\u56db\u9009\u4e00\uff0c\u65b9\u5411\u952e\u53ef\u4ee5\u81ea\u5df1\u73a9\uff1b\u4e24\u79cd\u6a21\u5f0f\u90fd\u7528\u6982\u7387\u6761\u5c55\u793a\u6a21\u578b\u6743\u8861\u4e86\u4ec0\u4e48\u3002",
         "card.dino.title": "\u6050\u9f99",
-        "card.dino.desc": "Chromium \u79bb\u7ebf\u5c0f\u6050\u9f99\uff0c\u914d\u4e00\u4e2a\u7269\u7406\u89c4\u5212\u5668\uff0c\u628a jump / duck / run \u6807\u6210\u5b89\u5168\u3001\u4e0d\u5b89\u5168\u6216\u6700\u4f18\u3002\u9009\u62e9\u7531\u6a21\u578b\u505a\uff1b\u53ef\u9009\u7684\u62a4\u76fe\u53ef\u4e00\u7968\u5426\u51b3\u3002",
+        "card.dino.desc": "Chromium \u79bb\u7ebf\u5c0f\u6050\u9f99\uff0c\u914d\u4e00\u4e2a\u7269\u7406\u89c4\u5212\u5668\uff0c\u628a jump / duck / run \u6807\u6210\u5b89\u5168\u3001\u4e0d\u5b89\u5168\u6216\u6700\u4f18\u3002\u7a7a\u683c\u548c\u65b9\u5411\u952e\u53ef\u4ee5\u81ea\u5df1\u73a9\uff1bAI \u6a21\u5f0f\u4e0b\u7531\u6a21\u578b\u9009\uff0c\u53ef\u9009\u7684\u5b89\u5168\u515c\u5e95\u4f1a\u62d2\u7edd\u89c4\u5212\u5668\u5224\u4e3a\u4e0d\u5b89\u5168\u7684\u52a8\u4f5c\u3002",
         "card.tetris.title": "\u4fc4\u7f57\u65af\u65b9\u5757",
-        "card.tetris.desc": "\u6bcf\u4e00\u56de\u5408\u9875\u9762\u679a\u4e3e\u5f53\u524d\u65b9\u5757\u7684\u6240\u6709\u843d\u70b9\uff0c\u95ee\u8be5\u8d70\u54ea\u4e00\u4e2a\uff0c\u53e6\u5916\u8fd8\u95ee\u4e00\u4e2a\u7b56\u7565\u3001\u4e00\u4e2a\u5806\u53e0\u5065\u5eb7\u5ea6\u5206\u548c\u4e00\u4e2a\u5e03\u5c14\u503c\u3002",
+        "card.tetris.desc": "\u6bcf\u4e00\u56de\u5408\u9875\u9762\u679a\u4e3e\u5f53\u524d\u65b9\u5757\u7684\u6240\u6709\u843d\u70b9\uff0c\u95ee\u8be5\u8d70\u54ea\u4e00\u4e2a\uff0c\u53e6\u5916\u8fd8\u95ee\u4e00\u4e2a\u7b56\u7565\u3001\u4e00\u4e2a\u5806\u53e0\u5065\u5eb7\u5ea6\u5206\u548c\u4e00\u4e2a\u5e03\u5c14\u503c\u3002\u65b9\u5411\u952e\u548c\u7a7a\u683c\u53ef\u4ee5\u81ea\u5df1\u73a9\uff1bAI \u6a21\u5f0f\u4e0b\u6a21\u578b\u5728\u7ed9\u5b83\u7684\u5019\u9009\u91cc\u9009\u3002",
         "how.one.title": "\u6bcf\u4e00\u6b65\u4e00\u6b21\u8bf7\u6c42",
-        "how.one.body": "\u4e0d\u6512\u6279\u3001\u4e0d\u7f13\u5b58\uff1a\u6bcf\u4e2a\u9875\u9762\u90fd\u628a\u4e0a\u4e00\u6b21\u8c03\u7528\u7684\u8bf7\u6c42\u4f53\u539f\u6837\u663e\u793a\u51fa\u6765\u3002",
+        "how.one.body": "\u4e0d\u6512\u6279\u3001\u4e0d\u7f13\u5b58\uff1a\u6bcf\u4e2a\u9875\u9762\u7684\u63a7\u5236\u53f0\u90fd\u628a\u4e0a\u4e00\u6b21\u8c03\u7528\u7684\u8bf7\u6c42\u4f53\u539f\u6837\u663e\u793a\u51fa\u6765\u3002",
         "how.two.title": "\u5f15\u64ce\u662f\u81ea\u5df1\u627e\u5230\u7684",
         "how.two.body": "playground \u4f9d\u6b21\u63a2\u6d4b /readyz\uff0c\u8c01\u5148\u7b54\u5c31\u8fde\u8c01\u3002",
         "how.three.title": "\u5bc6\u94a5\u53ea\u5728\u670d\u52a1\u7aef",
         "how.three.body": "\u6d4f\u89c8\u5668\u8bf7\u6c42\u7684\u662f\u540c\u4e00\u4e2a\u57df\uff1b\u4ee3\u7406\u5728\u670d\u52a1\u7aef\u9644\u4e0a token\uff0c\u9875\u9762\u91cc\u6c38\u8fdc\u6ca1\u6709\u5bc6\u94a5\u3002",
+        "how.four.title": "\u4e00\u5957\u5916\u58f3\uff0c\u4e09\u4e2a\u68cb\u76d8",
+        "how.four.body": "\u4e09\u4e2a\u9875\u9762\u7684\u5f00\u5173\u3001\u63a8\u7406\u9762\u677f\uff08\u5ef6\u8fdf\u3001\u6bcf\u79d2 token\uff09\u548c\u6700\u8fd1\u4e00\u6b21\u8c03\u7528\u7684\u63a7\u5236\u53f0\u90fd\u4e00\u6837\u3002",
         "status.readyPrefix": "\u5df2\u8fde\u63a5 ",
         "status.candidates": "\u6b63\u5728\u7b49\u5f85 {candidates}",
         "status.upstream": "\u4e0a\u6e38 {upstream}",
