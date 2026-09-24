@@ -466,9 +466,9 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
 # The pages are separately authored but must not be separately designed or separately
 # translated. Both mechanisms have one home (`theme.css`, `i18n.js`) and every page uses
 # it; the guards below are what keep a fourth page from growing its own palette or its own
-# half-finished dictionary. A browser can check the result (`.scratch/webcheck.py` reports
-# missing strings, unapplied ones, overflow and JS errors) but it cannot run in CI, so the
-# shape is asserted here and the rendering is checked by hand.
+# half-finished dictionary. A browser audit (missing strings, unapplied ones, overflow, JS
+# errors) is how the rendering was checked, but that tooling was throwaway, is not checked
+# in, and cannot run in CI, so the shape is asserted here.
 
 #: Tokens a page would be redefining the shared palette with. A page may add its own
 #: layout variables; it may not restate these.
@@ -515,7 +515,10 @@ def test_the_api_page_lists_the_errors_the_contract_lists() -> None:
     for line in (ROOT / "docs" / "api.md").read_text(encoding="utf-8").splitlines():
         match = re.match(r"\|\s*\*\*(\d{3})\*\*\s*\|\s*([^|]+?)\s*\|", line)
         if match:
-            kind = match.group(2).strip().strip("`")
+            # The cell holds the `error_type`, optionally followed by a parenthetical about the
+            # *shape* of `detail` (404/405 answer a string, 422 a list). The comparison is on the
+            # error_type token, so take the leading one; an em dash means there is no error_type.
+            kind = match.group(2).strip().strip("`").split(" (")[0].strip().strip("`")
             contract.add((match.group(1), None if kind in {"—", "-"} else kind))
     assert len(contract) >= 9, f"docs/api.md no longer has an error table to compare with: {contract}"
 
@@ -595,8 +598,9 @@ def test_the_recordings_the_index_shows_are_in_the_repository_and_served(playgro
 # board -- the manual/AI switch, the inference panel, the I/O console, the engine chip and
 # the keyboard shortcuts -- have exactly one implementation (`game.js`) and every game page
 # uses it (AGENTS.md §2). These guards are textual because CI has no browser; the rendering
-# and the interaction are audited for real with `.scratch/final_sweep.py` (every page, both
-# languages, three viewport widths) and `.scratch/uisweep.py` (switch, keys, telemetry).
+# and the interaction were audited for real in one (every page, both languages, three
+# viewport widths, plus the switch, the keys and the telemetry) with throwaway tooling that
+# is not checked in.
 
 GAMES = ("snake.html", "dino.html", "tetris.html")
 
@@ -1001,8 +1005,8 @@ def test_every_string_a_page_asks_for_is_declared(name: str) -> None:
 def test_the_language_comes_from_the_browser_and_can_be_switched() -> None:
     """Detection order, persistence and the switch -- the mechanism, not the rendering.
 
-    The rendering is checked in a real browser by `.scratch/webcheck.py`; what has to hold
-    in the weightless suite is that a Chinese browser gets Chinese without touching
+    The rendering was checked in a real browser (throwaway tooling, not checked in); what has
+    to hold in the weightless suite is that a Chinese browser gets Chinese without touching
     anything (the whole point of the feature), that the choice sticks, that `?lang=` works
     for a shared link, and that text is assigned as text.
     """

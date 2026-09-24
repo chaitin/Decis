@@ -322,14 +322,15 @@ def test_the_documented_environment_variables_are_read_by_something() -> None:
     `configuration.md` is the page a reader trusts to tell them what to set, so every name it
     prints has to exist in something that consumes it. `DECIS_HOST_PORT` and the
     `DECIS_PLAYGROUND_*` variables are Compose-only and never reach `config.py`, which is why
-    this looks at the Compose files and the playground as well as the package.
+    this looks at the Compose files and the playground as well as the package. `.env.example`
+    is deliberately not consulted: it is a second copy of this page, so a name that appears
+    only there is read by nothing at all.
     """
     documented = _env_names(_text(DOCS / "configuration.md"))
     sources = [
         *(ROOT / "src" / "decis").rglob("*.py"),
         ROOT / "docker-compose.yml",
         ROOT / "docker-compose.override.yml",
-        ROOT / ".env.example",
         ROOT / "playground" / "server.py",
     ]
     known = "\n".join(_text(path) for path in sources if path.is_file())
