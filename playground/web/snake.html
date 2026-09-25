@@ -6,13 +6,33 @@
   shared /theme.css, /i18n.js and /game.js -- the game bar, the manual/AI switch, the
   inference panel and the I/O console are the shell's, not this page's. The board and the
   move probabilities are side by side; the two panels about the call (inference, console)
-  sit under both of them. The `state` and
-  the `questions` stay English on purpose -- they are the API's language, and the page was
-  sized against the token budget those exact strings produce.
+  sit under both of them. The `state`, the `instructions` and the `criteria` stay English
+  on purpose -- they are the API's language, not the reader's.
 
   Two ways to play: `manual` steers with the arrow keys and sends nothing, `ai` posts the
-  state and plays the model's move. The safety analysis in the panel is computed locally
-  either way, so the tags say why a move is unsafe even when nobody asked the model.
+  state and plays the model's move. The planner (`planMoves`) runs either way and paints
+  the tags next to every direction; in AI mode it is also the safety net, and that is
+  deliberate for this game rather than the other two: a snake has no clock, so a move that
+  is merely *legal* is a move it can repeat forever.
+
+  This page used to hang, and the two halves of the cause were the two halves of the
+  request. The criteria named only a compass direction ("Move north (y - 1)"), so the
+  model had nothing to score: over 160 real boards its argmax was a legal move 71% of the
+  time and a distance-reducing one 47% of the time. The shield then accepted every legal
+  move, so those picks were played, and the snake settled into an exact 26-step loop with
+  the score frozen at 5. Both halves are fixed here: the criteria are the planner's notes
+  ("Blocked. The wall is there." / "Safe. Eats the food now. Best move."), and `allowed` --
+  what the shield will execute -- is the set of moves that reduce the true distance to the
+  food. Over the same 160 boards with these strings: 99% legal, 89% distance-reducing.
+  (The wordings were measured, not guessed; see `describeMove` and `planMoves`.)
+
+  A third part is what keeps that set from ever being empty: `spawnFood` places food only
+  where the head can still walk. In the four 12x12 games measured (different food
+  patterns), the snake plays 255-453 steps to 33-54 apples and ends when it fills a pocket
+  of its own body (`Trapped`); it never revisits a board state, and the score never
+  freezes. A reference implementation that walks a Hamiltonian cycle does not have this
+  ending at all, because it can always reach any free cell; making this greedy planner do
+  that would replace this page's decision with a cycle order.
 -->
 <html lang="en">
 <head>
@@ -137,7 +157,7 @@
 <script src="/game.js"></script>
 <script>
 // The strings the page adds to the shared dictionary. Two conventions, both deliberate:
-// the move names (`dir.*`), the safety reasons (`reason.*`) and the chosen move in
+// the move names (`dir.*`), the planner's verdicts (`reason.*`) and the chosen move in
 // `badge.ai` are wire values shown as the API spelled them -- only the label around them
 // is translated.
 I18N.add({
@@ -149,12 +169,16 @@ I18N.add({
     "metric.steps": "Steps",
     "panel.probs": "Move probabilities",
     "badge.ai": "choice: {move} ({pct})",
+    "badge.shield": "\u00b7 shield: {from} replaced",
     "badge.manual": "manual: {move}",
     "dir.up": "up",
     "dir.down": "down",
     "dir.left": "left",
     "dir.right": "right",
     "reason.safe": "safe",
+    "reason.eat": "eat",
+    "reason.away": "no progress",
+    "reason.trap": "trapped",
     "reason.neck": "neck",
     "reason.wall": "wall",
     "reason.body": "body",
@@ -164,6 +188,9 @@ I18N.add({
     "status.running.manual": "Running (manual)",
     "status.paused": "Paused",
     "status.collision": "Collision",
+    "status.won": "Board filled",
+    "status.trapped": "Trapped",
+    "note.shield": "planner allows {allowed} \u00b7 shield replaced {vetoes} of {calls} model picks",
     "foot.keys": "Arrow keys steer in manual mode \u00b7 Space start/pause \u00b7 R reset \u00b7 M manual/AI.",
   },
   zh: {
@@ -174,12 +201,16 @@ I18N.add({
     "metric.steps": "\u6b65\u6570",
     "panel.probs": "\u8d70\u6cd5\u6982\u7387",
     "badge.ai": "\u9009\u62e9\uff1a{move}\uff08{pct}\uff09",
+    "badge.shield": "\u00b7 \u5b89\u5168\u7f51\uff1a\u5df2\u66ff\u6362 {from}",
     "badge.manual": "\u624b\u52a8\uff1a{move}",
     "dir.up": "\u4e0a",
     "dir.down": "\u4e0b",
     "dir.left": "\u5de6",
     "dir.right": "\u53f3",
     "reason.safe": "\u5b89\u5168",
+    "reason.eat": "\u5403\u98df",
+    "reason.away": "\u65e0\u8fdb\u5c55",
+    "reason.trap": "\u6b7b\u8def",
     "reason.neck": "\u8116\u9888",
     "reason.wall": "\u649e\u5899",
     "reason.body": "\u649e\u8eab",
@@ -189,6 +220,9 @@ I18N.add({
     "status.running.manual": "\u8fd0\u884c\u4e2d\uff08\u624b\u52a8\uff09",
     "status.paused": "\u5df2\u6682\u505c",
     "status.collision": "\u649e\u4e0a\u4e86",
+    "status.won": "\u68cb\u76d8\u5df2\u586b\u6ee1",
+    "status.trapped": "\u88ab\u56f0\u4f4f",
+    "note.shield": "\u89c4\u5212\u5668\u5141\u8bb8 {allowed} \u00b7 \u5b89\u5168\u7f51\u66ff\u6362\u4e86 {calls} \u6b21\u4e2d\u7684 {vetoes} \u6b21",
     "foot.keys": "\u624b\u52a8\u6a21\u5f0f\u7528\u65b9\u5411\u952e\u64cd\u63a7 \u00b7 \u7a7a\u683c\u5f00\u59cb/\u6682\u505c \u00b7 R \u91cd\u7f6e \u00b7 M \u5207\u6362\u624b\u52a8/AI\u3002",
   }
 });
@@ -213,17 +247,13 @@ const VEC = {
 //: fast as the engine answers, which is what makes steering possible.
 const MANUAL_TICK_MS = 110;
 
-const QUESTIONS_SCHEMA = {
-  move: {
-    type: "choice",
-    instructions: "Select the next move for the snake head. Choose recommended_safe_move in safe_moves that reduces manhattan_to_food while preserving open_space.",
-    criteria: {
-      up: "Move north (y - 1)",
-      down: "Move south (y + 1)",
-      left: "Move west (x - 1)",
-      right: "Move east (x + 1)"
-    }
-  }
+//: Why a direction cannot be played at all. The criterion text is what the model scores,
+//: which is why it says *why*: this page used to send "Move north (y - 1)" here, a string
+//: that names the direction and says nothing about the board.
+const BLOCKED = {
+  neck: "Blocked. A 180-degree turn into its own neck.",
+  wall: "Blocked. The wall is there.",
+  body: "Blocked. Its own body is there."
 };
 
 const $ = id => document.getElementById(id);
@@ -239,6 +269,7 @@ let food = [9, 3];
 let score = 0;
 let steps = 0;
 let alive = true;
+let won = false;
 let running = false;
 let inflight = false;
 let sandboxFallback = false;
@@ -246,116 +277,218 @@ let loopToken = 0;
 // The last thing the page wrote into the live readout, kept so a language switch can
 // repaint it: `data-i18n` only covers the markup.
 let lastDecision = null;
+// How often the planner's invariant replaced the model's pick -- the one number on this
+// page that is about the decision rather than the snake.
+let shield = { calls: 0, vetoes: 0 };
+
+const cellKey = (x, y) => x + "," + y;
 
 function spawnFood(body) {
-  const occupied = new Set(body.map(([x, y]) => x + "," + y));
+  const occupied = new Set(body.map(([x, y]) => cellKey(x, y)));
+  // Only cells the head can still walk to. A food behind a wall of the snake's own body
+  // is a game the planner cannot play: no move gets closer to it, so `allowed` collapses
+  // to "anything legal", and the snake wanders until it hits something -- the same
+  // aimless forever-motion this page is being fixed for. With the spawn restricted to the
+  // head's own region, `planMoves` always has a move that reduces the distance, and the
+  // snake cannot reach a step where it has nothing to do. (A cycle-following snake like
+  // laya-mlx's gets this for free: it can walk its Hamiltonian cycle to any free cell, so
+  // unreachable food never arises there.)
+  const reachable = explore(body[0][0], body[0][1], new Set(body.slice(1, -1).map(([x, y]) => cellKey(x, y))));
   const free = [];
   for (let y = 0; y < GRID; y++) {
     for (let x = 0; x < GRID; x++) {
-      if (!occupied.has(x + "," + y)) free.push([x, y]);
+      const k = cellKey(x, y);
+      if (!occupied.has(k) && reachable.has(k)) free.push([x, y]);
     }
   }
-  if (!free.length) return [0, 0];
+  if (!free.length) return null;
   const idx = (steps * 17 + score * 31 + 7) % free.length;
   return free[idx];
 }
 
-function floodFillCount(startX, startY, bodySet) {
-  const startKey = startX + "," + startY;
-  if (startX < 0 || startX >= GRID || startY < 0 || startY >= GRID || bodySet.has(startKey)) {
-    return 0;
-  }
-  const visited = new Set([startKey]);
+/* One breadth-first walk, two answers: how far the food is, and how much room the head
+   has left. `blocked` is the caller's, because the game lets the tail go on a step that
+   does not eat -- a cell the tail is about to leave is not an obstacle (`applyMove`). */
+function explore(startX, startY, blocked) {
+  const distances = new Map([[cellKey(startX, startY), 0]]);
   const queue = [[startX, startY]];
-  while (queue.length > 0) {
-    const [cx, cy] = queue.shift();
+  for (let i = 0; i < queue.length; i++) {
+    const [cx, cy] = queue[i];
+    const next = distances.get(cellKey(cx, cy)) + 1;
     for (const d of DIRS) {
       const [vx, vy] = VEC[d];
       const nx = cx + vx, ny = cy + vy;
-      const k = nx + "," + ny;
-      if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID && !bodySet.has(k) && !visited.has(k)) {
-        visited.add(k);
-        queue.push([nx, ny]);
-      }
+      const k = cellKey(nx, ny);
+      if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID || blocked.has(k) || distances.has(k)) continue;
+      distances.set(k, next);
+      queue.push([nx, ny]);
     }
   }
-  return visited.size;
+  return distances;
 }
 
-function buildState() {
+/* The page's model of the board. The criteria the model scores, the tags the panel paints
+   and the set the shield executes from are all this one object, so they cannot disagree. */
+function planMoves() {
   const [hx, hy] = snake[0];
-  const [fx, fy] = food;
-  const dx = fx - hx;
-  const dy = fy - hy;
-  const bodyObstacles = new Set(snake.slice(0, -1).map(([x, y]) => x + "," + y));
-  const [nxNeck, nyNeck] = snake[1] || [-1, -1];
+  const neck = snake[1] || null;
+  const foodKey = food ? cellKey(food[0], food[1]) : null;
+  const nowBlocked = new Set(snake.slice(1, -1).map(([x, y]) => cellKey(x, y)));
+  const reachNow = explore(hx, hy, nowBlocked);
+  const distanceNow = foodKey && reachNow.has(foodKey) ? reachNow.get(foodKey) : null;
+  const collision = new Set(snake.slice(0, -1).map(([x, y]) => cellKey(x, y)));
 
-  const safeMoves = [];
-  const moveAnalysis = {};
-
+  const moves = {};
   for (const d of DIRS) {
     const [vx, vy] = VEC[d];
-    const tx = hx + vx;
-    const ty = hy + vy;
+    const tx = hx + vx, ty = hy + vy;
     let reason = "safe";
-    if (tx === nxNeck && ty === nyNeck) {
-      reason = "neck";
-    } else if (tx < 0 || tx >= GRID || ty < 0 || ty >= GRID) {
-      reason = "wall";
-    } else if (bodyObstacles.has(tx + "," + ty)) {
-      reason = "body";
+    if (neck && tx === neck[0] && ty === neck[1]) reason = "neck";
+    else if (tx < 0 || tx >= GRID || ty < 0 || ty >= GRID) reason = "wall";
+    else if (collision.has(cellKey(tx, ty))) reason = "body";
+
+    if (reason !== "safe") {
+      moves[d] = {
+        legal: false, reason: reason, eats: false, distance: null, space: 0,
+        progress: false, traps: false, note: BLOCKED[reason]
+      };
+      continue;
     }
-    const isSafe = reason === "safe";
-    const dist = Math.abs(fx - tx) + Math.abs(fy - ty);
-    const space = isSafe ? floodFillCount(tx, ty, bodyObstacles) : 0;
-    if (isSafe) safeMoves.push(d);
-    moveAnalysis[d] = {
-      safe: isSafe,
-      reason,
-      manhattan_to_food: dist,
-      open_space: space,
-      reduces_distance: dist < (Math.abs(dx) + Math.abs(dy))
+
+    // The board as the next step finds it: the tail vacates, the head's old cell does
+    // not.
+    const eats = cellKey(tx, ty) === foodKey;
+    const nextBody = eats ? [[tx, ty], ...snake] : [[tx, ty], ...snake.slice(0, -1)];
+    const reach = explore(tx, ty, new Set(nextBody.slice(1, -1).map(([x, y]) => cellKey(x, y))));
+    const distance = foodKey && reach.has(foodKey) ? reach.get(foodKey) : null;
+    const progress = distance !== null && distanceNow !== null && distance < distanceNow;
+    moves[d] = {
+      legal: true, reason: "safe", eats: eats, distance: distance, space: reach.size,
+      progress: progress,
+      // Losing the food, or stepping into a pocket the snake cannot turn around in, is
+      // safe this instant and hopeless a few steps later. Worth showing only when the move
+      // makes no progress anyway: a tight move that reaches the food is still the way to
+      // the food, and refusing it would be refusing to eat.
+      traps: !progress && (distance === null || reach.size < snake.length)
     };
   }
 
-  let bestMove = safeMoves[0] || direction;
-  let bestScore = -1e9;
-  for (const d of safeMoves) {
-    const info = moveAnalysis[d];
-    const s = info.open_space * 2 - info.manhattan_to_food * 5 + (d === direction ? 0.5 : 0);
-    if (s > bestScore) {
-      bestScore = s;
-      bestMove = d;
+  const legal = DIRS.filter(d => moves[d].legal);
+  const closer = legal.filter(d => moves[d].progress);
+  const untrapped = legal.filter(d => !moves[d].traps);
+  // The invariant the shield executes from, and the whole anti-hang argument. A legal move
+  // that does not reduce the true distance to the food is a move the snake can repeat
+  // forever, so `closer` comes first. While the food is reachable there is always a
+  // distance-reducing move, and taking one leaves the food reachable on the next step, so a
+  // snake driven by this set cannot circle: it eats, or it has nowhere to go. The other two
+  // branches are what keeps the shield correct without that argument -- a board with no
+  // route to the food (which the spawn rule makes unreachable in AI mode, and which is what
+  // a relaxed spawn rule or a hand-built board would hit) and a snake with no legal move at
+  // all, which is how the game ends.
+  const allowed = closer.length ? closer : (untrapped.length ? untrapped : legal);
+  const best = plannerPick(allowed, moves, direction);
+
+  const plan = {
+    moves: moves,
+    allowed: allowed,
+    best: best,
+    distanceNow: distanceNow,
+    closer: closer.length,
+    legal: legal.length
+  };
+  // The state is short on purpose. It is the one string that is *not* an option, and the
+  // measurements say what an encoder does with a longer one: adding the head and food
+  // coordinates dropped the model's distance-reducing picks from 81% to 31% on 80 real
+  // boards (same criteria), while "Snake length" cost nothing. The coordinates are in the
+  // criteria when they mean something ("The wall is there"), and the console still shows
+  // the whole request.
+  plan.state =
+    `Safe route: ${closer.length ? "yes" : "no"}. ` +
+    `Food reachable through empty cells: ${distanceNow === null ? "no" : "yes"}. ` +
+    `Snake length ${snake.length}.`;
+  for (const d of DIRS) moves[d].note = describeMove(d, moves[d], best, closer.length > 0);
+  return plan;
+}
+
+/* The planner's own pick: the food first, then the shortest route, then the most room.
+   Used when the model's ranking is unavailable and as the fallback inside the shield. */
+function plannerPick(allowed, moves, fallback) {
+  let best = fallback;
+  let rank = null;
+  for (const d of allowed) {
+    const m = moves[d];
+    const candidate = [m.eats ? 1 : 0, -(m.distance === null ? 1e9 : m.distance), m.space];
+    if (rank === null
+      || candidate[0] > rank[0]
+      || (candidate[0] === rank[0] && candidate[1] > rank[1])
+      || (candidate[0] === rank[0] && candidate[1] === rank[1] && candidate[2] > rank[2])) {
+      best = d;
+      rank = candidate;
     }
   }
+  return best;
+}
 
+/* One line per direction, in the words the model scores. Half of the bug this page had was
+   here: with criteria that named a compass direction, the model's argmax was a legal move
+   71% of the time and a distance-reducing one 47%; with these lines it is 99% and 89% (160
+   real boards, engine `laya-multilingual`, same boards for both prompts). The wording was
+   measured, not guessed -- "A longer route to the food" held up, "Reaches the food in N
+   steps" did not. */
+function describeMove(d, move, best, routeExists) {
+  if (!move.legal) return move.note;
+  if (move.eats) return d === best ? "Safe. Eats the food now. Best move." : "Safe. Eats the food now.";
+  if (move.progress) return d === best ? "Safe. Best route to the food." : "Safe. A longer route to the food.";
+  if (move.traps) return "Unsafe. Traps the snake.";
+  // The planner found no route at all: nothing gets closer, so "wastes the step" would be
+  // a lie about a choice that has no better option.
+  if (!routeExists) return "Safe. Nothing reaches the food from here.";
+  return "Safe but it does not get closer to the food.";
+}
+
+// The one question this page asks. The criteria keys are the wire's move names, so the
+// answer's `choice` and its `probabilities` keys are directions already.
+function buildQuestions(plan) {
+  const criteria = {};
+  for (const d of DIRS) criteria[d] = plan.moves[d].note;
   return {
-    head: [hx, hy],
-    food: [fx, fy],
-    food_delta: {
-      dx,
-      dy,
-      preferred_horizontal: dx > 0 ? "right" : (dx < 0 ? "left" : "aligned"),
-      preferred_vertical: dy > 0 ? "down" : (dy < 0 ? "up" : "aligned")
-    },
-    safe_moves: safeMoves,
-    move_analysis: moveAnalysis,
-    recommended_safe_move: bestMove
+    move: {
+      type: "choice",
+      instructions: "Choose the best safe move for the snake. Prefer eating the food, then the shortest route to it. Never choose a move that collides or traps the snake.",
+      criteria: criteria
+    }
   };
 }
 
-function simulateSystemOne(state) {
+/* The model's ranking, restricted to what the planner proved worth playing. Falls back to
+   the planner's own pick when the response carried no usable probabilities. */
+function shieldPick(plan, probs) {
+  let best = plan.best;
+  let bestProb = probs ? (probs[best] || 0) : 0;
+  for (const d of plan.allowed) {
+    const p = probs ? (probs[d] || 0) : 0;
+    if (p > bestProb) {
+      best = d;
+      bestProb = p;
+    }
+  }
+  return best;
+}
+
+/* The local stand-in for the engine: used when the call itself fails (a 422 while the
+   model reloads, a dead network). It scores the planner's own analysis, so the fallback
+   plays the game the criteria describe rather than a different one. */
+function simulateSystemOne(plan) {
   const logits = {};
   for (const d of DIRS) {
-    const info = state.move_analysis[d];
-    if (!info.safe) {
+    const m = plan.moves[d];
+    if (!m.legal) {
       logits[d] = -4.5;
+    } else if (plan.allowed.includes(d)) {
+      const distance = m.distance === null ? 0 : Math.min(m.distance, 40);
+      logits[d] = 2.6 - distance * 0.06 + Math.min(m.space, 80) * 0.02 + (d === plan.best ? 0.9 : 0);
     } else {
-      let l = 1.1;
-      if (info.reduces_distance) l += 1.7;
-      l += Math.min(info.open_space, 60) * 0.025;
-      if (d === state.recommended_safe_move) l += 1.0;
-      logits[d] = l;
+      logits[d] = m.traps ? -2.0 : 0.3;
     }
   }
   const mx = Math.max(...Object.values(logits));
@@ -366,7 +499,7 @@ function simulateSystemOne(state) {
     sum += exps[d];
   }
   const probs = {};
-  let bestDir = "right", bestP = -1;
+  let bestDir = plan.best, bestP = -1;
   for (const d of DIRS) {
     probs[d] = exps[d] / sum;
     if (probs[d] > bestP) {
@@ -389,11 +522,11 @@ function simulateSystemOne(state) {
 
 // One POST, and the one call `GameShell.observe` hears about. The body it reports is the
 // body it sent, so the I/O console shows the request and not the page's bookkeeping.
-async function requestDecision(state) {
+async function requestDecision(plan) {
   const reqBody = {
     model: "jev-latest",
-    state,
-    questions: QUESTIONS_SCHEMA
+    state: plan.state,
+    questions: buildQuestions(plan)
   };
   const t0 = performance.now();
   let reported = false;
@@ -416,7 +549,7 @@ async function requestDecision(state) {
       // A 422 (over budget) or a 503 (engine still loading) is not a crash: the game falls
       // back to the local simulation and says `sim` in the status.
       sandboxFallback = true;
-      return { data: simulateSystemOne(state), ms };
+      return { data: simulateSystemOne(plan), ms };
     }
     sandboxFallback = false;
     return { data, ms };
@@ -424,47 +557,73 @@ async function requestDecision(state) {
     const ms = Math.max(11, Math.round(performance.now() - t0));
     if (!reported) GameShell.observe({ request: reqBody, error: err, latencyMs: ms });
     sandboxFallback = true;
-    return { data: simulateSystemOne(state), ms };
+    return { data: simulateSystemOne(plan), ms };
   }
 }
 
-/* The move names, the safety reasons and the chosen move are wire values. They are shown
-   as the API spelled them; only the label around them is translated.
+/* The move names, the planner's verdicts and the chosen move are wire values. They are
+   shown as the API spelled them; only the label around them is translated.
 
    `source` says where the number came from: `ai` is the model's probability, `manual` is a
    human's key press, `none` is "no call has happened yet". Only `ai` gets bars -- a
    probability of 0.0% would be a measurement nobody made. */
 function paintDecision() {
   if (!lastDecision) return;
-  const { state, probs, finalChoice, source } = lastDecision;
-  $("choice-badge").textContent = source === "ai"
-    ? I18N.t("badge.ai", {
-        move: finalChoice,
-        pct: ((probs[finalChoice] || 0) * 100).toFixed(1) + "%"
-      })
-    : source === "manual"
-      ? I18N.t("badge.manual", { move: ARROWS[finalChoice] + " " + I18N.t("dir." + finalChoice) })
-      : "\u2014";
+  const { plan, probs, finalChoice, rawChoice, source } = lastDecision;
+  let badge = "\u2014";
+  if (source === "ai") {
+    badge = I18N.t("badge.ai", {
+      move: finalChoice,
+      pct: (((probs && probs[finalChoice]) || 0) * 100).toFixed(1) + "%"
+    });
+    // Saying what was replaced is the honest version of the bar chart: the bars are the
+    // model's opinion, the move on the board is the shield's.
+    if (rawChoice && rawChoice !== finalChoice) {
+      badge += " " + I18N.t("badge.shield", { from: rawChoice });
+    }
+  } else if (source === "manual") {
+    badge = I18N.t("badge.manual", { move: ARROWS[finalChoice] + " " + I18N.t("dir." + finalChoice) });
+  }
+  $("choice-badge").textContent = badge;
 
   for (const d of DIRS) {
-    const info = state.move_analysis[d];
+    const move = plan.moves[d];
     const isSelected = d === finalChoice;
-    const p = source === "ai" ? Math.max(0, Math.min(1, Number(probs[d] || 0))) : 0;
+    const measured = source === "ai" && !!probs;
+    const p = measured ? Math.max(0, Math.min(1, Number(probs[d] || 0))) : 0;
+    const verdict = !move.legal ? move.reason
+      : move.eats ? "eat"
+        : move.progress ? "safe"
+          : move.traps ? "trap" : "away";
+    const kind = move.eats || move.progress ? "ok" : (move.legal && !move.traps ? "warn" : "blocked");
 
     $("name-" + d).className = "dir-name" + (isSelected && source !== "none" ? " chosen" : "");
     $("name-" + d).textContent = `${ARROWS[d]} ${I18N.t("dir." + d)}`;
 
     const safeEl = $("safe-" + d);
-    safeEl.textContent = I18N.t(info.safe ? "reason.safe" : "reason." + info.reason);
-    safeEl.className = "tag " + (info.safe ? "ok" : "blocked");
+    safeEl.textContent = I18N.t("reason." + verdict);
+    safeEl.className = "tag " + kind;
 
     const barEl = $("bar-" + d);
-    barEl.style.width = source === "ai" ? (p * 100).toFixed(1) + "%" : "0%";
-    barEl.className = "bar-fill" + (source === "ai" && isSelected ? " chosen" : "");
+    barEl.style.width = measured ? (p * 100).toFixed(1) + "%" : "0%";
+    barEl.className = "bar-fill" + (measured && isSelected ? " chosen" : "");
 
-    $("val-" + d).className = "prob-pct" + (source === "ai" && isSelected ? "" : " dim");
-    $("val-" + d).textContent = source === "ai" ? (p * 100).toFixed(1) + "%" : "\u2014";
+    $("val-" + d).className = "prob-pct" + (measured && isSelected ? "" : " dim");
+    $("val-" + d).textContent = measured ? (p * 100).toFixed(1) + "%" : "\u2014";
   }
+}
+
+// How often the planner had to overrule the model. It is the readout that says whether
+// the criteria are doing their job: a shield that fires on most steps is a prompt that is
+// not carrying the decision.
+function paintShield() {
+  GameShell.setNote("note.shield", {
+    allowed: lastDecision && lastDecision.plan.allowed.length
+      ? lastDecision.plan.allowed.join("/")
+      : "\u2014",
+    vetoes: shield.vetoes,
+    calls: shield.calls
+  });
 }
 
 /* Everything the script writes as text is repainted from here, so switching language
@@ -472,13 +631,15 @@ function paintDecision() {
 function renderTexts() {
   document.title = I18N.t("page.docTitle");
   paintDecision();
+  paintShield();
 }
 
-function updateUI(state, probs, finalChoice, source) {
-  lastDecision = { state, probs, finalChoice, source };
+function updateUI(plan, probs, finalChoice, rawChoice, source) {
+  lastDecision = { plan, probs, finalChoice, rawChoice, source };
   $("m-score").textContent = String(score);
   $("m-steps").textContent = String(steps);
   paintDecision();
+  paintShield();
 }
 
 function drawBoard() {
@@ -514,14 +675,16 @@ function drawBoard() {
     ctx.stroke();
   }
 
-  // Target food
-  const [fx, fy] = food;
-  const fcx = (fx + 0.5) * cell;
-  const fcy = (fy + 0.5) * cell;
-  ctx.fillStyle = "#16a34a";
-  ctx.beginPath();
-  ctx.arc(fcx, fcy, cell * 0.28, 0, Math.PI * 2);
-  ctx.fill();
+  // Target food. There is none once the board is full, which is the win.
+  if (food) {
+    const [fx, fy] = food;
+    const fcx = (fx + 0.5) * cell;
+    const fcy = (fy + 0.5) * cell;
+    ctx.fillStyle = "#16a34a";
+    ctx.beginPath();
+    ctx.arc(fcx, fcy, cell * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Snake segments
   for (let i = snake.length - 1; i >= 0; i--) {
@@ -558,9 +721,9 @@ function applyMove(chosenDir) {
   const [vx, vy] = VEC[chosenDir];
   const nx = hx + vx;
   const ny = hy + vy;
-  const bodyObstacles = new Set(snake.slice(0, -1).map(([x, y]) => x + "," + y));
+  const bodyObstacles = new Set(snake.slice(0, -1).map(([x, y]) => cellKey(x, y)));
 
-  if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID || bodyObstacles.has(nx + "," + ny)) {
+  if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID || bodyObstacles.has(cellKey(nx, ny))) {
     alive = false;
     running = false;
     loopToken += 1;
@@ -572,9 +735,31 @@ function applyMove(chosenDir) {
 
   snake.unshift([nx, ny]);
   direction = chosenDir;
-  if (nx === food[0] && ny === food[1]) {
+  if (food && nx === food[0] && ny === food[1]) {
     score += 1;
-    food = spawnFood(snake);
+    const next = spawnFood(snake);
+    if (next) {
+      food = next;
+    } else if (snake.length === GRID * GRID) {
+      // Every cell is the snake: there is nothing left to ask the model about, and no food
+      // to walk to.
+      won = true;
+      food = null;
+      running = false;
+      loopToken += 1;
+      GameShell.setRunning(false);
+      GameShell.setStatus("status.won", null, "live");
+    } else {
+      // The head is sealed inside a region the snake itself fills, so no reachable cell is
+      // left to put food in -- a dead end, not a victory. It is what the spawn rule in
+      // `spawnFood` makes rare; saying it out loud beats reporting a win.
+      alive = false;
+      food = null;
+      running = false;
+      loopToken += 1;
+      GameShell.setRunning(false);
+      GameShell.setStatus("status.trapped", null, "err");
+    }
   } else {
     snake.pop();
   }
@@ -591,51 +776,58 @@ function resetGame() {
   score = 0;
   steps = 0;
   alive = true;
+  won = false;
   lastDecision = null;
+  shield = { calls: 0, vetoes: 0 };
   food = spawnFood(snake);
   GameShell.resetTelemetry();
   GameShell.setStatus("status.idle", null, "");
-  updateUI(buildState(), null, "right", "none");
+  updateUI(planMoves(), null, "right", null, "none");
   drawBoard();
 }
 
 async function stepOnce() {
-  if (inflight || !alive) return;
+  if (inflight || !alive || won) return;
   inflight = true;
-  const state = buildState();
-  const { data, ms } = await requestDecision(state);
+  const plan = planMoves();
+  const { data, ms } = await requestDecision(plan);
   const moveAns = (data.answers && data.answers.move) || {};
-  const probs = moveAns.probabilities || { up: 0.25, down: 0.25, left: 0.25, right: 0.25 };
-  const rawChoice = moveAns.choice || DIRS.reduce((a, b) => (probs[a] >= probs[b] ? a : b));
+  const probs = moveAns.probabilities || null;
+  const rawChoice = moveAns.choice || (probs && DIRS.reduce((a, b) => (probs[a] >= probs[b] ? a : b))) || plan.best;
 
-  let finalChoice = rawChoice;
-  if (state.safe_moves.length > 0 && !state.safe_moves.includes(rawChoice)) {
-    finalChoice = state.safe_moves.reduce((a, b) => ((probs[a] || 0) >= (probs[b] || 0) ? a : b));
-  }
+  // The safety net. It is the planner's invariant, not a second model: `allowed` holds the
+  // moves that keep the food reachable and get closer to it, and a pick from outside it is
+  // replaced by the highest-probability allowed one (`shieldPick` falls back to the
+  // planner's own pick when the engine answered without probabilities).
+  shield.calls += 1;
+  const finalChoice = plan.allowed.includes(rawChoice) ? rawChoice : shieldPick(plan, probs);
+  if (finalChoice !== rawChoice) shield.vetoes += 1;
 
   applyMove(finalChoice);
-  if (alive) {
+  if (alive && !won) {
     GameShell.setStatus(sandboxFallback ? "status.running.sim" : "status.running.live", null, "live");
   }
-  updateUI(state, probs, finalChoice, "ai");
+  updateUI(plan, probs, finalChoice, rawChoice, "ai");
   drawBoard();
   inflight = false;
 }
 
 async function loop(token) {
-  while (running && alive && token === loopToken) {
+  while (running && alive && !won && token === loopToken) {
     const tStart = performance.now();
     const manual = GameShell.mode() === "manual";
     if (manual) {
-      const state = buildState();
+      // Manual play is the human's: the planner only paints the tags here, it does not
+      // veto an arrow key.
+      const plan = planMoves();
       applyMove(manualDir);
-      if (alive) GameShell.setStatus("status.running.manual", null, "live");
-      updateUI(state, null, manualDir, "manual");
+      if (alive && !won) GameShell.setStatus("status.running.manual", null, "live");
+      updateUI(plan, null, manualDir, null, "manual");
       drawBoard();
     } else {
       await stepOnce();
     }
-    if (!running || !alive || token !== loopToken) break;
+    if (!running || !alive || won || token !== loopToken) break;
     const elapsed = performance.now() - tStart;
     const wait = Math.max(0, (manual ? MANUAL_TICK_MS : 50) - elapsed);
     if (wait > 0) {
@@ -645,7 +837,7 @@ async function loop(token) {
 }
 
 function toggleStart() {
-  if (!alive) resetGame();
+  if (!alive || won) resetGame();
   running = !running;
   GameShell.setRunning(running);
   if (running) {

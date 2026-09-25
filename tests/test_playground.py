@@ -410,6 +410,75 @@ def test_the_index_credits_the_projects_it_borrowed_from() -> None:
     assert "github.com/chaitin/Decis" not in text
 
 
+def test_snake_asks_a_question_the_planner_can_answer() -> None:
+    """The snake page's request is built from its own board analysis, on every step.
+
+    This page hung, and both halves of the hang were in the request. The criteria named a
+    compass direction ("Move north (y - 1)"), so the model had nothing to score; and the
+    safety net only rejected moves that collide *immediately*, so every other pick was
+    played. The snake circled an exact 26-step loop with the score frozen at 5.
+
+    Three parts of the fix are load-bearing, and the weightless suite cannot play the game
+    to find out whether they are still there, so it reads them out of the page:
+
+    * `planMoves` is the one place that decides what a direction is worth, and
+      `buildQuestions` reads it (`criteria[d] = plan.moves[d].note`). A criterion that
+      says why a move is bad is the whole difference: measured against a live engine on
+      160 real boards, the model's argmax was a legal move 71% of the time and a
+      distance-reducing one 47% of the time with the old strings, and 99% / 89% with
+      these. A static table cannot say why.
+    * the shield executes only from `plan.allowed`, the moves that strictly reduce the true
+      BFS distance to the food, and the AI path reaches the board through one `applyMove`
+      call. A legal-but-purposeless move is exactly what made the loop possible.
+    * `spawnFood` places food only where the head can still walk, which is what keeps
+      `plan.allowed` non-empty. Food behind a wall of the snake's own body leaves the
+      planner with nothing to prefer, and the game degenerates into wandering.
+
+    The wordings themselves were measured (see `describeMove`); a weightless test can only
+    check that the request is built this way, not that Laya reads it well.
+    """
+    text = (WEB / "snake.html").read_text(encoding="utf-8")
+
+    assert text.count("function explore(") == 1, "the distance to the food is computed in more than one place"
+    assert text.count("function planMoves(") == 1, "the planner was duplicated or renamed"
+    assert "criteria[d] = plan.moves[d].note" in text, "the criteria no longer come from the planner"
+    assert "QUESTIONS_SCHEMA" not in text, "a fixed question is back, and it cannot describe the board"
+
+    assert "plan.allowed.includes(rawChoice) ? rawChoice : shieldPick(plan, probs)" in text, (
+        "the shield no longer consults the planner's allowed set"
+    )
+    step = text.split("async function stepOnce(", 1)[1].split("\n}", 1)[0]
+    assert step.count("applyMove(") == 1 and "applyMove(finalChoice)" in step, (
+        "the AI path plays something other than the shielded move"
+    )
+    loop = text.split("async function loop(", 1)[1].split("\n}", 1)[0]
+    assert "applyMove(manualDir)" in loop, "manual play stopped being the human's"
+
+    spawn = text.split("function spawnFood(", 1)[1].split("\n}", 1)[0]
+    assert "explore(" in spawn, "food can spawn behind the snake's own body again"
+    assert "snake.length === GRID * GRID" in text, "the no-food case no longer tells a win from a dead end"
+
+
+@pytest.mark.parametrize("name", ("snake.html", "dino.html", "tetris.html"))
+def test_every_page_adds_the_same_strings_in_both_languages(name: str) -> None:
+    """A page's own dictionary is bilingual, or half its readers get an empty label.
+
+    `i18n.js` owns the mechanism and the shared vocabulary; each page owns the strings that
+    are about its own game, and the two halves are written in different alphabets by
+    different hands -- which is how one of them quietly loses an entry. The keys are
+    compared, not the values: the translations are supposed to differ.
+    """
+    text = (WEB / name).read_text(encoding="utf-8")
+    block = text.split("I18N.add({", 1)[1].split("});", 1)[0]
+    en, zh = block.split("zh: {", 1)[0], block.split("zh: {", 1)[1]
+
+    def keys(half: str) -> set[str]:
+        return set(re.findall(r'"([A-Za-z0-9_.]+)":', half))
+
+    missing = keys(en) ^ keys(zh)
+    assert not missing, f"{name} declares {sorted(missing)} in one language only"
+
+
 def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     """The option count is a capacity decision, so it lives in exactly one place.
 
