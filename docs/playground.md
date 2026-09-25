@@ -114,8 +114,22 @@ be localised, but the value on the wire is not.
 
 **Five placements, not six.** Laya charges a whole question against its `head_max_len`, so the
 option list has to fit the smallest question budget Decis supports (192 tokens, the fallback when
-a checkpoint declares no limits). Five placements fit with room to spare; six do not. Every
-rotation is represented in the shortlist, so the model chooses a rotation as well as a column.
+a checkpoint declares no limits). Five is the configuration every number on the page was measured
+at, and the criteria rewrite below left that budget with room to spare rather than spending it.
+Every rotation is represented in the shortlist, so the model chooses a rotation as well as a
+column.
+
+**The criteria are words, not numbers.** An option reads like `clears two lines, no new holes,
+keeps the stack very low.`, and it is named `option_a`..`option_e` rather than by its rotation and
+column. Both halves are measurements against a running engine rather than style: with the numeric
+wording this page used to send (`cols 1-3: 0 clear, 0 new holes, height 2, flat`) the model
+answered by taking whichever placement was listed *last*, and over 60 real boards it picked the
+page's own best placement 0 and 1 times out of 60 across two seeds; with the wording above it
+picks that placement 87% and 93% of the time and clears 21-23 lines per 60 pieces, which is what
+the page's own planner clears. The
+rotation and column are still what the inference panel shows, as `r2 · c4`. The full before/after
+measurements sit in the comment above `describePlacement` in
+[`playground/web/tetris.html`](../playground/web/tetris.html).
 
 ## Credits
 

@@ -447,17 +447,23 @@ const MODEL = "jev-latest"; // rewritten by the playground proxy to the running 
 // same number the local simulation, the local heuristic and the panel's fallback rank, so
 // the options on the wire and the bars on the page describe the same choice.
 //
-// Five is a measurement, not a taste. Laya charges a whole question against `head_max_len`,
-// and each option costs about 29 tokens of `"rot0_col0": "cols 3-6: 1 clear, 0 new holes,
-// height 6, slightly uneven"`. Measured by running the engine's own `measure()` over this
-// page's payload: 178 tokens at five options on the empty board this constant was first
-// sized on, ~207 at six, and the whole request 415 sequence tokens. Re-measured over 45
-// real questions from two AI sessions (the board filled up, so the option lines grew):
-// worst head 185, worst sequence 475. The multilingual checkpoint declares
-// max_len=1024/head_max_len=256, where six fit; a checkpoint that declares nothing falls
-// back to 512/192 (laya.py's DEFAULT_MAX_LEN and DEFAULT_HEAD_MAX_LEN), where only five do.
-// Five is what makes the page fit either -- with 7 tokens of head room left, which is why
-// `PLACEMENT_INSTRUCTIONS` says nothing about the option keys.
+// Five is a measurement, not a taste, and it is the configuration every number in this file
+// was measured at. Laya charges a whole question against `head_max_len`, and the option list
+// has to fit the smallest budget Decis supports: 192 tokens, the fallback when a checkpoint
+// declares no limits (laya.py's DEFAULT_HEAD_MAX_LEN; the multilingual checkpoint declares
+// 256, with max_len 1024). The wording this constant was originally sized on --
+// `"rot0_col0": "cols 3-6: 1 clear, 0 new holes, height 6, slightly uneven"`, about 29 tokens
+// an option -- measured 178 head tokens at five options on an empty board, ~207 at six, and
+// a worst case of 185 head / 475 sequence over 45 real questions from two AI sessions.
+//
+// The criteria rewrite below spends less than that, and this is the engine's own count: on
+// the same mid-game state the whole request costs 42 fewer sequence tokens (1369 against
+// 1411 via the API's `usage.input_tokens`), 8.4 of them per option, because a criterion line
+// is now a dozen tokens of plain words and a key is `option_a` instead of `rot0_col0`. So the
+// 185/475 above are upper bounds now rather than the live constraint, and six options would
+// fit the 192 fallback on those numbers. Five stays anyway: it is what the panel, the local
+// simulation, the agreement badge and every A/B number here are sized to, and "it would fit"
+// is not "it was measured to be a better question".
 const PLACEMENT_SHORTLIST = 5;
 
 // Desaturated-yet-distinct tetromino palette (strictly zero purple/violet/indigo)
@@ -617,9 +623,10 @@ function enumeratePlacements(board, piece) {
         landingHeight * 0.08 -
         after.wells * 0.1;
 
-      const id = `rot${rot.rotation}_col${x}`;
+      // No `id` here: a placement is named by its slot in the shortlist, which is the only
+      // place that knows both the order the options are sent in and the key they go out
+      // under (see `optionKey` and `shortlistPlacements`).
       placements.push({
-        id,
         piece,
         rotation: rot.rotation,
         x,
@@ -660,6 +667,18 @@ function enumeratePlacements(board, piece) {
 //     Measured over two AI sessions after the change: of the first 26 questions, 23 offered
 //     two or more rotations and 11 offered all four, and every single-rotation question was
 //     an O piece -- which has no second rotation to offer.
+//
+// This is also the one home for what an option is *called* on the wire. The key is a short
+// neutral name, deliberately not `rot<R>_col<C>`: the criterion line is what the model has
+// to read, and the digits of a placement code are noise it reads instead. Measured on the
+// live engine, 60 real boards x 2 seeds, with the criteria below as the only other variable:
+// 47%/65% agreement for the planner's own best placement under `rot<R>_col<C>` keys against
+// 87%/93% under these. The panel still shows the rotation and column as `r2 · c4`, and the
+// I/O console still prints the key that went out.
+function optionKey(i) {
+  return `option_${String.fromCharCode(97 + i)}`;
+}
+
 function shortlistPlacements(placements) {
   const byScore = placements.slice().sort((a, b) => b.heuristic - a.heuristic);
   const picked = [];
@@ -673,7 +692,10 @@ function shortlistPlacements(placements) {
     if (picked.length >= PLACEMENT_SHORTLIST) break;
     if (!picked.includes(p)) picked.push(p);
   }
-  return picked.slice(0, PLACEMENT_SHORTLIST).sort((a, b) => b.heuristic - a.heuristic);
+  return picked
+    .slice(0, PLACEMENT_SHORTLIST)
+    .sort((a, b) => b.heuristic - a.heuristic)
+    .map((p, i) => ({ ...p, id: optionKey(i) }));
 }
 
 function describeClear(n) {
@@ -713,25 +735,65 @@ function describeWells(w) {
   return "deep wells";
 }
 
-// The placement question's instructions -- and, deliberately, nothing about the option keys.
-// An option's key is `rot<R>_col<C>` (`R` is the piece turned 90 degrees clockwise that many
-// times, `C` is the 1-based leftmost column) and the model has to read the rotation off the
-// key: a sentence spelling that out costs about 23 tokens, and at five options the question
-// has 7 tokens of head room left under the 192-token fallback (worst measured head 185 over
-// 45 real questions from two sessions). Paying for the legend would mean dropping a field
-// from every option or a fifth of the options; the keys carry it instead, and the panel
-// shows the same rotation as `r2 · c4`.
+// The placement question's instructions. They name the three facts the criteria carry, in
+// the same words, because a criterion the instructions never mention is a fact the model has
+// no reason to weigh. They say nothing about the option keys.
 const PLACEMENT_INSTRUCTIONS =
-  "Choose the best placement for the current piece. Prefer clearing lines, creating no holes, a low stack and a flat surface; when the stack is high, survival beats tidiness.";
+  "Choose the best placement for the current piece. Prefer clearing lines, creating no new holes and a low stack; when the stack is near the top, survival beats tidiness.";
 
-// One short line per option. The eight-field object this used to return is a good
-// description and an unaffordable one: it is what pushed a tetris question past Laya's
-// 192-token head budget, so the API refused the request (see buildQuestions below).
+// One short line per option, in words rather than numbers -- and that is a measurement, not
+// a style. What this page used to send was `cols 1-3: 0 clear, 0 new holes, height 2, flat`,
+// and the model answered it by taking whichever placement was listed *last*: offered the
+// page's best and worst placement as a two-option question, both orders, 40 boards x 2 seeds,
+// that line picked the best placement 0/40 times when it was listed first and 40/40 and 38/40
+// times when it was listed last. It was reading the slot, not the line -- the lines differed
+// only in digits and in which of four surface adjectives they ended with. On the real
+// five-option question, 60 boards x 2 seeds, it picked the page's own best placement 0/60 and
+// 1/60 times, at a mean heuristic regret of 1.28 and 1.09.
+//
+// The line below, on the same request shape and the same two instruments:
+//
+//   * the five-option question: 52/60 and 56/60 (87%, 93%) for the planner's own best
+//     placement, mean regret 0.29 and 0.10.
+//   * the two-option question: 35-40/40 when the best placement is listed first, which is the
+//     arrangement this page always sends because the shortlist is sorted by the planner's own
+//     score -- and 11-22/40 when the best is listed last, i.e. against the slot prior. The
+//     line is read; it does not always outvote a list that ends with the good option.
+//   * the game itself, 60 pieces and five seeds, the model deciding every move: 21-23 lines
+//     and no game lost, against 0 lines and a lost game at 25-31 pieces under the old wording,
+//     and the model lands on the planner's placement in 54-57 of 61 decisions. The planner,
+//     playing those same seeds, clears 21-23 lines -- so the model is now level with the
+//     yardstick the agreement badge measures it against.
+//
+// What it deliberately does not carry, each measured on the five-option question rather than
+// assumed: the landing columns (67%/52% with `cols 1-3` back in the line, against 87%/93%
+// without), the surface adjective (the four-fact line scored 52%/47%) and a leading verdict
+// word (`Safe:`/`Risky:` scored 47%/57%). The verdict is the model's job; handing it the
+// page's own verdict scored worse than the facts alone and would make the agreement badge
+// meaningless.
 function describePlacement(p) {
-  const where = p.width === 1 ? `col ${p.x + 1}` : `cols ${p.x + 1}-${p.x + p.width}`;
-  const clearTxt = p.linesCleared === 0 ? "0 clear" : `${p.linesCleared} clear`;
-  const holeTxt = p.holesCreated === 0 ? "0 new holes" : `+${p.holesCreated} hole`;
-  return `${where}: ${clearTxt}, ${holeTxt}, height ${p.maxHeightAfter}, ${describeSurface(p.bumpinessAfter)}`;
+  const facts = [];
+  if (p.linesCleared > 0) facts.push(describeClears(p.linesCleared));
+  facts.push(p.holesCreated === 0 ? "no new holes" : p.holesCreated === 1 ? "one new hole" : `${p.holesCreated} new holes`);
+  facts.push(describeStackAfter(p.maxHeightAfter));
+  return facts.join(", ") + ".";
+}
+
+function describeClears(n) {
+  if (n === 1) return "clears one line";
+  if (n === 2) return "clears two lines";
+  if (n === 3) return "clears three lines";
+  return `clears ${n} lines`;
+}
+
+// "Where the stack ends up after this move", which is a different sentence from the state's
+// `describeHeight` above: that one describes the board the model is looking at, this one
+// describes the move it is choosing, and only this one was measured as a criterion.
+function describeStackAfter(h) {
+  if (h <= 4) return "keeps the stack very low";
+  if (h <= 8) return "keeps the stack low";
+  if (h <= 12) return `raises the stack to ${h}`;
+  return "buries the stack near the top";
 }
 
 // The panel's short line. It is the display twin of `describePlacement` above: the
@@ -929,15 +991,18 @@ async function askJev(request, placements, gameInfo, signal) {
 
 function pickPlacement(response, placements) {
   const answer = response?.answers?.placement;
-  const byId = new Map(placements.map((p) => [p.id, p]));
+  // The answer's keys are the shortlist's, so the mapping back is built from the same call
+  // that built the request (and `heuristicDecision` compares against).
+  const shortlist = shortlistPlacements(placements);
+  const byId = new Map(shortlist.map((p) => [p.id, p]));
   const ranked = Object.entries(answer?.probabilities || {})
     .filter(([id]) => byId.has(id))
     .sort((a, b) => b[1] - a[1])
     .map(([id, probability]) => ({ placement: byId.get(id), probability }));
-  const chosen = byId.get(answer?.choice) || ranked[0]?.placement || placements[0];
+  const chosen = byId.get(answer?.choice) || ranked[0]?.placement || shortlist[0] || placements[0];
   return {
     chosen,
-    ranked: ranked.length ? ranked : shortlistPlacements(placements).map((p, i) => ({ placement: p, probability: i === 0 ? 0.5 : 0.1 })),
+    ranked: ranked.length ? ranked : shortlist.map((p, i) => ({ placement: p, probability: i === 0 ? 0.5 : 0.1 })),
     confidence: answer?.confidence ?? ranked[0]?.probability ?? 0.5,
     answers: response?.answers,
     response,

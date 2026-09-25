@@ -530,6 +530,63 @@ def test_tetris_sizes_its_question_from_one_named_budget() -> None:
     assert leftover is None, f"a numeric option count survived as a literal: {leftover and leftover.group(0)}"
 
 
+def test_tetris_placement_criteria_stay_in_words() -> None:
+    """The numeric placement line is the bug this page was fixed for; do not bring it back.
+
+    It read `cols 1-3: 0 clear, 0 new holes, height 2, flat`, and the model answered it by
+    taking whichever placement the page listed *last*: over 60 real boards from a seeded game
+    it picked the page's own best placement 0/60 times, and picked the last option 40/40 times
+    when that best placement was listed last (`cols`/`height` were not comparable to it -- the
+    lines differed only in digits and in which of four surface adjectives they ended with).
+    The wording that replaced it is the three plain-word facts below, measured at 77%/90% on
+    the same question across two seeds, so what is guarded here is the shape that carries the
+    signal: facts in words, no column, no surface adjective, no raw numbers.
+
+    Text-level on purpose: the difference between the two wordings is not something the
+    weightless suite can measure, but "the measured-dead string is back" is.
+    """
+    text = (WEB / "tetris.html").read_text(encoding="utf-8")
+    body = text.split("function describePlacement(", 1)[1].split("\n}", 1)[0]
+    for dead, why in (
+        ("height ${", "the raw height number is back in the criterion line"),
+        ("+${p.holesCreated}", "the raw hole count is back"),
+        ("0 clear", "the raw clear count is back"),
+        ("p.x", "the landing column is back in the criterion line (worth 8-14 points of accuracy)"),
+        ("describeSurface(", "the surface adjective is back (the three-fact line beat the four-fact one)"),
+    ):
+        assert dead not in body, f"describePlacement: {why}"
+    for needed in ("describeClears(", '"no new holes"', "describeStackAfter("):
+        assert needed in body, f"describePlacement no longer states {needed}"
+    # The three facts have one home each, and the stack sentence is the move's, not the state's.
+    assert text.count("function describeClears(") == 1, "the clear-count wording is duplicated"
+    assert text.count("function describeStackAfter(") == 1, "the move's stack wording is duplicated"
+
+
+def test_tetris_option_keys_have_one_home_and_are_not_placement_codes() -> None:
+    """Which option is called what is decided where the shortlist is, and nowhere else.
+
+    Two measured reasons. The key is rendered into the prompt as `key: criterion`, so it is
+    something the model reads: the same criteria scored 58%/62% agreement under
+    `rot<R>_col<C>` keys and 77%/90% under `option_a..e` over 60 real boards x 2 seeds -- the
+    digits of a placement code are noise the criterion has to compete with. And the answer
+    comes back keyed by that name, so the wire key and the placement have to be paired up in
+    one place or the panel, the simulation and the request can disagree about what was chosen.
+    """
+    text = (WEB / "tetris.html").read_text(encoding="utf-8")
+    assert text.count("function optionKey(") == 1, "the option key is built in more than one place"
+    shortlist = text.split("function shortlistPlacements(", 1)[1].split("\n}", 1)[0]
+    assert "id: optionKey(" in shortlist, "the shortlist no longer names its own options"
+    enumeration = text.split("function enumeratePlacements(", 1)[1].split("\n}", 1)[0]
+    code = "\n".join(line for line in enumeration.splitlines() if not line.lstrip().startswith("//"))
+    assert "const id" not in code and "id," not in code, (
+        "enumeratePlacements is naming placements again; only the shortlist knows the wire key"
+    )
+    assert "String.fromCharCode(97 + i)" in text, "optionKey no longer produces a name like option_a"
+    # The answer's keys are the shortlist's, so the lookup must come from the same call.
+    pick = text.split("function pickPlacement(", 1)[1].split("\n}", 1)[0]
+    assert "shortlistPlacements(placements)" in pick, "pickPlacement no longer maps the wire key through the shortlist"
+
+
 # --- one design system, one i18n, four pages ---------------------------------------
 #
 # The pages are separately authored but must not be separately designed or separately
