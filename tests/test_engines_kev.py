@@ -356,3 +356,11 @@ def test_dtype_defaults_never_select_a_degraded_combination() -> None:
 
     for (engine_id, device), dtype in DTYPE_DEFAULTS.items():
         assert degraded_reason(engine_id, device, dtype) is None, f"{engine_id}/{device}/{dtype}"
+
+
+def test_the_dtype_table_is_written_in_the_documented_device_names() -> None:
+    """`DEVICES` is what `DECIS_DEVICE` is checked against, and what this table is keyed
+    by. A name that exists in one and not the other is a typo in one of them."""
+    from decis.engines.registry import DEVICES, DTYPE_DEFAULTS
+
+    assert {device for _, device in DTYPE_DEFAULTS} <= DEVICES

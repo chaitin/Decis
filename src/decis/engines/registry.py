@@ -49,6 +49,12 @@ def is_foreign_default(name: str) -> bool:
     return candidate in FOREIGN_DEFAULT_MODELS
 
 
+#: The device names `DECIS_DEVICE` may carry -- `torch`'s own, and the vocabulary the
+#: keys of `DTYPE_DEFAULTS` below are written in. Declared once so a misspelling is
+#: refused by name, instead of surfacing as `torch.device("gpu")` failing somewhere
+#: inside an engine's `load()` with a message that never mentions the variable.
+DEVICES = frozenset({"cpu", "cuda", "mps"})
+
 #: `(engine_id, device) -> dtype`. A dtype default cannot be global, because the same
 #: weights behave completely differently per engine and device: kev-0.8b on CPU in bf16
 #: measured **~83x slower** than fp32 (137 s vs 1.66 s per request) because Qwen3.5's

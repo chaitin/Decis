@@ -118,6 +118,10 @@ KEV_SRC=/path/to/kev PY=$PY bash probe/run_kev_dtype.sh
 # single-shot variants (one config, prints a compact summary)
 $PY probe/probe_laya_single.py multilingual 10
 $PY probe/probe_kev_http.py http://127.0.0.1:8010 10
+
+# which device and how many threads the same weights get, one configuration per run:
+# run it once on the host and once inside the container to see the platform gap
+$PY probe/probe_device_and_threads.py cpu /models/laya-multilingual/multilingual 5 big
 ```
 
 Two environment gotchas these scripts exist to work around, both of which cost real debugging time:

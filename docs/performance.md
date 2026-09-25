@@ -41,6 +41,42 @@ The latency table is an easy case on purpose: all questions in one request share
   several times the size of the weight files. Size the readiness probe and the container
   memory limit from this table, not from the download size.
 
+## Apple silicon, the CPU and a container
+
+On an Apple-silicon Mac, `uv run decis serve` and `docker run` of the same release are not the
+same hardware: comparing their latencies compares two devices, not two ways of packaging the
+server.
+
+With `DECIS_DEVICE` unset, Laya picks its device in the order CUDA, Metal (MPS), then CPU
+(`laya/agent.py:177-182`). On macOS that is the **GPU**. A Linux container has neither Metal
+nor a CUDA runtime, so the same image on the same machine serves from the **CPU** in `fp32`.
+Nothing in the image can change that: Docker Desktop does not expose the Apple GPU to a Linux
+container.
+
+The two CPU paths are not equal either. PyTorch's macOS wheel reaches Apple's own matrix
+kernels and its `linux-aarch64` wheel does not, so the same forward pass is measurably slower
+in the container than on the host even at the same thread count — that gap survives pinning
+`DECIS_TORCH_THREADS` to one value on both sides. It is a property of the platform, not
+overhead the container adds.
+
+Compare like with like by pinning the device, and read the device back from the `decis`
+namespace of any answer or from the `loaded ... device=... threads=...` line the engine logs
+at startup:
+
+```bash
+DECIS_DEVICE=cpu uv run decis serve --host 127.0.0.1   # the device the container uses
+```
+
+Two more things decide a number read off the playground:
+
+- **What the games print is wall clock around the call**, so it includes waiting behind
+  whatever else is in flight. The engine runs one forward pass at a time
+  ([AGENTS.md](../AGENTS.md) §3-20), so a page that keeps three decisions in flight reports
+  roughly one, two and three forward passes for its three calls. On the GPU that queueing is
+  small enough to hide; on the CPU it is not.
+- **A longer request is a slower request**: the head and the state share one sequence budget.
+  Compare two runs on the same payload, not two runs of the same game.
+
 ## dtype, per engine and device
 
 `kev-0.8b`'s Qwen3.5 backbone needs `flash-linear-attention` and `causal_conv1d`, both of

@@ -28,8 +28,9 @@ from decis.engines.laya import (
     LayaMultilingualEngine,
     LayaTypedDecisionsEngine,
     budgeted_head,
+    requested_device,
 )
-from decis.errors import InvalidRequestError
+from decis.errors import EngineUnavailableError, InvalidRequestError
 from decis.render import prepare_request
 from decis.schema import SystemOneRequest, validate_capacity
 
@@ -318,3 +319,70 @@ def test_capabilities_are_declared_without_loading() -> None:
     # The version cannot be known without the package, and must not be invented.
     assert info.version == "not-installed" or info.version[0].isdigit()
     assert info.release_date == CHECKPOINT_DATE
+
+
+# --- DECIS_DEVICE reaches the Agent -------------------------------------------
+
+
+class _RecordingLaya:
+    """Stands in for the `laya` package, recording what `_instantiate` asked for.
+
+    `Agent` is upstream's capitalised name, so it is attached rather than defined: the
+    stub has to answer to the real spelling without a `def Agent` the linter flags.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple, dict]] = []
+        setattr(self, "Agent", self._record)  # noqa: B010 - the name is the point
+
+    def _record(self, *args: object, **kwargs: object) -> _FakeAgent:
+        self.calls.append((args, kwargs))
+        return _FakeAgent()
+
+
+class _LocalSource:
+    """The parts of `paths.Source` that `_instantiate` reads for a mounted directory."""
+
+    kind = "local"
+    path = "/models/laya-multilingual/multilingual"
+    subfolder = None
+    repo_id = "convaiinnovations/laya"
+
+    def describe(self) -> str:
+        return "a test directory"
+
+
+class _HubSource(_LocalSource):
+    kind = "hub"
+    path = None
+    subfolder = "multilingual"
+
+
+def test_a_pinned_device_is_handed_to_laya() -> None:
+    """`DECIS_DEVICE` was documented as forcing the device and silently did nothing here.
+
+    Upstream falls back to the CPU on its own when the requested device is missing, so an
+    ignored value looks exactly like a working one -- until the latency says otherwise.
+    """
+    laya = _RecordingLaya()
+    LayaEngine()._instantiate(laya, _LocalSource(), "cpu")
+    assert laya.calls == [(("/models/laya-multilingual/multilingual",), {"device": "cpu"})]
+
+
+def test_an_unset_device_is_left_to_laya() -> None:
+    """`None` is upstream's own default, so "unset" and "best available" stay one path."""
+    laya = _RecordingLaya()
+    LayaEngine()._instantiate(laya, _HubSource(), None)
+    assert laya.calls == [(("convaiinnovations/laya",), {"device": None, "subfolder": "multilingual"})]
+
+
+@pytest.mark.parametrize("name", ["cpu", "cuda", "mps", None])
+def test_documented_devices_pass_the_check(name: str | None) -> None:
+    assert requested_device(name) == name
+
+
+def test_a_misspelled_device_names_the_variable() -> None:
+    """Handing `"gpu"` to `torch.device` fails deep inside the Agent and never mentions
+    `DECIS_DEVICE`, which is the one thing the reader has to change."""
+    with pytest.raises(EngineUnavailableError, match="DECIS_DEVICE='gpu' is not a device"):
+        requested_device("gpu")

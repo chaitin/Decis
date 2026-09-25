@@ -40,6 +40,7 @@ from ..errors import EngineUnavailableError, InvalidRequestError
 from ..paths import WeightSpec, resolve
 from ..render import noul_options
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
+from .registry import DEVICES
 
 if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
     from ..config import Settings
@@ -159,6 +160,23 @@ def budgeted_head(instruction_tokens: int, option_tokens: int) -> int:
     return option_tokens + max(instruction_tokens, _MIN_OPTION_BUDGET)
 
 
+def requested_device(name: str | None) -> str | None:
+    """`DECIS_DEVICE`, checked, or `None` to let Laya choose.
+
+    Upstream's own order is CUDA, then Metal, then CPU (`laya/agent.py:177-182`), and on
+    an Apple-silicon Mac that means the GPU -- while the same image in a Linux container
+    has no Metal and serves from the CPU. The gap between those two is large enough to
+    look like a container problem, so pinning `cpu` has to actually pin it
+    (`docs/performance.md`).
+
+    A typo is refused here rather than handed to `torch.device`, which would fail inside
+    `Agent.__init__` with a message that never names the variable.
+    """
+    if name is None or name in DEVICES:
+        return name
+    raise EngineUnavailableError(f"DECIS_DEVICE={name!r} is not a device. Use one of: {', '.join(sorted(DEVICES))}.")
+
+
 class LayaEngine(DecisionEngine):
     """Serves one Laya checkpoint.
 
@@ -266,36 +284,56 @@ class LayaEngine(DecisionEngine):
             # number here would be a claim this code cannot back.
             torch.set_num_threads(settings.torch_threads)
 
-        _logger.info("loading %s from %s", self._id, source.describe())
-        self._agent = self._instantiate(laya, source)
+        # `None` means "let Laya pick", which is upstream's own default. On an
+        # Apple-silicon Mac that pick is `mps`, and a Linux container has no Metal at
+        # all -- the same release on the same machine therefore serves from a different
+        # device depending on how it was started. `DECIS_DEVICE=cpu` is what makes the
+        # two comparable, so the knob has to reach the `Agent` (docs/performance.md).
+        device = requested_device(settings.device)
+        _logger.info("loading %s from %s (device=%s)", self._id, source.describe(), device or "auto")
+        self._agent = self._instantiate(laya, source, device)
+        if device and self._agent.device.type != device:
+            # Upstream falls back on its own, with a `print` that a server's log may not
+            # keep. Say it where an operator will actually see it.
+            _logger.warning(
+                "DECIS_DEVICE=%s was requested but %s loaded on %s: that device is not available "
+                "here (a Linux container has no MPS, and no CUDA without a GPU runtime).",
+                device,
+                self._id,
+                self._agent.device.type,
+            )
         config = self._agent.cfg
         self._max_len = int(config.get("max_len", DEFAULT_MAX_LEN))
         self._head_max_len = int(config.get("head_max_len", DEFAULT_HEAD_MAX_LEN))
         self._warmup()
         self._loaded = True
         _logger.info(
-            "loaded %s (device=%s dtype=%s max_len=%d head_max_len=%d)",
+            "loaded %s (device=%s dtype=%s threads=%d max_len=%d head_max_len=%d)",
             self._id,
             self._device(),
             self._dtype(),
+            torch.get_num_threads(),
             self._max_len,
             self._head_max_len,
         )
 
-    def _instantiate(self, laya: Any, source: Any) -> Any:
+    def _instantiate(self, laya: Any, source: Any, device: str | None) -> Any:
         """Build the Agent against whatever `paths.resolve` decided.
 
         `laya.load` would re-derive all of this from a repository id and reach for the
         network; going through `Agent` directly is what makes a mounted directory work
         offline. It is the same class `laya.load` returns, and `laya.load` is a
         one-line wrapper around it (`laya/agent.py:378-385`).
+
+        `device=None` is upstream's own signature default, so "no `DECIS_DEVICE`" and
+        "asked for the best available" stay one code path.
         """
         try:
             if source.kind == "local":
                 # `checkpoint_root` already resolved the subfolder, so passing it
                 # again here would look for `<path>/<subfolder>/<subfolder>`.
-                return laya.Agent(str(source.path))
-            return laya.Agent(str(source.repo_id), subfolder=source.subfolder)
+                return laya.Agent(str(source.path), device=device)
+            return laya.Agent(str(source.repo_id), device=device, subfolder=source.subfolder)
         except FileNotFoundError as exc:
             raise EngineUnavailableError(f"Could not load {self._id} from {source.describe()}: {exc}") from exc
 

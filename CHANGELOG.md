@@ -10,6 +10,20 @@ each engine will run.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`DECIS_DEVICE` now reaches the Laya engines.** They never passed it to `laya.Agent`, so
+  the engine kept Laya's own device order — CUDA, then Metal, then CPU — whatever the variable
+  said. On an Apple-silicon Mac that order ends at the GPU, which made `DECIS_DEVICE=cpu` a
+  documented knob that silently did nothing: the mirror image of the `DECIS_LOG_PAYLOADS`
+  removal below, and the same reasoning applies. A value that is not `cpu`, `cuda` or `mps` is
+  now refused by name instead of reaching `torch.device`, and a device Laya cannot use is a
+  warning at load time rather than only a `print`.
+- **A device request that cannot be honoured no longer looks like one that was.** With
+  `DECIS_DEVICE` set, the fallback logs the device that actually loaded, and the `loaded ...
+  device=... threads=...` line names the thread count torch resolved to — the two facts that
+  tell a container apart from the host it is running on.
+
 ## [0.3.1] - 2026-09-25
 
 ### Added

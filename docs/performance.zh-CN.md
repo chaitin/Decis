@@ -35,6 +35,35 @@ Decis 跑的是决策模型——每个请求只有一次前向，不生成文�
 - 冷启动约 75 秒（上表那一列是 73–76 秒），峰值内存是权重文件的数倍。就绪探针和容器内存上限要按
   这张表来定，而不是按下载体积。
 
+## Apple 芯片、CPU 与容器
+
+在 Apple 芯片的 Mac 上，`uv run decis serve` 与同一个 release 的 `docker run` 并不是同一台硬件：
+比较两者的延迟，比较的是两个设备，而不是两种打包方式。
+
+不设 `DECIS_DEVICE` 时，Laya 按 CUDA、Metal（MPS）、CPU 的顺序挑设备（`laya/agent.py:177-182`）。
+在 macOS 上那就是 **GPU**。Linux 容器既没有 Metal 也没有 CUDA 运行时，于是同一个镜像在同一台机器上
+是以 `fp32` 跑在 **CPU** 上的。镜像里的任何设置都改不了这一点：Docker Desktop 不会把 Apple GPU
+暴露给 Linux 容器。
+
+两条 CPU 路径也不等价。PyTorch 的 macOS wheel 能用到 Apple 自己的矩阵内核，`linux-aarch64` 的
+wheel 用不到，所以同一段前向在容器里比在宿主机上可测量地更慢——即使两侧把 `DECIS_TORCH_THREADS`
+设成同一个值，这个差距依然在。这一部分是平台的性质，不是容器额外加上的开销。
+
+想公平比较就固定设备，并从任意答案的 `decis` 命名空间、或引擎启动时那行
+`loaded ... device=... threads=...` 日志里读回真正的设备：
+
+```bash
+DECIS_DEVICE=cpu uv run decis serve --host 127.0.0.1   # 与容器同一个设备
+```
+
+另外两件事决定你从 playground 上读到的数字：
+
+- **游戏页面打印的是调用前后的墙钟时间**，所以它包含排在别的在途请求后面的等待。引擎一次只做一次
+  前向（[AGENTS.md](../AGENTS.md) §3-20），于是一个保持三个决策在途的页面，三次调用报出来的大约是
+  1、2、3 次前向。这个排队在 GPU 上小到看不出来，在 CPU 上不是。
+- **请求越长越慢**：head 与 state 共用同一个序列预算。要比就比同一个 payload 的两次运行，而不是
+  同一个游戏的两次运行。
+
 ## 每种引擎、每种设备的 dtype
 
 `kev-0.8b` 的 Qwen3.5 骨干要用 `flash-linear-attention` 和 `causal_conv1d`，而这两个都依赖
