@@ -36,7 +36,7 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 
 release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会生成
 `laya-multilingual-v<version>` 与 `kev-0.8b-v<version>`——当前 release 是
-`laya-multilingual-v0.3.0`——以及下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
+`laya-multilingual-v0.3.1`——以及下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
 对应的 GitHub Release。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，所以要钉住的
 是带版本的 tag。
 
@@ -60,16 +60,16 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaiti
 然后运行：
 
 ```bash
-docker pull chaitin/decis:laya-multilingual-runtime-v0.3.0
-docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.0 \
+docker pull chaitin/decis:laya-multilingual-runtime-v0.3.1
+docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.1 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  chaitin/decis:laya-multilingual-runtime-v0.3.0
+  chaitin/decis:laya-multilingual-runtime-v0.3.1
 ```
 
 要在离线环境服务，就得先把卷填好：卷为空时 `paths.resolve` 会退回 Hub，容器在加载时下载权重。
 这个 runtime 镜像确实装了引擎的依赖，所以那次下载能成功——它只是需要网络，而气隙部署没有网络。
-`v0.3.0` 是当前版本，而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master`
+`v0.3.1` 是当前版本，而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master`
 移动。
 
 ## Docker Compose

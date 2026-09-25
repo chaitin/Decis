@@ -10,6 +10,8 @@ each engine will run.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-25
+
 ### Added
 
 - **A `v*` tag now publishes a GitHub Release.** The `release` job in
@@ -35,6 +37,36 @@ each engine will run.
 - **`DECIS_LOG_PAYLOADS`.** It was documented but never read: no code path logs request or
   response bodies, so the variable did nothing. A knob that silently does nothing is worse
   than no knob.
+
+### Fixed
+
+- **The three games no longer act on an answer the board has moved past.** Reset, Pause and a
+  mode switch cancel the call that is in flight, and each page re-checks the run it asked for
+  after the await. A late snake answer used to kill a brand-new game on its first tick without
+  moving it; a late dino answer ducked the dinosaur a person had taken over; and a late tetris
+  answer locked a tetromino the manual player had already locked — one piece, two pieces on the
+  board, and another consumed unplayed.
+- **A call the engine did not answer is no longer counted as a model decision.** The tetris
+  page's local fallback fed the agreement badge and painted its own simulated reads as the
+  model's; only a live answer is counted and drawn now, and the fallback is labelled as the
+  page's own read. Its fallback latch also no longer survives a Reset, so one failed fetch does
+  not turn the page into a local game for the rest of its life.
+- **The dino page cannot stall itself any more.** `resetGame` zeroed the in-flight counter that
+  the outstanding calls decrement, which left it negative and stopped the AI from ever asking
+  again; each game gets its own generation now, and a failed call waits the 250 ms backoff its
+  reference uses instead of re-issuing immediately — a 503-answering engine was being asked
+  roughly 200 times a second, and the page's own 503 body says a cold start takes minutes.
+- **The pages' readouts say what was measured.** The dino page repainted its Deaths KPI as 0 on
+  a language switch, and its action tags described the previous AI answer for a whole manual
+  game (the planner runs in both modes now); the tetris health bar put its Clean end at 128% of
+  its own track and its English health labels disagreed with the criteria the model is given;
+  the snake page called an equally short route "longer", and refused a legal manual turn
+  because it compared against the previous heading instead of the queued one.
+- **A response body the page cannot use is a bad response, not a crash.** A 200 with no JSON
+  body (a captive portal, a 204) threw in the snake page after `inflight` was set, and the flag
+  then stayed set: Pause, Resume and Reset did nothing until the page was reloaded. The same
+  body used to fabricate a `right` turn out of an empty `probabilities` object, before the
+  safety net's own documented fallback could run.
 
 ## [0.3.0] - 2026-09-24
 

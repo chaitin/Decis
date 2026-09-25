@@ -4,7 +4,7 @@
     "title": "Decis",
     "summary": "One API to run all light-weight decision models.",
     "description": "A drop-in implementation of the TypeSafe / jev System One API, backed by open decision models. Point the official `typesafe-sdk` here by setting `TYPESAFE_BASE_URL`.",
-    "version": "0.3.0"
+    "version": "0.3.1"
   },
   "paths": {
     "/v1/systemone": {
