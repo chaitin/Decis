@@ -178,6 +178,7 @@ I18N.add({
     "reason.safe": "safe",
     "reason.eat": "eat",
     "reason.away": "no progress",
+    "reason.equal": "equal route",
     "reason.trap": "trapped",
     "reason.neck": "neck",
     "reason.wall": "wall",
@@ -210,6 +211,7 @@ I18N.add({
     "reason.safe": "\u5b89\u5168",
     "reason.eat": "\u5403\u98df",
     "reason.away": "\u65e0\u8fdb\u5c55",
+    "reason.equal": "\u7b49\u957f\u8def\u7ebf",
     "reason.trap": "\u6b7b\u8def",
     "reason.neck": "\u8116\u9888",
     "reason.wall": "\u649e\u5899",
@@ -274,6 +276,12 @@ let running = false;
 let inflight = false;
 let sandboxFallback = false;
 let loopToken = 0;
+// One controller per run: Reset, Pause and a mode switch abort it, so the answer to a call
+// they cancelled is not left waiting at the socket (tetris.html cancels the same way). The
+// controller is only half of it -- `stepOnce` re-reads `loopToken` after every await, and
+// that epoch is what has to hold on its own, because a proxy or a stub may resolve a fetch
+// that was already cancelled and a bare vm realm has no `AbortController` at all.
+let abortCtrl = null;
 // The last thing the page wrote into the live readout, kept so a language switch can
 // repaint it: `data-i18n` only covers the markup.
 let lastDecision = null;
@@ -406,7 +414,15 @@ function planMoves() {
     `Safe route: ${closer.length ? "yes" : "no"}. ` +
     `Food reachable through empty cells: ${distanceNow === null ? "no" : "yes"}. ` +
     `Snake length ${snake.length}.`;
-  for (const d of DIRS) moves[d].note = describeMove(d, moves[d], best, closer.length > 0);
+  // Whether a legal move reaches the food in exactly as many steps as the planner's pick.
+  // `plannerPick` breaks an equal-distance tie on the room the move leaves, and that tie is
+  // not rare: 78 of 1052 direction-slots in one 263-step game. The criterion and the panel's
+  // tag both read this, so neither calls an equally short route "longer".
+  const bestDistance = moves[best].distance;
+  for (const d of DIRS) {
+    moves[d].sameRoute = d !== best && moves[d].legal && moves[d].progress && moves[d].distance === bestDistance;
+    moves[d].note = describeMove(d, moves[d], best, closer.length > 0);
+  }
   return plan;
 }
 
@@ -434,11 +450,19 @@ function plannerPick(allowed, moves, fallback) {
    71% of the time and a distance-reducing one 47%; with these lines it is 99% and 89% (160
    real boards, engine `laya-multilingual`, same boards for both prompts). The wording was
    measured, not guessed -- "A longer route to the food" held up, "Reaches the food in N
-   steps" did not. */
+   steps" did not.
+
+   The equal case is not "longer": `plannerPick` compares the BFS distance first and only
+   uses the room it leaves to break a tie, so an equally short route is a move the model
+   cannot tell apart by length and calling it longer would be a false criterion. Measured on
+   one 263-step game: 78 of 1052 direction-slots were equally short. */
 function describeMove(d, move, best, routeExists) {
   if (!move.legal) return move.note;
   if (move.eats) return d === best ? "Safe. Eats the food now. Best move." : "Safe. Eats the food now.";
-  if (move.progress) return d === best ? "Safe. Best route to the food." : "Safe. A longer route to the food.";
+  if (move.progress) {
+    if (d === best) return "Safe. Best route to the food.";
+    return move.sameRoute ? "Safe. Equally short route to the food." : "Safe. A longer route to the food.";
+  }
   if (move.traps) return "Unsafe. Traps the snake.";
   // The planner found no route at all: nothing gets closer, so "wastes the step" would be
   // a lie about a choice that has no better option.
@@ -458,6 +482,21 @@ function buildQuestions(plan) {
       criteria: criteria
     }
   };
+}
+
+/* The model's probabilities, or null when the response did not really carry them. A `{}` --
+   or any body where a direction is missing or not a finite number -- is not a measurement:
+   the wire contract puts every criteria key in `probabilities`, so a body that omits one is
+   unusable, and `DIRS.reduce` over the undefined rest compares false every time and returns
+   the last direction. That fabricated argmax ("right") could beat the planner's own pick
+   while the shield's documented fallback never ran, and the panel painted four 0.0% bars as
+   if the model had said them. */
+function usableProbabilities(probs) {
+  if (!probs || typeof probs !== "object") return null;
+  for (const d of DIRS) {
+    if (typeof probs[d] !== "number" || !Number.isFinite(probs[d])) return null;
+  }
+  return probs;
 }
 
 /* The model's ranking, restricted to what the planner proved worth playing. Falls back to
@@ -521,8 +560,10 @@ function simulateSystemOne(plan) {
 }
 
 // One POST, and the one call `GameShell.observe` hears about. The body it reports is the
-// body it sent, so the I/O console shows the request and not the page's bookkeeping.
-async function requestDecision(plan) {
+// body it sent, so the I/O console shows the request and not the page's bookkeeping. The
+// run's signal is passed through, so Reset/Pause/mode switch cancel the call at the socket
+// and not only in `stepOnce`'s bookkeeping.
+async function requestDecision(plan, signal) {
   const reqBody = {
     model: "jev-latest",
     state: plan.state,
@@ -534,7 +575,8 @@ async function requestDecision(plan) {
     const resp = await fetch(resolveEndpointUrl(), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(reqBody)
+      body: JSON.stringify(reqBody),
+      signal
     });
     const ms = Math.round(performance.now() - t0);
     let data = null;
@@ -545,7 +587,12 @@ async function requestDecision(plan) {
     }
     GameShell.observe({ request: reqBody, response: data, status: resp.status, latencyMs: ms });
     reported = true;
-    if (!resp.ok) {
+    // A 200 whose body is not an answer -- 204, an empty body, a captive portal's HTML -- is
+    // a bad response, not a crash. `data.answers` used to throw on it, and the throw left
+    // `inflight` latched (so Pause/Reset did nothing) and froze the game until a reload. The
+    // planner's own pick is the documented fallback, the same as for a 422 or a dead network.
+    const answer = data && data.answers && data.answers.move;
+    if (!resp.ok || !answer || typeof answer !== "object") {
       // A 422 (over budget) or a 503 (engine still loading) is not a crash: the game falls
       // back to the local simulation and says `sim` in the status.
       sandboxFallback = true;
@@ -554,6 +601,9 @@ async function requestDecision(plan) {
     sandboxFallback = false;
     return { data, ms };
   } catch (err) {
+    // A cancelled run is not a fallback: the answer would be about a board that is gone, and
+    // `stepOnce` drops it. Rethrowing leaves the fetch rejection to that one place.
+    if (signal && signal.aborted) throw err;
     const ms = Math.max(11, Math.round(performance.now() - t0));
     if (!reported) GameShell.observe({ request: reqBody, error: err, latencyMs: ms });
     sandboxFallback = true;
@@ -593,8 +643,9 @@ function paintDecision() {
     const p = measured ? Math.max(0, Math.min(1, Number(probs[d] || 0))) : 0;
     const verdict = !move.legal ? move.reason
       : move.eats ? "eat"
-        : move.progress ? "safe"
-          : move.traps ? "trap" : "away";
+        : move.sameRoute ? "equal"
+          : move.progress ? "safe"
+            : move.traps ? "trap" : "away";
     const kind = move.eats || move.progress ? "ok" : (move.legal && !move.traps ? "warn" : "blocked");
 
     $("name-" + d).className = "dir-name" + (isSelected && source !== "none" ? " chosen" : "");
@@ -728,7 +779,12 @@ function applyMove(chosenDir) {
     running = false;
     loopToken += 1;
     GameShell.setRunning(false);
-    GameShell.setStatus("status.collision", null, "err");
+    // A head with no legal move at all is the `trapped` ending, not a collision: the move
+    // that just failed is `plannerPick`'s fallback (the current heading) because `allowed`
+    // was empty, so nobody chose it -- the model had nothing to pick and the human had
+    // nowhere to go. A board that still had somewhere to go is a collision, and that is a
+    // real choice. `planMoves` is the same planner the rest of the page reads.
+    GameShell.setStatus(planMoves().legal ? "status.collision" : "status.trapped", null, "err");
     drawBoard();
     return;
   }
@@ -767,8 +823,10 @@ function applyMove(chosenDir) {
 }
 
 function resetGame() {
+  // A new game is a new run: cancel the request the old one still has on the wire, or its
+  // answer lands on this board. `stepOnce` re-checks the epoch after the await as well.
+  cancelRun();
   running = false;
-  loopToken += 1;
   GameShell.setRunning(false);
   snake = [[5, 6], [4, 6], [3, 6], [2, 6]];
   direction = "right";
@@ -786,33 +844,73 @@ function resetGame() {
   drawBoard();
 }
 
-async function stepOnce() {
+async function stepOnce(signal) {
   if (inflight || !alive || won) return;
+  // The run this decision belongs to. Reset/Pause/mode switch bump `loopToken` (or abort the
+  // signal) while the model is thinking, and an answer that arrives afterwards is about the
+  // board they replaced.
+  const token = loopToken;
   inflight = true;
-  const plan = planMoves();
-  const { data, ms } = await requestDecision(plan);
-  const moveAns = (data.answers && data.answers.move) || {};
-  const probs = moveAns.probabilities || null;
-  const rawChoice = moveAns.choice || (probs && DIRS.reduce((a, b) => (probs[a] >= probs[b] ? a : b))) || plan.best;
+  // `inflight` is cleared on every exit, including a throw: it used to stay `true` after one
+  // bad response, and then Pause, Resume and Reset all became no-ops until a page reload.
+  try {
+    const plan = planMoves();
+    let data;
+    try {
+      ({ data } = await requestDecision(plan, signal));
+    } catch (err) {
+      // The only throw `requestDecision` leaves behind is the abort of this run.
+      if (signal && signal.aborted) return;
+      throw err;
+    }
+    if (signal && signal.aborted) return;
+    if (!alive || won || token !== loopToken) return;
+    const moveAns = (data && data.answers && data.answers.move) || {};
+    const probs = usableProbabilities(moveAns.probabilities);
+    const rawChoice = moveAns.choice || (probs && DIRS.reduce((a, b) => (probs[a] >= probs[b] ? a : b))) || plan.best;
 
-  // The safety net. It is the planner's invariant, not a second model: `allowed` holds the
-  // moves that keep the food reachable and get closer to it, and a pick from outside it is
-  // replaced by the highest-probability allowed one (`shieldPick` falls back to the
-  // planner's own pick when the engine answered without probabilities).
-  shield.calls += 1;
-  const finalChoice = plan.allowed.includes(rawChoice) ? rawChoice : shieldPick(plan, probs);
-  if (finalChoice !== rawChoice) shield.vetoes += 1;
+    // The safety net. It is the planner's invariant, not a second model: `allowed` holds the
+    // moves that keep the food reachable and get closer to it, and a pick from outside it is
+    // replaced by the highest-probability allowed one (`shieldPick` falls back to the
+    // planner's own pick when the engine answered without probabilities).
+    // A board with no legal move ends the game on the move below; the model had nothing to
+    // choose between, so it is not a shield call and nothing was replaced. Counting it made
+    // `calls` and `vetoes` report a decision the page never had.
+    const hadChoice = plan.allowed.length > 0;
+    if (hadChoice) shield.calls += 1;
+    const finalChoice = plan.allowed.includes(rawChoice) ? rawChoice : shieldPick(plan, probs);
+    if (hadChoice && finalChoice !== rawChoice) shield.vetoes += 1;
 
-  applyMove(finalChoice);
-  if (alive && !won) {
-    GameShell.setStatus(sandboxFallback ? "status.running.sim" : "status.running.live", null, "live");
+    applyMove(finalChoice);
+    if (alive && !won) {
+      GameShell.setStatus(sandboxFallback ? "status.running.sim" : "status.running.live", null, "live");
+    }
+    updateUI(plan, probs, finalChoice, rawChoice, "ai");
+    drawBoard();
+  } finally {
+    inflight = false;
   }
-  updateUI(plan, probs, finalChoice, rawChoice, "ai");
-  drawBoard();
-  inflight = false;
 }
 
-async function loop(token) {
+/* End the current run. Every event that replaces it -- Reset, Pause, a mode switch -- comes
+   through here, so they all bump `loopToken` the same way and `stepOnce` has one stale check
+   to make. */
+function cancelRun() {
+  if (abortCtrl) abortCtrl.abort();
+  abortCtrl = null;
+  loopToken += 1;
+}
+
+/* Start the next run and return its epoch. `AbortController` is absent only in a sandboxed
+   realm (the headless harness), where there is nothing to cancel and the epoch still does
+   the work. */
+function beginRun() {
+  cancelRun();
+  abortCtrl = typeof AbortController === "function" ? new AbortController() : null;
+  return loopToken;
+}
+
+async function loop(token, signal) {
   while (running && alive && !won && token === loopToken) {
     const tStart = performance.now();
     const manual = GameShell.mode() === "manual";
@@ -825,7 +923,7 @@ async function loop(token) {
       updateUI(plan, null, manualDir, null, "manual");
       drawBoard();
     } else {
-      await stepOnce();
+      await stepOnce(signal);
     }
     if (!running || !alive || won || token !== loopToken) break;
     const elapsed = performance.now() - tStart;
@@ -841,9 +939,12 @@ function toggleStart() {
   running = !running;
   GameShell.setRunning(running);
   if (running) {
-    const token = ++loopToken;
-    loop(token);
+    const token = beginRun();
+    loop(token, abortCtrl && abortCtrl.signal);
   } else {
+    // Pause ends the run too: its answer belongs to the run being paused, and it used to
+    // arrive after the pause and re-light "Running (live)" on a stopped game.
+    cancelRun();
     GameShell.setStatus("status.paused", null, "");
   }
 }
@@ -852,8 +953,12 @@ window.addEventListener("keydown", e => {
   const dir = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" }[e.key];
   if (!dir || GameShell.mode() !== "manual") return;
   e.preventDefault();
-  // No 180-degree turn: the neck is where the head just was, so that move is death.
-  const opposite = { up: "down", down: "up", left: "right", right: "left" }[direction];
+  // No 180-degree turn into the neck. The heading the next tick will actually have is
+  // `manualDir`, not the `direction` left over from the last tick (`loop` plays the queued
+  // one), so Up followed by Left inside one tick is judged as the turn it will be rather
+  // than refused for turning back into the old heading. Reversing a queued turn is still
+  // refused: it is the same 180 degrees, only measured from the cell the head will be on.
+  const opposite = { up: "down", down: "up", left: "right", right: "left" }[manualDir];
   if (dir !== opposite) manualDir = dir;
 });
 
@@ -865,6 +970,13 @@ GameShell.init({
     // Entering manual mode starts from the current heading, so the first arrow press
     // cannot be a 180-degree turn into the snake's own neck.
     if (mode === "manual") manualDir = direction;
+    // A mode switch is a new run for the same reason a Reset is: the answer still on the
+    // wire was asked for by the mode that just ended. The loop is still alive, so hand it a
+    // fresh epoch and controller -- the run that is still awaiting is retired by the epoch.
+    if (running) {
+      const token = beginRun();
+      loop(token, abortCtrl && abortCtrl.signal);
+    }
   }
 });
 I18N.onChange(renderTexts);

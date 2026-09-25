@@ -482,8 +482,10 @@
     let running = false;
     let game = null;
     let highScore = 0;
-    let observedFrames = Array(16).fill(4);
-    let latencyFrames = 4;
+    // Empty until the first answer: the reference has no placeholder observations, and a
+    // pre-filled window plans the first ~13 replies as if the engine answered in 4 frames.
+    let observedFrames = [];
+    let latencyFrames = 0;
     let jitterFrames = 1;
     let totalDecisions = 0;
     let matchedBestCount = 0;
@@ -491,6 +493,22 @@
     let modelVetoes = 0;
     let skippedStale = 0;
     let inflightCount = 0;
+    // Every game gets its own generation, so no answer about a previous game is ever applied
+    // to a new one (see `createGame`).
+    let gameSerial = 0;
+    // The ported reference paces a failed call (`Pilot.work` sleeps 250 ms after an
+    // exception). The page has to as well: it expects long unready windows -- its own 503
+    // body says a CPU cold start "takes a couple of minutes" -- and any proxy that answers
+    // an error in a millisecond turns an unthrottled retry loop into a flood.
+    const ERROR_BACKOFF_MS = 250;
+    // The time before which no new request may start. Both callers are opportunistic -- the
+    // per-frame gate and the `finally` re-issue -- so the pacing lives here, where a request
+    // is actually started, and a failure is what pushes it forward.
+    let retryNotBefore = 0;
+    // One controller per game: Reset aborts the calls of the game it replaces, so a request
+    // that never settles cannot hold `inflightCount` above zero for the new game (the counter
+    // is only ever decremented by the calls themselves). Absent only in a sandboxed realm.
+    let abortCtrl = null;
     let lastRequestAt = 0;
     let obsSerial = 0;
 
@@ -889,7 +907,10 @@
         lastHit: null,
         held: "run",
         lastProposed: "run",
-        epoch: 0,
+        // The premise check drops an answer whose epoch differs from the game's, and every
+        // key change bumps it. A brand-new game must not share an epoch with the game that
+        // preceded it, or an answer about the old board is accepted by the new one.
+        epoch: ++gameSerial,
         seq: 0,
         acceptedSeq: 0,
         hx: [0, WIDTH],
@@ -1160,8 +1181,10 @@ Action analysis:
     async function querySystemOne() {
       if (!running || !game || game.crashed) return;
       if (GameShell.mode() !== "ai") return;
+      if (performance.now() < retryNotBefore) return;
       const maxInflight = parseInt(document.getElementById("inflightSelect").value, 10) || 1;
       if (inflightCount >= maxInflight) return;
+      let failed = false;
 
       const reqSeq = ++game.seq;
       const reqEpoch = game.epoch;
@@ -1183,12 +1206,14 @@ Action analysis:
       inflightCount++;
       updatePipeline(plan, game.lastProposed, game.held);
       const t0 = performance.now();
+      const mine = abortCtrl;
       let reported = false;
       try {
         const resp = await fetch("/v1/systemone", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(sent)
+          body: JSON.stringify(sent),
+          signal: mine ? mine.signal : undefined
         });
         const elapsed = performance.now() - t0;
         let body = null;
@@ -1202,13 +1227,20 @@ Action analysis:
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         if (!running || !game || game.crashed) return;
 
-        // Observe timing in frames (exact Pilot.observe_timing from pilot.py)
-        const actualFrames = Math.min(12, Math.max(3, game.survivalFrames - reqFrame));
+        // Observe timing in frames (Pilot.observe_timing from pilot.py): a slower regime
+        // clears the history immediately, a faster one is believed gradually over 16
+        // replies. The clamp is the reference's [0, 90], not [3, 12]: this repo's own
+        // measured engine latency is 231 ms (laya-multilingual, CPU p50) to 1656 ms
+        // (kev-0.8b fp32), i.e. 14 to 100 game frames, and a window that cannot represent
+        // those makes the plan describe a press that never happens. `reqFrame` is the frame
+        // the world was viewed at, hence the -1.
+        const actualFrames = Math.min(90, Math.max(0, game.survivalFrames - reqFrame - 1));
+        if (actualFrames > latencyFrames + Math.max(4, jitterFrames * 2)) observedFrames = [];
         observedFrames.push(actualFrames);
         if (observedFrames.length > 16) observedFrames.shift();
         const recent = [...observedFrames].sort((a, b) => a - b);
-        latencyFrames = recent[Math.floor(recent.length / 5)];
-        jitterFrames = Math.min(3, Math.max(1, recent[Math.max(0, recent.length - 2)] - latencyFrames));
+        latencyFrames = recent[Math.max(0, Math.floor(recent.length / 5))];
+        jitterFrames = Math.min(12, Math.max(1, recent[recent.length - 1] - latencyFrames));
 
         // Premise check (Pilot.premise_holds from pilot.py)
         if (reqSeq <= game.acceptedSeq || reqEpoch !== game.epoch) {
@@ -1256,13 +1288,24 @@ Action analysis:
         applyPilotAction(game, finalAction);
         updateHUD(plan, payload, probs, chosen, finalAction, vetoed, elapsed);
       } catch (err) {
+        // A call this page cancelled (Reset) is not a failure: the game it was asked about is
+        // gone, and the new one has its own controller. Backing off from it would delay the
+        // game that is actually running.
+        if (mine && mine.signal.aborted) return;
+        failed = true;
+        retryNotBefore = performance.now() + ERROR_BACKOFF_MS;
         const elapsed = Math.max(1, performance.now() - t0);
         if (!reported) GameShell.observe({ request: sent, error: err, latencyMs: elapsed });
         showBadge("dino.badge.apiError", { message: err.message });
       } finally {
         inflightCount--;
         if (running && game && !game.crashed && inflightCount === 0) {
-          querySystemOne();
+          // A failure is retried after `ERROR_BACKOFF_MS` instead of immediately: this path
+          // does not go through the tick pacing, so answering-as-fast-as-possible used to
+          // mean "ask again as fast as possible" (measured: 197 requests/s against a 3 ms
+          // 503 proxy).
+          if (failed) setTimeout(querySystemOne, ERROR_BACKOFF_MS);
+          else querySystemOne();
         }
       }
     }
@@ -1272,35 +1315,15 @@ Action analysis:
       renderPipeline();
     }
 
-    function renderIdleLabels() {
-      // No measurement has happened, so no bar is drawn: the rows show what the local
-      // planner knows (which action is safe) and a dash where a probability would go.
+    // The three action rows. The bar and the percentage are the model's read -- a dash when
+    // nothing has been measured -- and the tag is the planner's verdict, which is why the
+    // planner has to run in manual mode too: the tags describe the board on screen.
+    function paintActionRows(plan, probs, finalAction, chosen, vetoed) {
       for (const a of ["jump", "duck", "run"]) {
-        const best = a === "run";
-        document.getElementById(`bar-${a}`).style.width = "0%";
-        document.getElementById(`bar-${a}`).className = "bar-fill";
-        document.getElementById(`pct-${a}`).textContent = "\u2014";
-        document.getElementById(`row-${a}`).className = "prob-row" + (best ? " chosen" : "");
-        document.getElementById(`name-${a}`).className = "dir-name" + (best ? " chosen" : "");
-        const tag = document.getElementById(`tag-${a}`);
-        tag.textContent = I18N.t("dino.tag.safe");
-        tag.className = "tag";
-      }
-      document.getElementById("m-score").textContent = "0";
-      document.getElementById("m-best").textContent = String(highScore);
-      document.getElementById("m-deaths").textContent = "0";
-      document.getElementById("m-speed").textContent = "\u2014";
-      renderAgree();
-    }
-
-    function renderHud() {
-      if (!hudSnap) return;
-      const { plan, probs, chosen, finalAction, vetoed } = hudSnap;
-      for (const a of ["jump", "duck", "run"]) {
-        const p = Math.round((probs[a] || 0) * 100);
-        document.getElementById(`bar-${a}`).style.width = `${Math.max(0, p)}%`;
+        const p = probs ? Math.round((probs[a] || 0) * 100) : null;
+        document.getElementById(`bar-${a}`).style.width = p === null ? "0%" : `${Math.max(0, p)}%`;
         document.getElementById(`bar-${a}`).className = "bar-fill" + (finalAction === a ? " chosen" : "");
-        document.getElementById(`pct-${a}`).textContent = `${p}%`;
+        document.getElementById(`pct-${a}`).textContent = p === null ? "\u2014" : `${p}%`;
         document.getElementById(`row-${a}`).className = "prob-row" + (finalAction === a ? " chosen" : "");
         document.getElementById(`name-${a}`).className = "dir-name" + (finalAction === a ? " chosen" : "");
         const tag = document.getElementById(`tag-${a}`);
@@ -1321,6 +1344,30 @@ Action analysis:
           tag.className = "tag";
         }
       }
+    }
+
+    function renderIdleLabels() {
+      // Nothing has been measured yet, so no bar is drawn and the KPI strip keeps the game's
+      // own numbers: a language switch repaints here, and a repaint must not invent a death
+      // count of 0 (deaths are otherwise only written on a crash).
+      paintActionRows(
+        planAction(game, [0, 1], [latencyFrames, latencyFrames + jitterFrames]),
+        null,
+        game.held,
+        null,
+        false
+      );
+      document.getElementById("m-score").textContent = game ? game.score.toLocaleString() : "0";
+      document.getElementById("m-best").textContent = String(highScore);
+      document.getElementById("m-deaths").textContent = String(game ? game.deaths : 0);
+      document.getElementById("m-speed").textContent = game ? game.speed.toFixed(1) : "\u2014";
+      renderAgree();
+    }
+
+    function renderHud() {
+      if (!hudSnap) return;
+      const { plan, probs, chosen, finalAction, vetoed } = hudSnap;
+      paintActionRows(plan, probs, finalAction, chosen, vetoed);
       renderAgree();
     }
 
@@ -1361,8 +1408,12 @@ Action analysis:
             }
           }
         } else {
+          // The planner runs in both modes -- it is what draws the safe/best tags. In manual
+          // mode the only caller used to be the AI path, so the panel kept describing the
+          // board of the last AI answer for the whole manual game.
+          const manual = GameShell.mode() !== "ai";
           // The safety net is part of AI mode: it must not overrule a person's keys.
-          const assist = document.getElementById("assistToggle").checked && GameShell.mode() === "ai";
+          const assist = document.getElementById("assistToggle").checked && !manual;
           if (assist) {
             const nowPlan = planAction(game, [0, 1], [latencyFrames, latencyFrames + jitterFrames]);
             if (!nowPlan.safe[game.held] && nowPlan.safe[nowPlan.best]) {
@@ -1371,6 +1422,10 @@ Action analysis:
               shieldSaves++;
               showBadge("dino.badge.emergency", { action: nowPlan.best.toUpperCase() });
             }
+          }
+          if (manual) {
+            const nowPlan = planAction(game, [0, 1], [latencyFrames, latencyFrames + jitterFrames]);
+            updateHUD(nowPlan, null, null, null, game.held, false);
           }
 
           enforcePilotKeys(game);
@@ -1588,15 +1643,20 @@ Action analysis:
     });
 
     function resetGame() {
+      if (abortCtrl) abortCtrl.abort();
+      abortCtrl = typeof AbortController === "function" ? new AbortController() : null;
       game = createGame();
       shieldSaves = 0;
       modelVetoes = 0;
       totalDecisions = 0;
       matchedBestCount = 0;
       skippedStale = 0;
-      inflightCount = 0;
-      observedFrames = Array(16).fill(4);
-      latencyFrames = 4;
+      // The in-flight counter is owned by the calls themselves: each one decrements it in
+      // its `finally`. Zeroing it here made a landed call decrement it to -1, and both
+      // re-trigger paths require 0, so the AI never asked again. Dropping the stale answer
+      // is `game.epoch`'s job, not the counter's.
+      observedFrames = [];
+      latencyFrames = 0;
       jitterFrames = 1;
       hudSnap = null;
       hideBadge();
@@ -1637,7 +1697,13 @@ Action analysis:
       onStart: toggleStartOrRestart,
       onReset: resetGame,
       onMode: () => {
-        if (game) game.held = "run";
+        // Changing who decides changes the world the in-flight answer was about: bumping the
+        // epoch makes the premise check drop it, so a late "duck" cannot overrule the keys a
+        // person is holding (the same rule the safety net follows).
+        if (game) {
+          game.epoch++;
+          game.held = "run";
+        }
         renderGameState();
         renderPipeline();
       }

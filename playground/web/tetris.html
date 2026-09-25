@@ -355,8 +355,8 @@ I18N.add({
     "strat.short.repair_surface": "repair",
     "strat.short.survive": "survive",
     "health.0": "Clean",
-    "health.1": "Rough",
-    "health.2": "Messy",
+    "health.1": "Fine",
+    "health.2": "Rough",
     "health.3": "Critical",
     "health.val": "{label} ({score})",
     "fit.yes": "YES (clean spot)",
@@ -955,6 +955,11 @@ function resolveEndpointUrl() {
   return "/v1/systemone";
 }
 
+// True only while the transport itself is broken (the fetch threw): the page stops paying
+// a failed round trip per decision and plays its own heuristic instead. A response that is
+// merely an error status does not latch -- the endpoint is reachable, so the next decision
+// asks again -- and `resetGame` clears the latch, which is how a page that gave up on the
+// API gets it back without a reload.
 let sandboxFallback = false;
 
 async function askJev(request, placements, gameInfo, signal) {
@@ -979,6 +984,8 @@ async function askJev(request, placements, gameInfo, signal) {
       if (res.ok) {
         return { response: body, latencyMs: Math.round(elapsed), live: true };
       }
+      // A 422 (over budget) or a 503 (engine still loading) is not a crash: this one
+      // decision is the page's own and says so, and the next decision asks again.
     } catch (e) {
       if (signal?.aborted) throw e;
       GameShell.observe({ request, error: e, latencyMs: performance.now() - t0 });
@@ -1244,7 +1251,10 @@ function renderProbabilityPanel(decision, source) {
       const raw = Math.max(0, Math.min(3, health.score));
       const displayScale = 4.0 - raw; // 4.0 is healthiest, 1.0 is critical
       const level = Math.max(0, Math.min(3, Math.round(raw)));
-      const fillPct = ((4.0 - raw) / 3.0) * 85 + 15;
+      // The bar runs from full at Clean to the 15% floor at Critical. Dividing the 4.0..1.0
+      // display scale by 3.0 put Clean at 128% and Critical at 43%: the two ends of the
+      // scale were not distinguishable (and only `overflow: hidden` hid the overflow).
+      const fillPct = ((3.0 - raw) / 3.0) * 85 + 15;
       const bar = $("read-health-bar");
       // `HEALTH_LEVELS` is the model's criteria and stays English; the panel shows the
       // label for the same level in the interface language.
@@ -1471,7 +1481,8 @@ async function runAutopilotLoop(signal) {
       continue;
     }
 
-    const placements = enumeratePlacements(game.board, game.current);
+    const piece = game.current;
+    const placements = enumeratePlacements(game.board, piece);
     if (!placements.length) {
       finishGame();
       return;
@@ -1488,17 +1499,32 @@ async function runAutopilotLoop(signal) {
       continue;
     }
     if (!decision || signal.aborted || !game.running) return;
+    // The answer is about the board it was asked about. Switching to manual while it was
+    // in flight replaces that board, and the piece then belongs to the player: drop the
+    // answer rather than play it, and do not count it as the model's decision.
+    if (getMode() !== "ai" || game.current !== piece) continue;
 
-    stats.decisions += 1;
-    if (decision.chosen.id === heur.chosen.id) stats.agreements += 1;
-
-    setStatus("game.running", null, "live");
-    renderProbabilityPanel(decision, getMode());
+    if (decision.live) {
+      stats.decisions += 1;
+      if (decision.chosen.id === heur.chosen.id) stats.agreements += 1;
+      setStatus("game.running", null, "live");
+      renderProbabilityPanel(decision, getMode());
+    } else {
+      // The page answered for itself -- no transport, an error status, an over-budget
+      // question. That is the page's own read, so it is shown as such (the same panel
+      // manual mode shows) and is not counted against the model or painted as its answer.
+      setStatus("game.retry", null, "warn");
+      clearProbabilityPanel();
+      renderProbabilityPanel(heur, "heuristic");
+    }
     renderMetrics();
 
-    const chosen = decision.chosen;
+    const chosen = decision.live ? decision.chosen : heur.chosen;
     game.target = chosen;
-    game.ghosts = decision.ranked
+    // A fallback decision's probabilities are the page's own, like its panel: only a live
+    // answer's numbers are the model's.
+    const ranked = decision.live ? decision.ranked : heur.ranked;
+    game.ghosts = ranked
       .slice(0, 3)
       .map((r) => ({ cells: r.placement.cells, probability: r.probability, chosen: r.placement.id === chosen.id }));
 
@@ -1509,14 +1535,20 @@ async function runAutopilotLoop(signal) {
     const nextLines = game.lines + chosen.linesCleared;
     if (getMode() === "ai") {
       const pfKey = stateKey(nextBoard, nextPiece, pieceAfterNext);
-      prefetchEntry = {
-        key: pfKey,
-        promise: requestDecisionFor(nextBoard, nextPiece, pieceAfterNext, nextLines, signal),
-      };
+      const promise = requestDecisionFor(nextBoard, nextPiece, pieceAfterNext, nextLines, signal);
+      // A prefetch that is thrown away -- Reset, pause, a mode switch -- is never awaited,
+      // so its AbortError must not surface as an unhandled rejection.
+      promise.catch(() => {});
+      prefetchEntry = { key: pfKey, promise };
     }
 
     await animateDrop60Fps(chosen, signal);
     if (signal.aborted || !game.running) return;
+    // The piece that lands has to be the piece the decision was about. A mode switch or a
+    // manual hard drop during those frames hands it to the player, whose own lock has
+    // already advanced `game.current`: locking the stale placement would put the same
+    // tetromino on the board twice and consume a piece nobody played.
+    if (getMode() !== "ai" || game.current !== piece) continue;
 
     lockAndAdvance(chosen);
   }
@@ -1591,6 +1623,9 @@ function resetGame() {
   game.ghosts = [];
   game.flashRows = [];
   Object.assign(stats, { agreements: 0, decisions: 0 });
+  // Reset is also the way back from a page that gave up on the API (`sandboxFallback`):
+  // without this, one failed fetch turned the page into a local game for its whole life.
+  sandboxFallback = false;
   overlayState = null;
   $("overlay").classList.add("hidden");
   GameShell.resetTelemetry();
@@ -1619,7 +1654,12 @@ function startGame() {
   paintStartLabel();
   abortCtrl = new AbortController();
   if (getMode() === "manual") {
-    spawnManualActive();
+    // Resuming is not restarting: a piece the player has already moved, rotated or lowered
+    // stays where the player left it. Re-arming is for a piece still at its spawn, which
+    // is also what draws the ghost and this page's own read for a fresh game.
+    const a = game.active;
+    const atSpawn = a && a.piece === game.current && a.rotation === 0 && a.x === 3 && a.y === 0;
+    if (!a || atSpawn) spawnManualActive();
   }
   runAutopilotLoop(abortCtrl.signal);
 }
@@ -1628,7 +1668,9 @@ function startGame() {
 // by a person. Space is the hard drop here, so the shell leaves Space to this page
 // (`manualSpace`) and takes Enter as start/pause in both modes.
 document.addEventListener("keydown", (e) => {
-  if (getMode() !== "manual" || !game.active || game.over) return;
+  // `game.running` is what the Start button and Enter toggle: keys must not move, drop or
+  // lock a piece while the game is paused or has not been started.
+  if (getMode() !== "manual" || !game.running || !game.active || game.over) return;
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   const { piece, rotation, x, y } = game.active;
   const rots = PIECES[piece];
@@ -1657,12 +1699,14 @@ document.addEventListener("keydown", (e) => {
     }
   } else if (e.key === " ") {
     e.preventDefault();
-    const dropY = hardDropY(game.board, rots[rotation].cells, x);
-    if (dropY !== null) {
-      const placements = enumeratePlacements(game.board, piece);
-      const match = placements.find((p) => p.rotation === rotation && p.x === x) || placements[0];
-      if (match) lockAndAdvance(match);
-    }
+    // Drop the piece the player is holding as far as it goes and lock it there. Looking
+    // the placement up in `enumeratePlacements` instead answers for a piece dropped from
+    // the top, which is a different position the moment a piece has been tucked sideways
+    // under an overhang -- and `hardDropY` refuses that piece outright, so Space did
+    // nothing at all there.
+    let dropY = y;
+    while (!collides(game.board, rots[rotation].cells, x, dropY + 1)) dropY += 1;
+    lockAndAdvance({ piece, rotation, x, y: dropY });
   }
 });
 
@@ -1676,6 +1720,11 @@ GameShell.init({
   onMode: () => {
     prefetchEntry = null;
     if (getMode() === "manual" && game.running) {
+      // The piece is the player's now: stop the model's in-flight decision and its drop
+      // before handing it over, or the abandoned drop would lock a piece the player owns
+      // (and `spawnManualActive` would have already put the same one in their hands).
+      if (abortCtrl) abortCtrl.abort();
+      abortCtrl = null;
       spawnManualActive();
     } else if (getMode() === "ai" && game.running) {
       setStatus("game.running", null, "live");

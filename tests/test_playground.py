@@ -587,6 +587,162 @@ def test_tetris_option_keys_have_one_home_and_are_not_placement_codes() -> None:
     assert "shortlistPlacements(placements)" in pick, "pickPlacement no longer maps the wire key through the shortlist"
 
 
+# --- who decided, and what a late answer is allowed to touch ------------------------
+#
+# All three pages fire a request and then wait for it, so any of them can be answered about a
+# board that no longer exists, and all three have a local path for when the engine does not
+# answer at all. Both were real bugs, reproduced headlessly from each page's own functions
+# against a stubbed `fetch`. An answer that landed after Reset killed a brand-new snake on its
+# first tick (`steps=0`, status `collision`); a late tetris answer locked a tetromino the
+# manual player had already locked, so one piece put 8 cells on the board and another was
+# consumed unplayed; and a decision served by the tetris page's own fallback was counted in
+# the agreement badge, where a single HTTP 500 left `decisions=1 agreements=1 badge=100%` with
+# the page's fabricated reads painted as the model's. What a page may *show* is checked here
+# too: the dino page repainted its Deaths KPI as 0 on a language switch while `game.deaths`
+# was 2, and the tetris health bar put its Clean end at 128% of its own track.
+#
+# Text-level because these are control flow, not numbers: the throwaway harnesses that
+# measured them are not in the repository (CI has no node), but "the re-check is gone" is.
+
+
+def _body(text: str, name: str) -> str:
+    """One top-level function's source, so a guard can say what that function does.
+
+    The pages indent differently (the dino script wraps everything in one IIFE), so the
+    function ends at the first closing brace that sits at its own declaration's indentation.
+    """
+    marker = f"function {name}("
+    assert marker in text, f"{name} is gone"
+    line = text[: text.index(marker)].split("\n")[-1]
+    indent = " " * (len(line) - len(line.lstrip()))
+    return text.split(marker, 1)[1].split("\n" + indent + "}", 1)[0]
+
+
+def test_the_tetris_page_does_not_count_its_own_fallback_as_the_model() -> None:
+    """`askJev` says which of the two it returned, and only a live answer is the model's.
+
+    One HTTP 500 used to leave `decisions=1 agreements=1 badge=100%` with
+    `#read-strat-val="strat.build_clean"`: the page's simulated read, counted against the
+    model and painted as its answer. The fallback still has to be shown -- it is what the page
+    plays with -- but as the page's own read, and the decision has to stay out of the badge.
+    The latch (`sandboxFallback`) is only for a transport that is broken, and Reset is how the
+    page asks again.
+    """
+    text = (WEB / "tetris.html").read_text(encoding="utf-8")
+    ask = _body(text, "askJev")
+    assert "live: true" in ask, "a successful call no longer reports itself as live"
+    assert "live: false" in ask, "the local fallback no longer reports itself as local"
+    assert ask.count("sandboxFallback = true") == 1, "the fallback latch has more than one writer"
+    loop = _body(text, "runAutopilotLoop")
+    assert loop.count("stats.decisions") == 1, "a decision is counted in more than one branch"
+    assert "if (decision.live)" in loop, "the loop counts decisions without asking who made them"
+    assert "stats.decisions += 1" in loop.split("if (decision.live)", 1)[1].split("} else", 1)[0], (
+        "the decision counter left the live branch"
+    )
+    assert 'renderProbabilityPanel(heur, "heuristic")' in loop, "a fallback is not drawn as the page's own"
+    assert "clearProbabilityPanel()" in loop, "a fallback can leave the model's readouts on screen"
+    assert "sandboxFallback = false" in _body(text, "resetGame"), "Reset no longer re-arms the API"
+
+
+def test_the_tetris_page_rechecks_the_piece_before_it_locks_it() -> None:
+    """An answer and a drop animation both belong to one piece on one board.
+
+    Switching AI -> manual in the middle of the drop animation used to lock the same tetromino
+    twice -- the manual path locked it, and the loop then applied the placement it had computed
+    for it (`pieces=2`, 8 T cells, one piece consumed unplayed) -- and an answer that arrived
+    after the switch was played and counted with `source: "manual"` while `answers: true`. The
+    mode switch now aborts the in-flight work, and the loop re-checks the piece and the mode
+    after every await, including after the animation.
+    """
+    text = (WEB / "tetris.html").read_text(encoding="utf-8")
+    loop = _body(text, "runAutopilotLoop")
+    assert "game.current !== piece" in loop, "the loop locks without checking whose piece it is"
+    assert loop.index("game.current !== piece") < loop.index("lockAndAdvance(chosen)"), (
+        "the piece check has to happen before the lock, after the animation"
+    )
+    switch = text.split("onMode: () => {", 1)[1].split("} else if", 1)[0]
+    assert "abortCtrl.abort()" in switch, "switching to manual no longer cancels the model's drop"
+    keys = text.split('document.addEventListener("keydown"', 1)[1].split("const {", 1)[0]
+    assert "!game.running" in keys, "manual keys are accepted while the game is paused or not started"
+    assert "atSpawn" in _body(text, "startGame"), "resuming a manual game puts the piece back at its spawn"
+
+
+def test_the_tetris_health_readout_covers_its_own_track() -> None:
+    """The bar runs 100% (Clean) to 15% (Critical), and its words are the model's criteria.
+
+    `((4.0 - raw) / 3.0) * 85 + 15` put Clean at 128.3% of the track and Critical at 43.3%, so
+    the two ends of a four-level scale were 57 points apart and only `overflow: hidden` hid
+    the overflow. The English panel labels also disagreed with the criteria the model is given
+    -- "Rough"/"Messy" where the criteria say "Fine"/"Rough" -- which the Chinese labels did
+    not (`健康/尚可/粗糙/危急`).
+    """
+    text = (WEB / "tetris.html").read_text(encoding="utf-8")
+    panel = _body(text, "renderProbabilityPanel")
+    assert "((3.0 - raw) / 3.0) * 85 + 15" in panel, "the health bar no longer spans its track"
+    assert "((4.0 - raw)" not in text, "the bar is measured against the 4.0 display scale again"
+    criteria = re.findall(r'"(\w+): ', text.split("const HEALTH_LEVELS = [", 1)[1].split("];", 1)[0])
+    labels = re.findall(r'"health\.(\d)": "([^"]+)"', text)
+    assert len(labels) == 8, "the health labels are not declared exactly once per language"
+    en = [word for _, word in labels[:4]]
+    zh = [word for _, word in labels[4:]]
+    assert en == criteria, f"the panel says {en} where the model's criteria say {criteria}"
+    assert len(set(zh)) == 4, "the Chinese health labels are not four distinct words"
+
+
+def test_the_dino_page_keeps_one_generation_of_state_per_game() -> None:
+    """A new game is a new world: a counter its own calls own, and an epoch to check answers against.
+
+    `resetGame` used to zero `inflightCount` while requests were outstanding, and each landed
+    call then decremented it in its `finally`: with "Requests in flight = 1" the counter read
+    -1 and both re-trigger paths (which require 0) never fired again -- the AI stopped asking
+    while the game kept running. The same reset also restarted `epoch` at 0, so a request
+    issued against the *previous* game passed the premise check and ducked the fresh dinosaur.
+    The counter now belongs to the calls, each game gets its own generation, and changing who
+    decides invalidates the answers that were asked for under the old one.
+    """
+    text = (WEB / "dino.html").read_text(encoding="utf-8")
+    assert "epoch: ++gameSerial" in _body(text, "createGame"), "a new game can reuse an old game's epoch"
+    assert "inflightCount = 0" not in _body(text, "resetGame"), (
+        "reset zeroes the in-flight counter that landed calls decrement"
+    )
+    switch = text.split("onMode: () => {", 1)[1].split("renderGameState()", 1)[0]
+    assert "game.epoch++" in switch, "a mode switch leaves the model's in-flight answer valid"
+
+
+def test_the_dino_page_paces_a_failing_call_and_plans_in_manual_mode() -> None:
+    """A 503 engine is asked ~4 times a second, not 197, and the tags describe the live board.
+
+    Both callers of `querySystemOne` are opportunistic (the per-frame gate and the `finally`
+    re-issue), so neither paced a failure: against a proxy that answered 503 in 3 ms the page
+    sent 197 requests/s, and its own 503 body says a CPU cold start "takes a couple of
+    minutes". The reference it ports sleeps 250 ms on error (`Pilot.work`); the page now does
+    too, in one place. And because the planner only ran in AI mode, a whole manual game showed
+    the tags of the last AI answer (`jump:safe duck:safe run:BEST` at score 41).
+    """
+    text = (WEB / "dino.html").read_text(encoding="utf-8")
+    ask = _body(text, "querySystemOne")
+    assert "retryNotBefore = performance.now() + ERROR_BACKOFF_MS" in ask, (
+        "a failure no longer pushes the time before which no request may start"
+    )
+    assert "setTimeout(querySystemOne, ERROR_BACKOFF_MS)" in ask, "a failure is re-issued immediately again"
+    assert "if (performance.now() < retryNotBefore) return;" in ask, "the per-frame gate can bypass the backoff again"
+    assert "observedFrames = []" in text and "Array(16).fill(4)" not in text, (
+        "the timing window is pre-filled with placeholder observations again"
+    )
+    assert "Math.min(90, Math.max(0, game.survivalFrames - reqFrame - 1))" in ask, (
+        "the latency estimate is clamped away from the range the ported reference uses"
+    )
+    tick = _body(text, "tickPhysics")
+    assert 'const manual = GameShell.mode() !== "ai"' in tick, "the planner runs in AI mode only again"
+    assert "updateHUD(nowPlan, null, null, null, game.held, false)" in tick, (
+        "manual mode does not repaint the panel from the live board"
+    )
+    idle = _body(text, "renderIdleLabels")
+    assert 'getElementById("m-deaths").textContent = "0"' not in idle, (
+        "a language switch writes a death count of 0 over the game's own"
+    )
+
+
 # --- one design system, one i18n, four pages ---------------------------------------
 #
 # The pages are separately authored but must not be separately designed or separately
