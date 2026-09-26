@@ -27,7 +27,7 @@ generating text: one forward pass, small enough to run next to your app.
 - **A playground with three games.** Snake, dino and tetris, each one deciding through a
   real `/v1/systemone` call.
 
-> **Status:** pre-1.0, currently `v0.3.1`. The wire contract (`v1`) is stable and only gains
+> **Status:** pre-1.0, currently `v0.3.2`. The wire contract (`v1`) is stable and only gains
 > fields; the running server reports its own version at `/healthz`.
 
 ## Quickstart

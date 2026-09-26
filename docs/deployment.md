@@ -38,7 +38,7 @@ chaitin/decis` gives you the default engine. Every tag is a multi-arch manifest 
 have no image; run those from a source checkout.
 
 A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
-`laya-multilingual-v<version>` and `kev-0.8b-v<version>` — `laya-multilingual-v0.3.1` for the
+`laya-multilingual-v<version>` and `kev-0.8b-v<version>` — `laya-multilingual-v0.3.2` for the
 current release — plus the weightless `-runtime-v<version>` variants described below, and the
 GitHub Release for that tag. The engine-named tags are the opposite — they keep moving with
 every push to `master`, so a versioned tag is the one to pin.
@@ -66,17 +66,17 @@ node's image small, releases also publish a weightless variant named
 fill the volume once and mount it from then on:
 
 ```bash
-docker pull chaitin/decis:laya-multilingual-runtime-v0.3.1
-docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.1 \
+docker pull chaitin/decis:laya-multilingual-runtime-v0.3.2
+docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.2 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  chaitin/decis:laya-multilingual-runtime-v0.3.1
+  chaitin/decis:laya-multilingual-runtime-v0.3.2
 ```
 
 Fill the volume before you serve offline: with an empty volume, `paths.resolve` falls back to
 the Hub and the container downloads the weights at load time. The runtime image does ship the
 engine's dependencies, so that download works — it just needs the network, which an air-gapped
-deployment does not have. `v0.3.1` is the current version, and pinning it is the point of this
+deployment does not have. `v0.3.2` is the current version, and pinning it is the point of this
 variant — the engine-named tags move with every push to `master`.
 
 ## Docker Compose

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decis"
-version = "0.3.1"
+version = "0.3.2"
 description = "One API to run all light-weight decision models."
 readme = "README.md"
 requires-python = ">=3.11"

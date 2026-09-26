@@ -264,7 +264,7 @@ Neither requires authentication.
 
 ```jsonc
 // GET /healthz -> 200 as soon as the process is up, even mid-load
-{"status": "ok", "version": "0.3.1"}
+{"status": "ok", "version": "0.3.2"}
 
 // GET /readyz -> 200 once the engine can answer
 {"status": "ready", "engine": "laya-multilingual"}

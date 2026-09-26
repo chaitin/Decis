@@ -10,6 +10,8 @@ each engine will run.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-26
+
 ### Fixed
 
 - **`DECIS_DEVICE` now reaches the Laya engines.** They never passed it to `laya.Agent`, so
