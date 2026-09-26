@@ -310,8 +310,14 @@ function spawnFood(body) {
     }
   }
   if (!free.length) return null;
-  const idx = (steps * 17 + score * 31 + 7) % free.length;
-  return free[idx];
+  // Uniform over the cells the head can walk to. This used to be
+  // `(steps * 17 + score * 31 + 7) % free.length`, which reads like a shuffle and is not
+  // one: it is a pure function of the game state, and so is everything downstream of it --
+  // `planMoves` is pure, and the engine answers an identical request identically
+  // (AGENTS.md §3-11). Every run was therefore the same run: the same first apple on the
+  // same cell, the same route, the same death on the same apple. The rule above is what
+  // has to hold; which of the reachable cells it lands on has to be a coin toss.
+  return free[Math.floor(Math.random() * free.length)];
 }
 
 /* One breadth-first walk, two answers: how far the food is, and how much room the head

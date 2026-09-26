@@ -459,6 +459,30 @@ def test_snake_asks_a_question_the_planner_can_answer() -> None:
     assert "snake.length === GRID * GRID" in text, "the no-food case no longer tells a win from a dead end"
 
 
+def test_snake_food_is_a_coin_toss_and_not_a_function_of_the_game_state() -> None:
+    """Every run of the snake game used to be the same run.
+
+    `spawnFood` picked `(steps * 17 + score * 31 + 7) % free.length`, which reads like a
+    shuffle and is not one: it is a pure function of the game state. Everything downstream
+    of it is pure too -- `planMoves` is, and the engine answers an identical request
+    identically (`AGENTS.md` §3-11) -- so the first apple always landed on the same cell of
+    a 12x12 board and the snake always died on the same apple. That is what a reader sees as
+    a scripted game: the food looks fixed and the score at the end never moves.
+
+    Which reachable cell the food lands on has to be a coin toss. *That* it is reachable is
+    the other half, and it is guarded by
+    `test_snake_asks_a_question_the_planner_can_answer`.
+    """
+    text = (WEB / "snake.html").read_text(encoding="utf-8")
+    spawn = _body(text, "spawnFood")
+    assert "Math.random()" in spawn, "food placement stopped being random"
+    # Comments may name the old inputs; the code may not read them.
+    code = "\n".join(line.split("//", 1)[0] for line in spawn.splitlines())
+    assert "steps" not in code and "score" not in code, (
+        "the food is derived from the game state again, so every run is the same run"
+    )
+
+
 @pytest.mark.parametrize("name", ("snake.html", "dino.html", "tetris.html"))
 def test_every_page_adds_the_same_strings_in_both_languages(name: str) -> None:
     """A page's own dictionary is bilingual, or half its readers get an empty label.

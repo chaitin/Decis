@@ -23,6 +23,16 @@ each engine will run.
   `DECIS_DEVICE` set, the fallback logs the device that actually loaded, and the `loaded ...
   device=... threads=...` line names the thread count torch resolved to — the two facts that
   tell a container apart from the host it is running on.
+- **The snake page's food is no longer placed by a formula.** `spawnFood` picked
+  `(steps * 17 + score * 31 + 7) % free.length`, which reads like a shuffle and is not one: it
+  is a pure function of the game state, and everything downstream of it is pure too — the
+  planner is, and the engine answers an identical request identically (`AGENTS.md` §3-11). So
+  every run was the same run. Playing the shipped page's own script eight times gave the same
+  first apple, the same 263 steps and the same final score eight times; with the reachable
+  cells now chosen uniformly at random, eight runs gave eight different first apples and eight
+  different scores. Which reachable cell the food lands on is a coin toss; *that* it is
+  reachable is unchanged, and still the invariant that keeps the planner's `allowed` set from
+  going empty.
 
 ## [0.3.1] - 2026-09-25
 
