@@ -23,6 +23,20 @@ layer.
 uv run decis models     # what is registered, and what this machine can actually run
 ```
 
+## Installing an engine
+
+An engine's dependencies live in its own extra, never in `[project.dependencies]`, so a sync
+installs only the engines you name. A plain `uv sync` names none of them — and it **removes**
+the engine dependencies that an earlier sync added, which is how an engine that worked
+yesterday is missing today (`decis models` then reports `deps missing`, with the command that
+fixes it).
+
+```bash
+uv sync --all-extras                # every engine, plus the dev tools: one command for a local checkout
+uv sync --extra dev --extra laya    # only the Laya family
+uv sync --extra dev --extra kev     # only kev-0.8b
+```
+
 ## Capacity
 
 Each engine reports its own limits, and the only place they are published is `GET /v1/models`

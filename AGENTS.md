@@ -216,6 +216,9 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 
 ```bash
 uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesafe-sdk）
+uv sync --all-extras                 # 全部引擎依赖 + dev（本地 checkout 一把装齐）
+#   引擎依赖只在 extras 里，所以裸 `uv sync` 一个都不装，而且会删掉上一次 sync 装上的引擎依赖；
+#   只服务一个引擎就点名它的 extra（`uv sync --extra dev --extra kev`）。
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
 uv run pytest -q                     # 无权重测试（CI 跑这个：不需要权重，也不联网）
 uv run ruff check && uv run ruff format --check

@@ -22,6 +22,18 @@
 uv run decis models     # 本机注册了哪些引擎、每个是否真的能跑
 ```
 
+## 安装引擎
+
+引擎的依赖在它自己的 extra 里，不放进 `[project.dependencies]`，所以一次 sync 只装你点名的
+引擎。裸 `uv sync` 一个都不点名——而且它会**删掉**上一次 sync 装上的引擎依赖，这就是"昨天还
+能用的引擎今天没了"的原因（此时 `decis models` 报 `deps missing`，并打出修复它的命令）。
+
+```bash
+uv sync --all-extras                # 全部引擎 + 开发工具：本地 checkout 一条命令装齐
+uv sync --extra dev --extra laya    # 只装 Laya 家族
+uv sync --extra dev --extra kev     # 只装 kev-0.8b
+```
+
 ## 容量
 
 每个引擎上报自己的上限，而它们唯一发布的地方是 `GET /v1/models`（在 `decis` 命名空间下）。

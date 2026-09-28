@@ -84,10 +84,14 @@ docker run --rm -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multi
 想在源码目录里跑：
 
 ```bash
-uv sync --extra dev --extra laya
+uv sync --all-extras
 uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
+
+引擎依赖都在 extras 里，所以 `--all-extras` 会把两个引擎家族和开发工具一起装上；裸 `uv sync`
+一个都不装，而且会删掉上一次 sync 装上的东西。只装一个引擎就点名它的 extra：
+`uv sync --extra dev --extra kev`。各引擎的 extra 见[引擎](docs/engines.zh-CN.md)。
 
 就绪语义、裸 `curl` 写法，以及 `decis models` / `decis doctor`，见
 [快速开始](docs/getting-started.zh-CN.md)。

@@ -23,11 +23,15 @@ Docker 是源码 checkout 之外的另一条路——已发布的镜像里已经
 
 ```bash
 git clone https://github.com/chaitin/Decis && cd Decis
-uv sync --extra dev --extra laya
+uv sync --all-extras
 cp .env.example .env                               # 设 DECIS_API_KEY=local，示例就是这么用的
 uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
+
+引擎依赖都在 extras 里，`--all-extras` 会把所有引擎和开发工具一起装上。只服务一个引擎只需要
+它的 extra（`uv sync --extra dev --extra laya`）；裸 `uv sync` 一个都不点名，而且会删掉上一次
+sync 装上的引擎依赖。见[引擎](engines.zh-CN.md#安装引擎)。
 
 token 填什么值都可以，但下面的示例发的都是 `local`，所以第一次运行就用它。
 

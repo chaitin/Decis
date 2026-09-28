@@ -10,7 +10,7 @@ Runnable examples, in the order a newcomer should read them.
 ## Before you start
 
 ```bash
-uv sync --extra dev --extra laya   # `dev` includes typesafe-sdk, needed by python_sdk.py
+uv sync --all-extras               # includes typesafe-sdk, needed by python_sdk.py
 cp .env.example .env               # set DECIS_API_KEY in it
 uv run decis download --engine laya-multilingual   # ~647 MiB
 uv run decis serve --host 127.0.0.1 --port 8000 --engine laya-multilingual

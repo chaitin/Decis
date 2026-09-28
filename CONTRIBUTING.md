@@ -35,6 +35,12 @@ uv run ruff check && uv run ruff format --check
 
 The weight-free suite is what CI runs. It needs no model and no network.
 
+Engine dependencies live in extras and are never in `[project.dependencies]`, so a sync
+installs only the engines you name — and a plain `uv sync` **removes** the engine
+dependencies an earlier sync added. For a checkout that can serve every engine, use
+`uv sync --all-extras`; to add one engine to an existing environment, name its extra
+(`uv sync --extra dev --extra kev`).
+
 ### The two environments
 
 Two environments catch different bugs, and both are required before you call a change done:
@@ -42,7 +48,7 @@ Two environments catch different bugs, and both are required before you call a c
 | Environment | How | What it catches |
 |---|---|---|
 | Weight-free | `uv sync --extra dev` | The API, the contract, and the engine-free paths |
-| Engine installed | `uv sync --extra dev --extra laya` | Dependency-gated branches of the engine code |
+| Engine installed | `uv sync --extra dev --extra laya` (or `--all-extras`) | Dependency-gated branches of the engine code |
 
 Keep the two side by side under different prefixes, so running the second never replaces the
 first. `.scratch/` is git-ignored and holds the engine-installed one:

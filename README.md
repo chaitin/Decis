@@ -89,10 +89,15 @@ docker run --rm -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multi
 From a source checkout instead:
 
 ```bash
-uv sync --extra dev --extra laya
+uv sync --all-extras
 uv run decis download --engine laya-multilingual   # 647 MiB, once
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
+
+Engine dependencies live in extras, so `--all-extras` installs both engine families plus the
+dev tools; a plain `uv sync` installs neither, and removes what an earlier sync added. To
+install one engine only, name its extra: `uv sync --extra dev --extra kev`. The extras are in
+[Engines](docs/engines.md).
 
 [Getting started](docs/getting-started.md) covers readiness, the raw `curl` form, and
 `decis models` / `decis doctor`.

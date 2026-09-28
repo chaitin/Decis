@@ -24,11 +24,16 @@ weights. See [Deployment](deployment.md) if you would rather not install Python.
 
 ```bash
 git clone https://github.com/chaitin/Decis && cd Decis
-uv sync --extra dev --extra laya
+uv sync --all-extras
 cp .env.example .env                               # set DECIS_API_KEY=local, as the samples do
 uv run decis download --engine laya-multilingual   # 647 MiB, once
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
+
+Engine dependencies live in extras, so `--all-extras` installs every engine plus the dev
+tools. Serving one engine needs only its extra (`uv sync --extra dev --extra laya`); a plain
+`uv sync` names none of them and removes the engine dependencies an earlier sync added. See
+[Engines](engines.md#installing-an-engine).
 
 Any token value works, but the examples below send `local`, so use that for a first run.
 
