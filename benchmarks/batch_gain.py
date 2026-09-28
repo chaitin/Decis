@@ -378,8 +378,14 @@ def derive(configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def load_engine(engine_id: str, threads: int) -> tuple[Any, float]:
     """Load weights and report how long it took."""
     os.environ["DECIS_TORCH_THREADS"] = str(threads)
-    for key in ("NO_PROXY", "no_proxy"):
-        os.environ[key] = "127.0.0.1,localhost,::1"
+
+    # One home for the proxy-bypass rule (`AGENTS.md §2`). This harness loads weights
+    # through the Hub, which is an httpx client, so the normalisation has to happen
+    # before `engine.load()` and not merely before the first local HTTP call.
+    from decis.config import ensure_loopback_bypass, normalize_proxy_environment
+
+    normalize_proxy_environment()
+    ensure_loopback_bypass()
 
     from decis.engines.registry import create
 

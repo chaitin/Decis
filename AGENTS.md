@@ -101,7 +101,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 「某个 primitive 的选项在提示里长什么样」 | 各引擎自己的 record 构造 | 让 `render.py` 决定——kev 的 noul 是 `no`/`yes`、score 是裸层级文本，与 Decis 的 `Option.name` 不同（`design-review.md §2-D9`） |
 | 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
-| 环境变量 | `src/decis/config.py` | `os.environ` 出现在其他模块 |
+| 环境变量（含代理绕过名单的规范化） | `src/decis/config.py: normalize_proxy_environment` / `ensure_loopback_bypass` | `os.environ` 出现在其他模块；在别处再解析一遍绕过名单（`[::1]` 会让 httpx 在**构造客户端**时就抛 `InvalidURL`，于是每一次下载都失败，见 `design-review.md §2-D25`） |
 | playground 页面的调色板 / 字体 / 组件样式 | `playground/web/theme.css` | 页面在自己的 `<style>` 里再抄一套颜色或按钮样式（`tests/test_playground.py` 盯着） |
 | playground 的界面语言（检测、切换、顶栏文案） | `playground/web/i18n.js` | 页面自己实现语言检测或切换；把要发给模型的 `state`/`instructions`/`criteria` 翻译掉——那是 API 的语言，也是上面那些 token 数字量出来的那份字符串 |
 | 三个小游戏共用的界面外壳（手动/AI 开关、推理面板、最近一次调用的控制台、快捷键、引擎状态灯、开始/重置按钮） | `playground/web/game.js`（`window.GameShell`） | 页面各自实现模式开关、自己轮询引擎、自己算延迟与吞吐；页面里再抄一份"最近一次调用"的面板（`tests/test_playground.py` 盯着） |
@@ -252,6 +252,8 @@ uv run decis download --engine laya-multilingual                    # 约 647 Mi
 uv run decis serve --engine laya-multilingual --host 127.0.0.1     # 冷启动实测见 docs/performance.md 的延迟表
 #   想落到挂载目录：`--dest ./models` 写成 ./models/laya-multilingual/，再用 DECIS_MODEL_DIR=./models 服务
 #   冷启动期间 /healthz 立即可用，/readyz 报 {"status":"loading"}；加载失败则报 "failed"
+#   即"端口先开、引擎后好"：绑定前会打印引擎 / 权重来源 / 绑定地址。要反过来（先加载再开端口、
+#   加载期间连 /healthz 都不应答）用 `decis serve --preload`，容器与编排器下不要用它
 uv run pytest -m weights             # 真实推理 + 批不变性（需要权重，CPU 上慢）
 
 uv sync --extra kev
@@ -462,6 +464,19 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 以为 `.env` 里的网络配置会进入构建步骤（`design-review.md §2-D23`：`env_file` 只作用于容器，
   Docker 也不转发 shell 的 `HTTP_PROXY`，于是"依赖装好了、权重下不来"，而 `.env.example` 曾
   建议在那里设代理来跑构建）。构建要用 `--build-arg` 传，文档必须写成两条路
+- ❌ 在 `config.py` 之外再解析一遍代理绕过名单（`design-review.md §2-D25`：`NO_PROXY` 里的
+  `[::1]` 会让 httpx 在**构造客户端**时就抛 `InvalidURL: Invalid port: ':1]'`，于是每一次权重下载
+  都在联网前失败，而报错看不出跟代理有关）。守卫：
+  `tests/test_conventions.py::test_the_proxy_bypass_rule_has_one_home` +
+  `test_the_shell_probe_exports_the_canonical_loopback_list`
+- ❌ 让"端口开了"充当"服务可用"（`design-review.md §2-D26`）。绑定前必须打印引擎、权重来源与
+  绑定地址，并在日志里说清 `/readyz` 仍是 503；要"先加载再开端口"用 `decis serve --preload`，
+  且必须同时写明它会让 `/healthz` 也等到加载结束——容器与编排器下不要用它。守卫：
+  `tests/test_cli_serve.py`
+- ❌ 把仓库里 pin 的 revision 交给一个**没有这个参数**的上游加载器（`design-review.md §2-D26`：
+  `laya.Agent(repo_id)` 没有 `revision`，于是日志承诺 pin、实际读 `main`，同一个模型 id 在不同时间
+  给出不同答案）。走 `paths.fetch_checkpoint`，它用 `download_arguments` 带 pin 取权重、用
+  `checkpoint_root` 验证拿到的目录真能被读到，再把**目录**交给上游
 
 ---
 

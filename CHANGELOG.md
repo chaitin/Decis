@@ -10,6 +10,31 @@ each engine will run.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `NO_PROXY` entry written as a bracketed IPv6 literal stopped every weight download.**
+  `httpx` builds a `URLPattern` for each bypass entry and does not recognise `[::1]` as an
+  address, so it takes the domain branch, builds `all://*[::1]`, and raises
+  `InvalidURL: Invalid port: ':1]'` from inside the client constructor — before a byte is sent.
+  `huggingface_hub` is one of those clients, so `decis serve` and `decis download` both failed on
+  hosts whose list is written that way, with an error naming neither the variable nor the proxy.
+  The rule now lives once, in `decis.config.normalize_proxy_environment` (and
+  `ensure_loopback_bypass` for the loopback names), it runs inside `load_settings` so it is in
+  place before anything can build a client, `decis doctor` reports what it changed, and the five
+  hand-rolled copies that used to sit in the test suite, the SDK example and the benchmark
+  harnesses now call it.
+- **The pinned revision is the one that gets loaded.** The Hub branch passed `laya.Agent` a
+  repository id, and upstream's `Agent` has no `revision` parameter: the log promised this
+  build's pinned commit while the loader read `main`. It now goes through
+  `paths.fetch_checkpoint`, which fetches with `paths.download_arguments` (revision included) and
+  validates the answer with the same `checkpoint_root` predicate a mounted directory passes.
+- **`Uvicorn running on ...` no longer reads as "the model is ready".** `decis serve` prints a
+  banner before it binds — engine, weight source and cold-cache size, bind address — and the log
+  says that `/readyz` returns 503 and `/v1/*` is refused until the engine is loaded. The new
+  opt-in `--preload` reverses the order for console use (load first, then bind), documented
+  together with what it costs: nothing answers during the load, `/healthz` included. The default
+  stays non-blocking, because a probe has to be able to tell "starting" from "crashed".
+
 ## [0.3.2] - 2026-09-26
 
 ### Fixed

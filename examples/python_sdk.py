@@ -51,23 +51,16 @@ def allow_localhost_through_proxies() -> None:
     """Make `http://127.0.0.1` work on a machine that has a proxy configured.
 
     Not a Decis concern, but it breaks this script with a message that gives no hint
-    about the cause, so it is fixed here rather than left as a trap. `httpx` builds a
-    `URLPattern` for every entry in `NO_PROXY`, and a bracketed IPv6 literal such as
-    `[::1]` is not parseable as one -- the failure surfaces as
-    `InvalidURL: Invalid port: ':1]'` from deep inside the client constructor.
-
-    The same normalization happens in `tests/conftest.py:23` and
-    `benchmarks/run.py:163`, for the same reason.
+    about the cause, so it is fixed here rather than left as a trap. Both halves live
+    in `decis.config`: `normalize_proxy_environment` rewrites the bypass entries an
+    HTTP client cannot parse (a bracketed IPv6 literal such as `[::1]` used to fail as
+    `InvalidURL: Invalid port: ':1]'` from deep inside the client constructor), and
+    `ensure_loopback_bypass` makes sure the loopback names are on the bypass list.
     """
-    for variable in ("NO_PROXY", "no_proxy"):
-        value = os.environ.get(variable)
-        if not value:
-            continue
-        entries = [entry for entry in value.split(",") if entry and not entry.startswith("[")]
-        for loopback in ("127.0.0.1", "localhost", "::1"):
-            if loopback not in entries:
-                entries.append(loopback)
-        os.environ[variable] = ",".join(entries)
+    from decis.config import ensure_loopback_bypass, normalize_proxy_environment
+
+    normalize_proxy_environment()
+    ensure_loopback_bypass()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

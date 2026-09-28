@@ -371,8 +371,28 @@ def test_a_pinned_device_is_handed_to_laya() -> None:
 def test_an_unset_device_is_left_to_laya() -> None:
     """`None` is upstream's own default, so "unset" and "best available" stay one path."""
     laya = _RecordingLaya()
-    LayaEngine()._instantiate(laya, _HubSource(), None)
-    assert laya.calls == [(("convaiinnovations/laya",), {"device": None, "subfolder": "multilingual"})]
+    LayaEngine()._instantiate(laya, _LocalSource(), None)
+    assert laya.calls == [(("/models/laya-multilingual/multilingual",), {"device": None})]
+
+
+def test_the_hub_branch_fetches_through_paths_and_hands_over_a_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upstream's `Agent` has no `revision`, so it must not be given a repository id.
+
+    Passing one made the loader read whatever `main` pointed at while the log line
+    above promised the pinned commit, and it re-derived the file list upstream instead
+    of using `paths.download_arguments`. The fetched directory is what `paths` decided,
+    so it is handed over whole -- no `subfolder`, already resolved.
+    """
+    from pathlib import Path
+
+    from decis.engines import laya as laya_module
+
+    monkeypatch.setattr(laya_module, "fetch_checkpoint", lambda spec: Path("/cache/laya/snap"))
+    laya = _RecordingLaya()
+    LayaEngine()._instantiate(laya, _HubSource(), "cpu")
+    assert laya.calls == [(("/cache/laya/snap",), {"device": "cpu"})]
 
 
 # The `DECIS_DEVICE` vocabulary check is shared with kev and tested in `tests/test_engines.py`,

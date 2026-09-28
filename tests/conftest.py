@@ -8,7 +8,6 @@ of auth and validation, and status codes.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -16,16 +15,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-# The SDK's HTTP library parses the proxy environment on client construction.
-# Some hosts export a `no_proxy` containing the bracketed IPv6 literal `[::1]`,
-# which httpx2 rejects with `InvalidURL: Invalid port: ':1]'` -- before any request
-# is made. It is an environment problem, not a Decis one, but it makes every test
-# that builds a client fail, so normalise it here. See benchmarks/README.md.
-for _var in ("NO_PROXY", "no_proxy"):
-    os.environ[_var] = "127.0.0.1,localhost,::1"
+# The SDK's HTTP library parses the proxy environment when a client is constructed,
+# and some hosts export a `no_proxy` its parser cannot read (see
+# `decis.config.normalize_proxy_environment`). Normalise through the one helper rather
+# than re-deriving the rule here, and make sure loopback bypasses the proxy: every
+# test talks to a server on this machine.
+from decis.config import Settings, ensure_loopback_bypass, normalize_proxy_environment
+
+normalize_proxy_environment()
+ensure_loopback_bypass()
 
 from decis.app import create_app  # noqa: E402 - must follow the proxy normalisation
-from decis.config import Settings  # noqa: E402
 from decis.engines import registry  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

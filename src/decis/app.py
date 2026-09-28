@@ -17,6 +17,9 @@ all are asserted by tests:
   can tell "still starting" from "crashed"; and a load that fails is reported as
   `failed` rather than taking the process down, while still never serving traffic
   it cannot answer. Measured and recorded as D7 in `docs/design-review.md`.
+  The cost is that "the port is open" stops meaning "the model answers", which used
+  to read as a bug in the console (`decis serve` says otherwise now -- see
+  `cli.startup_banner` and `--preload`, D26 in the same document).
 * **Shutdown does not close an engine that is still loading.** Closing a
   half-initialised model races the loader. If the grace period expires we log and
   let process exit reclaim the memory, which is the only option that cannot corrupt
@@ -124,7 +127,12 @@ def _load_engine(service: DecisionService) -> None:
     same probe the orchestrator is already polling.
     """
     engine_id = service.load_status.engine_id
-    _logger.info("loading engine %s in the background; /readyz reports 503 until it finishes", engine_id)
+    _logger.info(
+        "engine %s is NOT ready: loading in the background. /readyz returns 503 and every /v1/* request "
+        "is refused until this is followed by 'engine %s ready'.",
+        engine_id,
+        engine_id,
+    )
     started = time.perf_counter()
     try:
         service.load()

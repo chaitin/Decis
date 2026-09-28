@@ -8,13 +8,17 @@ documentation that drifts.
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from decis.config import LOOPBACK_BYPASS, PROXY_VARIABLES
+
 PACKAGE = Path(__file__).resolve().parent.parent / "src" / "decis"
+REPO = PACKAGE.parent.parent
 
 
 # `engines/_kev_vendor/` holds byte-identical third-party copies; its VENDOR.md explains
@@ -110,6 +114,58 @@ def test_os_environ_is_only_read_in_config() -> None:
             if isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv"}:
                 offenders.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
     assert not offenders, f"read environment variables through decis.config instead: {offenders}"
+
+
+#: Directories under the repository that hold code *we* write. Nothing else is walked:
+#: `.venv` and `.scratch` hold tens of thousands of third-party files, and a virtualenv
+#: cannot violate a rule about our own modules anyway.
+_OUR_TREES = ("src", "tests", "examples", "benchmarks", "playground", "docker", ".github")
+
+
+def _repository_modules() -> list[Path]:
+    """Every Python file we ship or run, tests and harnesses included."""
+    found = []
+    for tree in _OUR_TREES:
+        root = REPO / tree
+        if not root.is_dir():
+            continue
+        for parent, directories, files in os.walk(root):
+            directories[:] = [name for name in directories if name not in {"__pycache__", "node_modules"}]
+            found.extend(Path(parent) / name for name in files if name.endswith(".py"))
+    return sorted(found)
+
+
+def test_the_proxy_bypass_rule_has_one_home() -> None:
+    """Naming a proxy-bypass variable means importing the module that normalises it.
+
+    Five copies of "drop the brackets, make sure loopback is there" used to live outside
+    `src/decis` -- the test suite, an example, two benchmark harnesses, a shell probe --
+    and every one of them was on a path somebody had already debugged. The path a user
+    starts with, `decis serve`, had none, so it failed on exactly the hosts whose bypass
+    list needed the fix (`docs/design-review.md` §2-D25).
+    """
+    offenders = []
+    for path in _repository_modules():
+        if path == PACKAGE / "config.py":
+            continue
+        source = _source(path)
+        if not any(name in source for name in PROXY_VARIABLES):
+            continue
+        if "decis.config" not in _imported_modules(path):
+            offenders.append(str(path.relative_to(REPO)))
+    assert offenders == [], (
+        f"the proxy-bypass rule lives in decis.config; import it instead of restating it: {offenders}"
+    )
+
+
+def test_the_shell_probe_exports_the_canonical_loopback_list() -> None:
+    """A subprocess cannot fix its parent's environment, so this one spells the value.
+
+    Read back from `decis.config` rather than copied here, so the script and the helper
+    cannot disagree about what the list is.
+    """
+    script = REPO / "benchmarks" / "probe" / "run_kev_dtype.sh"
+    assert f"export {PROXY_VARIABLES[0]}=" + ",".join(LOOPBACK_BYPASS) in _source(script)
 
 
 # --- §6: the core must not import torch --------------------------------------

@@ -160,10 +160,15 @@ def peak_rss_gb() -> float:
 def measure_child(engine: str, threads: int, counts: list[int], iterations: int, warmup: int) -> dict[str, Any]:
     """Run in a fresh process and return this thread count's configurations."""
     os.environ["DECIS_TORCH_THREADS"] = str(threads)
-    for key in ("NO_PROXY", "no_proxy"):
-        os.environ[key] = "127.0.0.1,localhost,::1"
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+    # The proxy-bypass rule has one home (`AGENTS.md §2`); this harness talks to a
+    # server on this host, so loopback must not be sent to a proxy.
+    from decis.config import ensure_loopback_bypass, normalize_proxy_environment
+
+    normalize_proxy_environment()
+    ensure_loopback_bypass()
 
     import threading
 

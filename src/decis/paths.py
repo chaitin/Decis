@@ -228,6 +228,36 @@ def download_arguments(spec: WeightSpec) -> dict[str, object]:
     }
 
 
+def fetch_checkpoint(spec: WeightSpec) -> Path:
+    """Fetch `spec` from the Hub and return the directory a loader can read.
+
+    The one place an engine gets weights over the network, and the reason it is here
+    rather than in an engine (AGENTS.md §2): the pin and the file list are properties
+    of the `WeightSpec`, and a caller that re-derived either would load a different
+    checkpoint than the one this build declares. `laya.Agent(repo_id)` did exactly
+    that -- upstream has no `revision` parameter, so the loader read `main` while the
+    log line promised the pinned commit (`docs/design-review.md` §2-D26).
+
+    Answers from the Hub cache when it is there, so calling it on every start costs a
+    couple of HEAD requests, not a download. Validated with `checkpoint_root` -- the
+    same predicate a mounted directory goes through -- because "the download finished"
+    and "the loader will find a checkpoint" are different claims (D17).
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:  # pragma: no cover - every engine extra requires it
+        raise FileNotFoundError(f"{spec.engine_id} needs `huggingface_hub` to fetch {spec.repo_id}: {exc}") from exc
+
+    downloaded = Path(snapshot_download(**download_arguments(spec)))  # type: ignore[arg-type]
+    root = checkpoint_root(downloaded, spec)
+    if root is None:
+        raise FileNotFoundError(
+            f"{spec.repo_id} was fetched to {downloaded} but holds no {spec.marker}; "
+            f"expected one of the files in {list(spec.checkpoint_files)}."
+        )
+    return root
+
+
 def describe_local(directory: Path) -> str:
     """A human-readable size, for `decis doctor`. Never raises."""
     try:
@@ -289,6 +319,7 @@ __all__ = [
     "checkpoint_root",
     "describe_local",
     "download_arguments",
+    "fetch_checkpoint",
     "filesystem_has_room",
     "human_bytes",
     "missing_requirements",

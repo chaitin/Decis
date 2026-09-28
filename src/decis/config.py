@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,6 +84,113 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+# --- the proxy bypass list, which is not a list of URLs --------------------------
+#
+# `httpx` turns every `NO_PROXY` entry into a `URLPattern` when it builds a client
+# (`httpx/_utils.py: get_environment_proxies`). An entry such as `.example.com` is
+# *not* a URL, so that translation is guesswork on httpx's side, and one guess is
+# wrong: the bracketed IPv6 literal `[::1]` -- the RFC 3986 form of the address, and
+# what at least one internal proxy profile exports -- is not recognised as an address
+# (`ipaddress.IPv6Address("[::1]")` raises), so it takes the *domain* branch, becomes
+# `all://*[::1]`, and kills the client constructor with
+# `httpx.InvalidURL: Invalid port: ':1]'` before a single byte is sent.
+#
+# That lands on Decis because `huggingface_hub` is an httpx client and a cold
+# `decis serve` pulls ~647 MiB through it: the engine then fails to load with a
+# message that names neither proxies nor the variable, and `/readyz` reports `failed`
+# (docs/design-review.md §2-D25). Nothing is wrong with the host's environment -- the
+# bypass list is a fact about the network it sits on -- so the fix belongs here, in
+# the one module allowed to touch the environment (AGENTS.md §2), and it must run
+# before anything can construct an HTTP client.
+#
+# Five copies of this loop used to live in `tests/conftest.py`, `examples/`,
+# `benchmarks/` and a shell probe. Copies are not a fix: they covered the paths that
+# had already been debugged and left `decis serve` broken on exactly the machines the
+# bypass list exists for.
+
+#: The variables httpx reads. Both spellings: it consults both, and a host may set
+#: either.
+PROXY_VARIABLES = ("NO_PROXY", "no_proxy")
+
+#: The loopback names any client of *this* project needs to reach directly. `::1` is
+#: absent from most proxy profiles; a proxied probe cannot answer for `127.0.0.1`,
+#: which is the failure `docs/design-review.md` §2-D19 records.
+LOOPBACK_BYPASS = ("127.0.0.1", "localhost", "::1")
+
+
+def _url_pattern_safe(entry: str) -> str | None:
+    """`entry` in the form httpx can turn into a pattern, or None if it cannot.
+
+    Only literals are rewritten. A domain or a wildcard is left exactly as given:
+    httpx has a branch for those and we do not know better than the operator.
+    """
+    host = entry[1:-1] if entry.startswith("[") and entry.endswith("]") else entry
+    try:
+        address = ipaddress.ip_address(host.split("/")[0])
+    except ValueError:
+        # Not an address literal (a domain, a wildcard, a CIDR block). httpx handles
+        # all three, as long as we do not get in its way.
+        return entry
+    if address.version == 4:
+        return host
+    # httpx wraps an IPv6 entry as `all://[<entry>]`, so only the bare address is
+    # expressible: `[::1/64]` is a port number as far as urllib is concerned.
+    return None if "/" in host else host
+
+
+def normalize_proxy_environment(
+    environ: MutableMapping[str, str] | None = None,
+) -> tuple[tuple[str, str, str], ...]:
+    """Rewrite the proxy-bypass entries that break every HTTP client here.
+
+    Returns `(variable, before, after)` for each entry that changed, `after == ""`
+    meaning the entry was dropped, so a caller can report the edit instead of making it
+    behind the operator's back. Idempotent: a second call returns nothing.
+
+    `environ` is a parameter so the rule can be tested without editing the process
+    environment; in every real call site it is `os.environ`, because that is what
+    `httpx` reads.
+    """
+    env = os.environ if environ is None else environ
+    changed: list[tuple[str, str, str]] = []
+    for name in PROXY_VARIABLES:
+        value = env.get(name)
+        if not value:
+            continue
+        kept: list[str] = []
+        for entry in (part.strip() for part in value.split(",")):
+            if not entry:
+                continue
+            safe = _url_pattern_safe(entry)
+            if safe is None:
+                changed.append((name, entry, ""))
+            else:
+                if safe != entry:
+                    changed.append((name, entry, safe))
+                kept.append(safe)
+        env[name] = ",".join(kept)
+    return tuple(changed)
+
+
+def ensure_loopback_bypass(environ: MutableMapping[str, str] | None = None) -> None:
+    """Add the loopback names to the proxy-bypass list if they are missing.
+
+    Called by anything that talks to a server on this machine -- the test suite, the
+    examples, the benchmark harnesses -- never by the server itself, which only ever
+    reaches outwards for weights.
+    """
+    env = os.environ if environ is None else environ
+    for name in PROXY_VARIABLES:
+        # `*` already bypasses everything; adding names to it would be noise.
+        if env.get(name, "").strip() == "*":
+            continue
+        entries = [part.strip() for part in env.get(name, "").split(",") if part.strip()]
+        for loopback in LOOPBACK_BYPASS:
+            if loopback not in entries:
+                entries.append(loopback)
+        env[name] = ",".join(entries)
+
+
 @dataclass(frozen=True)
 class Settings:
     """Resolved configuration. Immutable, and safe to pass anywhere."""
@@ -117,6 +225,12 @@ class Settings:
     env_file: str = DEFAULT_ENV_FILE
     # Names of the DECIS_* variables that were actually set, for `decis doctor`.
     sources: tuple[str, ...] = field(default=())
+    # Proxy-bypass entries this process rewrote or dropped, as
+    # `(variable, before, after)` with `after == ""` meaning dropped. Empty on a host
+    # whose list is already parseable. Recorded rather than logged because the edit
+    # happens before logging exists, and an operator who reads the variable back later
+    # deserves to know it changed.
+    proxy_rewrites: tuple[tuple[str, str, str], ...] = field(default=())
 
     @property
     def auth_enabled(self) -> bool:
@@ -151,6 +265,10 @@ def load_settings(env_file: str | None = None) -> Settings:
     if path and Path(path).is_file():
         load_dotenv(path, override=False)
 
+    # After `.env`, so a list configured there is fixed too, and before anything can
+    # build an HTTP client: a cold start's first act is fetching weights through one.
+    proxy_rewrites = normalize_proxy_environment()
+
     model_dir = _str("DECIS_MODEL_DIR")
     torch_threads = _str("DECIS_TORCH_THREADS")
 
@@ -172,4 +290,5 @@ def load_settings(env_file: str | None = None) -> Settings:
         log_level=_str("DECIS_LOG_LEVEL", "info"),
         env_file=path,
         sources=tuple(sorted(name for name in os.environ if name.startswith("DECIS_"))),
+        proxy_rewrites=proxy_rewrites,
     )

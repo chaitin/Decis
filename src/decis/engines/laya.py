@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError, InvalidRequestError
-from ..paths import WeightSpec, resolve
+from ..paths import WeightSpec, fetch_checkpoint, human_bytes, resolve
 from ..render import noul_options
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
 from .devices import requested_device
@@ -276,6 +276,17 @@ class LayaEngine(DecisionEngine):
         # Only the vocabulary check is shared with `kev-0.8b`, which has no upstream order
         # to defer to and asks `devices.best_device()` instead.
         device = requested_device(settings.device)
+        if source.kind == "hub":
+            # Say it before the transfer, not after: on a cold cache this line is the
+            # difference between "the model is loading" and "we are downloading 647 MiB
+            # and the API is not usable yet", and the tqdm bar that follows belongs to
+            # somebody else's library.
+            expected = self.weights().expected_bytes
+            _logger.info(
+                "fetching %s from the Hub%s; reads the local cache when it is already there",
+                source.describe(),
+                f" ({human_bytes(expected)})" if expected else "",
+            )
         _logger.info("loading %s from %s (device=%s)", self._id, source.describe(), device or "auto")
         self._agent = self._instantiate(laya, source, device)
         if device and self._agent.device.type != device:
@@ -311,6 +322,13 @@ class LayaEngine(DecisionEngine):
         offline. It is the same class `laya.load` returns, and `laya.load` is a
         one-line wrapper around it (`laya/agent.py:378-385`).
 
+        The Hub branch fetches through `paths.fetch_checkpoint` and then hands the
+        `Agent` a *directory*: upstream's `Agent` takes no `revision`, so giving it a
+        repository id downloaded whatever `main` pointed at while the line above
+        promised this build's pinned commit (`docs/design-review.md` §2-D26). It also
+        keeps the file list in one place -- `paths.download_arguments` -- instead of
+        upstream's own copy of it.
+
         `device=None` is upstream's own signature default, so "no `DECIS_DEVICE`" and
         "asked for the best available" stay one code path.
         """
@@ -319,7 +337,7 @@ class LayaEngine(DecisionEngine):
                 # `checkpoint_root` already resolved the subfolder, so passing it
                 # again here would look for `<path>/<subfolder>/<subfolder>`.
                 return laya.Agent(str(source.path), device=device)
-            return laya.Agent(str(source.repo_id), device=device, subfolder=source.subfolder)
+            return laya.Agent(str(fetch_checkpoint(self.weights())), device=device)
         except FileNotFoundError as exc:
             raise EngineUnavailableError(f"Could not load {self._id} from {source.describe()}: {exc}") from exc
 

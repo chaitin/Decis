@@ -771,6 +771,119 @@ kev 则各写各的 `or "cpu"`。于是文档里那句 "Unset picks the best ava
 
 ---
 
+### D25（高，已修正）`NO_PROXY` 里的 `[::1]` 让每一次权重下载都失败，而报错看不出跟代理有关
+
+**发现方式**：在公司的 ARM 机器上按文档走第一步——`uv sync --all-extras`、
+`uv run decis serve --host 127.0.0.1`——模型起不来。`/readyz` 是：
+
+```json
+{"status":"failed","engine":"laya-multilingual","error":"InvalidURL: Invalid port: ':1]'"}
+```
+
+同一条路径上的 `decis download --engine laya-multilingual` 也失败，而且是在**发出任何请求之前**。
+macOS 上同样的命令正常。
+
+**根因**：本机的 `NO_PROXY` 里有一项是 `[::1]`（RFC 3986 的带方括号 IPv6 字面量写法）。httpx 的
+`get_environment_proxies()`（`httpx/_utils.py:47-70`）对每一项调
+`ipaddress.IPv6Address(entry)`——**带方括号的形式会抛 `ValueError`**，于是它退到"这是个域名"的
+分支，拼出 `all://*[::1]`，`Client()` 构造时 `urlparse` 把 `:1]` 当端口，`InvalidURL` 在客户端
+构造阶段就抛出来。`huggingface_hub` 就是 httpx 客户端，所以**下载器在联网之前就死了**；报错里
+没有代理、没有 `NO_PROXY`、没有文件名，看起来像是权重或磁盘的问题。
+
+macOS 能跑只是因为那台机器的 `NO_PROXY` 里恰巧没有这一项——**同一个列表放到 macOS 上会同样失败**，
+这不是平台差异。
+
+**为什么早没发现**：这条解析规则在仓库里有 **5 份手抄**——`tests/conftest.py`、
+`examples/python_sdk.py`、`benchmarks/run.py`、`benchmarks/batch_gain.py`、
+`benchmarks/probe/run_kev_dtype.sh`——每一份都在"已经被调试过"的路径上，而用户真正会走的那条
+（`decis serve` → `paths.resolve` → `huggingface_hub`）**一份都没有**。这正是 §2 说"第二处实现就是
+bug"的意思：手抄的那 5 份没坏，所以没人去看第 6 条路径。
+
+**修法**：规则收进 `src/decis/config.py`：
+
+* `normalize_proxy_environment(environ)`：把 `[::1]` 改写成 `::1`（能改的就改，不删——删掉等于
+  不再绕过代理），把 httpx 根本无法表达的 `[::1/64]` 这类**丢弃并记录**（`::1/64` 在 httpx 的拼法
+  里是端口号），域名、通配符、CIDR 一律原样保留；幂等。
+* `ensure_loopback_bypass(environ)`：保证 `127.0.0.1,localhost,::1` 在名单里（值为 `*` 时不追加）。
+* `load_settings()` 里调用它，并把改动记进 `Settings.proxy_rewrites`（`(变量, 改前, 改后)`，
+  `改后 == ""` 表示丢弃），`decis doctor` 逐条报出来——`[::1] -> ::1` 在 `NO_PROXY` 与 `no_proxy`
+  里各出现一次，不写变量名就分不清是哪一条。改过才打印，没改就不打印。
+* 5 份手抄全部改为调用这两个 helper。
+
+守卫：`tests/test_config.py`（改写 / 丢弃 / 不改动 / 幂等 / **用 httpx 自己当 oracle**：
+构造一次 `httpx.Client()`）/ `tests/test_conventions.py::test_the_proxy_bypass_rule_has_one_home`
+（任何提到这两个变量名的模块必须 import `decis.config`）+
+`test_the_shell_probe_exports_the_canonical_loopback_list`（shell 里的值从
+`config.LOOPBACK_BYPASS` 读出来比对，防止再抄一份）+
+`tests/test_cli_serve.py` 的两条（`decis doctor` 报出被改的那一条、没改就不报）。
+
+**仍未验证**：只在 macOS 与这台 aarch64 Kunpeng 上验过；`*` 通配与带 `/prefix` 的条目按上面的
+规则处理掉了，但"代理本身还能用"这件事没有实测（本机无直连出口，代理路径确实走通了下载）。
+
+**教训**：一个"能用"的环境会掩盖一个与平台无关的 bug——**差异不在平台，在两个环境变量的值**。
+另外，凡是"解析某个外部格式"的规则，只要它在仓库里出现第二次，就必然有一次没人守。
+
+---
+
+### D26（中，已修正）端口开了不等于模型能答；顺手牵出"日志说 pin 了 commit，实际读的是 main"
+
+**发现方式**：同一个用户报告的后半段——"我看到 `Uvicorn running on http://127.0.0.1:8000`
+以后以为是可以工作了，但是实际上显示这个之后还在下载模型"。日志顺序是：
+
+```
+INFO  engine laya-multilingual is NOT ready: loading in the background ...
+INFO  Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+```
+
+**根因**（两条，都不在"哪一行日志"上）：
+
+1. **这是 D7 的代价，没有被说出来。** 引擎在后台线程里加载是**有意**的设计（否则冷启动期间连
+   `/healthz` 都不应答，编排器会把一个正常工作的服务判成死的，D22）。但设计文档说了、用户文档说了、
+   控制台**没说**：在 8000 端口打开的那一刻，操作者看到的唯一一句"状态"来自 uvicorn，而它描述的
+   只是 socket。**没有任何一行说"你现在还不能发请求"。**
+2. **把上游 `Agent` 当加载器用，丢掉了 revision。** `laya.Agent` 的签名里**没有** `revision`
+   （`laya/agent.py:378-385`），所以 hub 分支把 `repo_id` 交给它时，日志里承诺的是 `paths` 里 pin 的
+   commit，实际下载和加载的是 `main`。文件清单也是上游自己那份，而不是
+   `paths.download_arguments`。
+
+**代价**：第 1 条把"正在下载 647 MiB"读成"已经好了"，于是下一次判断（用户以为坏了）也跟着错；
+第 2 条更安静——**同一个模型 id 在不同时间会给出不同答案**，而日志声称它没变。这与 §10 里
+"Laya 通过 PyPI 依赖使用、不复制源码"并不冲突，恰恰相反：正因为不复制，才必须通过它公开的
+构造路径加载，而不是猜它接受什么参数。
+
+**修法**：
+
+* `cli.startup_banner()`：绑定之前打印引擎、**权重来源与冷启动体积**、绑定地址，以及一段说明——
+  `/readyz` 返回 503、`/v1/*` 被拒、要等日志里出现 `engine <id> ready`。`uvicorn` 的
+  "Uvicorn running on ..." 因此不再是第一句关于状态的话。
+* `decis serve --preload`：先取权重、先加载，**再**开端口。默认保持后台加载（探针必须能在冷启动
+  期间拿到应答），`--preload` 明确写出它换来的代价：加载期间连 `/healthz` 都不应答。
+* `app._load_engine()` 的第一句改成以 `NOT ready` 开头，并给出要等的那句话。
+* hub 分支改走 `paths.fetch_checkpoint(spec)`：在 `paths` 里（唯一事实来源）用
+  `download_arguments` 取权重（**带 revision**），再用 `checkpoint_root` 验证拿到的目录真的能被
+  加载器读到，然后把**目录**交给 `laya.Agent`。
+* `laya.load()` 在取权重之前先报"fetching ... from the Hub (646.8 MiB)"——tqdm 进度条是别人的
+  库打的，用户看到它之前应该已经知道我们在下载而不是在加载。
+
+守卫：`tests/test_cli_serve.py`（banner 文本、`--preload` 必须在 `uvicorn.run` 之前就绪、
+加载失败必须**不**绑定端口且退出码非 0、默认路径必须不在 CLI 里等加载）、
+`tests/test_paths.py::test_fetching_a_checkpoint_returns_a_directory_the_resolver_accepts`
+（stub 写出真实下载布局，用 `checkpoint_root` 当 oracle，并断言 revision 真的传下去了）、
+`tests/test_engines_laya.py::test_the_hub_branch_fetches_through_paths_and_hands_over_a_directory`
+（`Agent` 不许再收到 repo id 或 subfolder）。
+
+**未验证**：`--preload` 在容器里的实际体验（镜像自带的 `HEALTHCHECK` 打 `/healthz`，所以
+`--preload` **不适合**镜像的 `CMD`——这一点写进了 flag 的帮助文本与用户文档，但没有用真镜像跑过）。
+`fetch_checkpoint` 走的是"先下载再看"的路径，冷缓存时的第二次 HEAD 请求开销（有缓存时约几次
+HEAD，无下载）也没有单独测量。
+
+**教训**：探针能分辨的状态，人也要能看到。有一个设计决定（后台加载）在文档里写得很清楚，却在
+唯一会读到它的地方——控制台——缺席，那么它就会以"这是个 bug"的形式被报回来。而"顺手"发现的
+第 2 条提醒另一件事：**把参数交给上游库之前，先确认它真的有这个参数**——日志里的 pin、代码里的
+pin 和实际读到的权重是三件不同的事。
+
+---
+
 ## 3. 标准符合性对照
 
 用户问"是否尊重标准"。逐条对照，**包括我们有意不遵守的地方**：

@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from decis.config import ConfigError, Settings, is_loopback, load_settings
+from decis.config import (
+    PROXY_VARIABLES,
+    ConfigError,
+    Settings,
+    ensure_loopback_bypass,
+    is_loopback,
+    load_settings,
+    normalize_proxy_environment,
+)
 
 DECIS_VARS = (
     "DECIS_API_KEY",
@@ -184,3 +192,98 @@ def test_env_file_does_not_leak_into_the_process(clean_env: None, tmp_path) -> N
     assert "DECIS_API_KEY" in os.environ  # python-dotenv does set it...
     # ...which is exactly why every read goes through load_settings: the settings
     # object is the contract, not the ambient environment.
+
+
+# --- the proxy bypass list, which is not a list of URLs --------------------------
+#
+# The variable names are reached through `PROXY_VARIABLES` rather than spelled out, so
+# that `tests/test_conventions.py` can require anything naming them to import this
+# module -- five hand-rolled copies of this rule are what caused the bug these tests
+# pin (`docs/design-review.md` §2-D25).
+
+
+def test_a_bracketed_ipv6_entry_is_rewritten_to_the_bare_address() -> None:
+    """`[::1]` is the RFC 3986 form, and the one httpx cannot turn into a pattern.
+
+    Dropping it instead would silently stop bypassing the proxy for IPv6 loopback, so
+    the entry is rewritten, not deleted.
+    """
+    environ = dict.fromkeys(PROXY_VARIABLES, "127.0.0.1,localhost,[::1]")
+    rewrites = normalize_proxy_environment(environ)
+    for name in PROXY_VARIABLES:
+        assert environ[name] == "127.0.0.1,localhost,::1"
+    assert set(rewrites) == {(name, "[::1]", "::1") for name in PROXY_VARIABLES}
+
+
+def test_domains_wildcards_addresses_and_cidr_blocks_are_left_alone() -> None:
+    """Operators know their network; only the unexpressible entries are touched."""
+    value = "127.0.0.1,10.2.0.0/16,.internal.example,chaitin.cn,::1"
+    environ = dict.fromkeys(PROXY_VARIABLES, value)
+    assert normalize_proxy_environment(environ) == ()
+    for name in PROXY_VARIABLES:
+        assert environ[name] == value
+
+
+def test_an_ipv6_entry_with_a_prefix_length_is_dropped_and_reported() -> None:
+    """httpx would build `all://[::1/64]`, where `1/64]` is a port. It cannot be fixed."""
+    environ = dict.fromkeys(PROXY_VARIABLES, "[::1/64],127.0.0.1")
+    rewrites = normalize_proxy_environment(environ)
+    for name in PROXY_VARIABLES:
+        assert environ[name] == "127.0.0.1"
+    assert set(rewrites) == {(name, "[::1/64]", "") for name in PROXY_VARIABLES}
+
+
+def test_normalising_is_idempotent() -> None:
+    """`load_settings` is called more than once per process; the second call is free."""
+    environ = dict.fromkeys(PROXY_VARIABLES, "127.0.0.1,[::1]")
+    normalize_proxy_environment(environ)
+    assert normalize_proxy_environment(environ) == ()
+
+
+def test_the_normalised_list_is_one_httpx_can_build_a_client_from() -> None:
+    """The oracle is httpx itself, not our reading of its source.
+
+    This is the failure as it reaches a user: `httpx.Client()` raises
+    `InvalidURL: Invalid port: ':1]'` before a request is sent, so every Hub download
+    dies. Skipped where httpx is absent -- it arrives with any engine extra.
+    """
+    httpx = pytest.importorskip("httpx", reason="httpx arrives with any engine extra")
+    environ = dict.fromkeys(PROXY_VARIABLES, "127.0.0.1,localhost,10.2.0.0/16,.internal.example,::1,[::1]")
+    normalize_proxy_environment(environ)
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in environ.items():
+            patch.setenv(name, value)
+        with httpx.Client(timeout=1.0):  # raises `InvalidURL: Invalid port: ':1]'` unfixed
+            pass
+
+
+def test_loopback_bypass_is_added_without_dropping_anything() -> None:
+    environ = dict.fromkeys(PROXY_VARIABLES, "10.2.0.0/16")
+    ensure_loopback_bypass(environ)
+    for name in PROXY_VARIABLES:
+        assert environ[name] == "10.2.0.0/16,127.0.0.1,localhost,::1"
+
+
+def test_a_wildcard_bypass_list_is_not_padded() -> None:
+    """`*` already means everything; appending names would only make the line unreadable."""
+    environ = dict.fromkeys(PROXY_VARIABLES, "*")
+    ensure_loopback_bypass(environ)
+    for name in PROXY_VARIABLES:
+        assert environ[name] == "*"
+
+
+def test_load_settings_fixes_the_process_environment_and_says_what_it_changed(
+    clean_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rewrite has to reach `os.environ`: that is what httpx reads."""
+    import os
+
+    for name in PROXY_VARIABLES:
+        monkeypatch.setenv(name, "127.0.0.1,[::1]")
+    settings = load_settings("")
+    for name in PROXY_VARIABLES:
+        assert os.environ[name] == "127.0.0.1,::1"
+    # The record names the variable: `decis doctor` prints one line per edit, and two
+    # identical lines that cannot be told apart are not a report (`docs/design-review.md`
+    # §2-D25 is a bug about a silent, unattributable rewrite).
+    assert settings.proxy_rewrites == tuple((name, "[::1]", "::1") for name in PROXY_VARIABLES)

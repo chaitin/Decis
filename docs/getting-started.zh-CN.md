@@ -44,8 +44,25 @@ token；第一次运行就该用它。要在网络上暴露服务，先设 `DECI
 
 ### 等待就绪
 
-在 CPU 上，默认引擎加载约需 **75 秒**。整个过程里进程都能应答探针：`/healthz` 立刻可用，
-`/readyz` 会说明当前在做什么。
+在 CPU 上，默认引擎加载约需 **75 秒**；更慢的机器或 ARM 主机上可能要几分钟。整个过程里
+进程都能应答探针：`/healthz` 立刻可用，`/readyz` 会说明当前在做什么。
+
+`decis serve` 在绑定端口之前先打印它要做的事——引擎、权重来自哪里、绑定地址——随后在日志里
+说明引擎**还没就绪**：
+
+```
+decis 0.3.2
+  engine    laya-multilingual
+  weights   convaiinnovations/laya/multilingual@1c5edc17a7acd8701df6fc341c0d179f1c62c982
+            read from the Hugging Face cache; 646.8 MiB on a cold cache
+  bind      127.0.0.1:8000
+  startup   the socket opens first, so a probe can tell "starting" from "crashed":
+            /readyz returns 503 and every /v1/* request is refused until the log says
+            "engine laya-multilingual ready". `decis serve --preload` loads first instead.
+```
+
+所以 "Uvicorn running on http://127.0.0.1:8000" 的含义是**端口开了**，不是**模型能答**。
+在引擎就绪之前，`/v1/*` 的请求一律被拒（503）。
 
 ```bash
 curl -s localhost:8000/healthz   # {"status":"ok","version":"..."}
@@ -57,6 +74,17 @@ curl -s localhost:8000/readyz    # 503 {"status":"loading","engine":"laya-multil
 ```bash
 until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 ```
+
+如果你不想盯着这个日志（在控制台前、也没有探针在等），`decis serve --preload` 会先取权重并
+加载引擎，**然后**才打开端口：
+
+```bash
+uv run decis serve --host 127.0.0.1 --preload
+```
+
+这时端口就意味着"能答了"，日志的顺序也与此一致。代价是明确的：加载期间什么都不应答，
+`/healthz` 也不例外，所以**不要**在冷启动期间需要存活探针拿到应答的地方用它——容器里、
+编排器下，保持默认。
 
 不要把*存活*探针指向 `/readyz`：一个在前 75 秒必然失败的探针，会让编排器反复重启一个本来
 在正常工作的服务。存活用 `/healthz`，就绪用 `/readyz`。加载失败是终态——`/readyz` 返回

@@ -48,8 +48,27 @@ the first start much easier to read.
 
 ### Wait for readiness
 
-On CPU the default engine takes about **75 seconds** to load. The process answers probes
-the whole time: `/healthz` is up immediately, and `/readyz` says what is happening.
+On CPU the default engine takes about **75 seconds** to load, and on a slower or ARM host
+it can take minutes. The process answers probes the whole time: `/healthz` is up
+immediately, and `/readyz` says what is happening.
+
+`decis serve` prints what it is about to do before it binds anything — the engine, where
+its weights come from, and the bind address — and then says, in the log, that the engine
+is **not ready** yet:
+
+```
+decis 0.3.2
+  engine    laya-multilingual
+  weights   convaiinnovations/laya/multilingual@1c5edc17a7acd8701df6fc341c0d179f1c62c982
+            read from the Hugging Face cache; 646.8 MiB on a cold cache
+  bind      127.0.0.1:8000
+  startup   the socket opens first, so a probe can tell "starting" from "crashed":
+            /readyz returns 503 and every /v1/* request is refused until the log says
+            "engine laya-multilingual ready". `decis serve --preload` loads first instead.
+```
+
+"Uvicorn running on http://127.0.0.1:8000" therefore means *the port is open*, not *the
+model answers*. Requests to `/v1/*` are refused with 503 until the engine is ready.
 
 ```bash
 curl -s localhost:8000/healthz   # {"status":"ok","version":"..."}
@@ -61,6 +80,18 @@ Poll `/readyz` until it returns 200:
 ```bash
 until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 ```
+
+If you would rather not watch for that — you are on a console, with no probe waiting —
+`decis serve --preload` fetches and loads the engine *before* opening the port:
+
+```bash
+uv run decis serve --host 127.0.0.1 --preload
+```
+
+The port then means "ready to answer", and the log says so in order. The trade-off is
+explicit: nothing answers during the load, `/healthz` included, so do **not** use
+`--preload` where a liveness probe has to reach the process during a cold start. In a
+container or under an orchestrator, keep the default.
 
 Do not point a *liveness* probe at `/readyz`: a probe that fails for the first 75 seconds
 would make an orchestrator restart a server that is working. Use `/healthz` for liveness

@@ -126,10 +126,13 @@ $PY probe/probe_device_and_threads.py cpu /models/laya-multilingual/multilingual
 
 Two environment gotchas these scripts exist to work around, both of which cost real debugging time:
 
-1. A `no_proxy` value containing the IPv6 literal `[::1]` makes `httpx` raise
-   `InvalidURL: Invalid port: ':1]'` while constructing its client — before any request is sent.
-   `huggingface_hub` uses `httpx`, so every download fails. The scripts pin
-   `NO_PROXY=127.0.0.1,localhost`.
+1. A `no_proxy` value containing the IPv6 literal `[::1]` (bracketed, the RFC 3986 form) makes
+   `httpx` raise `InvalidURL: Invalid port: ':1]'` while constructing its client — before any
+   request is sent. `huggingface_hub` uses `httpx`, so every download fails. The rule and its
+   fix live in one place, `decis.config.normalize_proxy_environment`, which is also what the
+   server calls at startup; these scripts call it rather than restating it. The shell probe
+   exports `decis.config.LOOPBACK_BYPASS` literally, because a subprocess cannot fix its
+   parent's environment.
 2. `KEV_DTYPE` must be set per experiment. `bf16` on CPU is ~83× slower than `fp32` (see
    `kev-0.8b-cpu-dtype.json`), so a single unlabelled timing is worse than useless.
 

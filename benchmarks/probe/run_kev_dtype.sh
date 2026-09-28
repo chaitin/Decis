@@ -16,8 +16,12 @@ RUN="${KEV_RUN:-jaredpalmer/kev-0.8b}"
 
 export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 export USE_TF=0
-# The host's no_proxy may contain an IPv6 literal that httpx cannot parse as a URL.
-export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
+# The proxy-bypass list in the canonical spelling. A bracketed IPv6 literal such as
+# `[::1]` is not parseable as an httpx URL pattern, and inheriting one makes every Hub
+# download in this probe die with `InvalidURL: Invalid port: ':1]'`. The Python half of
+# the rule is `decis.config.normalize_proxy_environment`; `tests/test_conventions.py`
+# reads `decis.config.LOOPBACK_BYPASS` back to keep this line in step with it.
+export NO_PROXY=127.0.0.1,localhost,::1
 export no_proxy="$NO_PROXY"
 
 run_variant () {

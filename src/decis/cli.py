@@ -21,6 +21,7 @@ from .app import create_app
 from .config import ConfigError, Settings, load_settings
 from .engines.registry import SPECS, known_names
 from .observability import configure_logging
+from .paths import WeightSpec
 
 _EXIT_CONFIG_ERROR = 2
 
@@ -45,6 +46,15 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=None, help="bind port (default: DECIS_PORT, 8000)")
     serve.add_argument("--engine", default=None, help="engine to load (default: DECIS_DEFAULT_ENGINE)")
     serve.add_argument("--reload", action="store_true", help="reload on source changes (development only)")
+    serve.add_argument(
+        "--preload",
+        action="store_true",
+        help=(
+            "fetch and load the engine before binding the port, so the server only starts once it can "
+            "answer. Use it when you are watching the console; do NOT use it where a liveness probe has "
+            "to reach /healthz during a cold start."
+        ),
+    )
     serve.add_argument("--env-file", default=None, help="path to a .env file (default: ./.env)")
     serve.set_defaults(handler=_serve)
 
@@ -174,6 +184,49 @@ def _bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def startup_banner(settings: Settings, host: str, port: int, *, preload: bool = False) -> str:
+    """What `decis serve` prints before it binds anything.
+
+    Two lines an operator used to see were uvicorn's `Uvicorn running on
+    http://127.0.0.1:8000` and, seconds or minutes later, a `/readyz` that still said
+    `503`. Both were true and the pair was misleading: the socket really is open, and
+    the engine really is not answering yet. So the state is stated before the
+    framework gets a chance to imply otherwise, together with where the weights come
+    from -- on a cold cache the next thing that happens is a 647 MiB download, and
+    that is worth announcing rather than discovering.
+    """
+    from .engines.registry import canonical
+    from .paths import human_bytes, resolve
+
+    engine_id = canonical(settings.default_engine) or settings.default_engine
+    spec = _weight_spec(engine_id)
+    lines = [f"decis {__version__}", f"  engine    {engine_id}"]
+    if spec is None:
+        lines.append("  weights   none published; this engine is self-contained")
+    else:
+        source = resolve(spec, settings)
+        lines.append(f"  weights   {source.describe()}")
+        if source.kind == "hub":
+            size = human_bytes(spec.expected_bytes) if spec.expected_bytes else "size unknown"
+            lines.append(f"            read from the Hugging Face cache; {size} on a cold cache")
+        elif source.kind == "none":
+            lines.append("            not a checkpoint, and this engine has nothing to fetch: it will not load")
+    lines.append(f"  bind      {host}:{port}")
+    if preload:
+        lines.append(
+            "  startup   --preload: fetching and loading the engine before the port opens, so nothing\n"
+            "            answers -- not even /healthz -- until it is ready. A liveness probe that\n"
+            "            expects an answer during a cold start will fail; drop --preload for that."
+        )
+    else:
+        lines.append(
+            '  startup   the socket opens first, so a probe can tell "starting" from "crashed":\n'
+            "            /readyz returns 503 and every /v1/* request is refused until the log says\n"
+            f'            "engine {engine_id} ready". `decis serve --preload` loads first instead.'
+        )
+    return "\n".join(lines)
+
+
 def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -195,15 +248,31 @@ def _serve(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    app = create_app(settings)
+    # `load_engine=False` under `--preload`: the load is driven here, before uvicorn
+    # exists, so there is no window in which a port is open and nothing can answer it.
+    app = create_app(settings, load_engine=not args.preload)
+    # stderr on purpose: uvicorn logs there too, and a banner on a block-buffered stdout
+    # would arrive *after* the very line it exists to put in context.
+    print(startup_banner(settings, host, port, preload=args.preload), file=sys.stderr)
+
+    if args.preload:
+        try:
+            app.state.service.load()
+        except Exception as exc:
+            print(
+                f"error: the engine failed to load, so nothing was bound: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
     uvicorn.run(
         app,
         host=host,
         port=port,
         log_level=settings.log_level,
-        # The engine loads inside the lifespan startup, before the socket accepts
-        # traffic. Give a 73 s CPU cold start room rather than letting the
-        # orchestrator conclude the container is dead.
+        # A cold start is ~80 s for Laya on CPU and minutes on a slow or ARM host, and
+        # the engine loads on a worker thread while uvicorn serves probes. Give the
+        # shutdown drain room rather than leaving a SIGKILL mid-load.
         timeout_graceful_shutdown=30,
         reload=args.reload,
     )
@@ -245,6 +314,14 @@ def _doctor(args: argparse.Namespace) -> int:
     print(f"  request limit    {settings.max_request_bytes} bytes, timeout budget {settings.request_timeout_ms} ms")
     print(f"  torch threads    {settings.torch_threads if settings.torch_threads else 'auto'}")
     print(f"  DECIS_* set      {', '.join(settings.sources) if settings.sources else '(none)'}")
+    # Only when something was actually changed: a silent rewrite of the environment is
+    # the kind of thing an operator should be able to see, and a "no changes" line on
+    # every run is noise (`docs/design-review.md` §2-D25). The variable is named because
+    # the same broken entry usually appears in both spellings, and `[::1] -> ::1` twice
+    # with no attribution is not a report.
+    for name, before, after in settings.proxy_rewrites:
+        replacement = f" -> {after}" if after else " dropped (not expressible as a proxy bypass)"
+        print(f"  proxy bypass     {name}: {before}{replacement}")
 
     # Engine availability, reported one by one: a single-engine image is the
     # normal case, not a fault. Uses the same classifier as `decis models`, so the
@@ -413,7 +490,7 @@ def _download_bases(spec: object) -> int:
     return 0
 
 
-def _weight_spec(engine_id: str) -> object:
+def _weight_spec(engine_id: str) -> WeightSpec | None:
     """An engine's declared weights, without importing its heavy dependencies.
 
     `decis.engines.laya` imports nothing but stdlib and Decis modules at module

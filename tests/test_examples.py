@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from conftest import VERSIONED_STUB
+from decis.config import PROXY_VARIABLES
 
 ROOT = Path(__file__).resolve().parent.parent
 CURL_MD = ROOT / "examples" / "curl.md"
@@ -285,10 +286,10 @@ def test_the_sdk_example_works_with_a_proxied_no_proxy(server_url: str) -> None:
     neither proxies nor the example.
     """
     pytest.importorskip("typesafe_sdk", reason="typesafe-sdk is in the `dev` extra")
+    hostile = "127.0.0.1,localhost,10.2.0.0/16,::1,[::1]"
     env = {
         "PATH": "/usr/bin:/bin:/usr/local/bin",
-        "NO_PROXY": "127.0.0.1,localhost,10.2.0.0/16,::1,[::1]",
-        "no_proxy": "127.0.0.1,localhost,10.2.0.0/16,::1,[::1]",
+        **dict.fromkeys(PROXY_VARIABLES, hostile),
         "PYTHONPATH": str(ROOT / "src"),
     }
     completed = subprocess.run(

@@ -53,6 +53,21 @@ decis serve --host 127.0.0.1               # no key, loopback -> allowed
 `0.0.0.0` is the right default for a container. `--host 127.0.0.1` is the right default for
 a first local run.
 
+### Startup order
+
+The engine loads in a background thread, so probes answer while it does and the port is
+open before the model can answer. `/readyz` reports `loading`, `/v1/*` is refused, and the
+log says both. `--preload` reverses that order — fetch and load first, then bind:
+
+```bash
+decis serve --preload
+```
+
+Nothing answers during the load then, `/healthz` included, so it is the right trade on a
+console and the wrong one wherever a liveness probe must reach the process during a cold
+start. [Getting started](getting-started.md#wait-for-readiness) shows what each order
+looks like in the log.
+
 ## Engine selection and weights
 
 | Variable | Default | Meaning |

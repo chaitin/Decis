@@ -198,6 +198,61 @@ def test_an_engine_without_a_repository_refuses_to_download() -> None:
         download_arguments(WeightSpec(engine_id="stub"))
 
 
+# --- fetching, for the loader rather than for `decis download` -------------------
+#
+# The stub writes the layout the real `snapshot_download` writes -- the named files,
+# under the subfolder, inside a directory it returns -- because asserting which
+# arguments were passed while the writer and the reader disagree about the layout is
+# exactly the D17 mistake (`docs/design-review.md` §2). What is asserted is that
+# `fetch_checkpoint` answers with a directory `paths` itself accepts.
+
+
+def _fake_snapshot_download(monkeypatch, *, landing: Path, ignore_patterns: bool = False) -> dict:
+    """Install a `huggingface_hub.snapshot_download` that really writes the files."""
+    import sys
+    import types
+
+    seen: dict = {}
+
+    def snapshot_download(**kwargs: object) -> str:
+        seen.update(kwargs)
+        patterns = [] if ignore_patterns else list(kwargs.get("allow_patterns") or [])
+        for pattern in patterns:
+            destination = landing / str(pattern)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"weights")
+        landing.mkdir(parents=True, exist_ok=True)
+        return str(landing)
+
+    module = types.ModuleType("huggingface_hub")
+    module.snapshot_download = snapshot_download  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", module)
+    return seen
+
+
+def test_fetching_a_checkpoint_returns_a_directory_the_resolver_accepts(tmp_path: Path, monkeypatch) -> None:
+    """The oracle is `checkpoint_root` -- the same predicate a mounted directory passes."""
+    from decis.paths import fetch_checkpoint
+
+    landing = tmp_path / "hub" / "models--convaiinnovations--laya" / "snapshots" / ("a" * 40)
+    seen = _fake_snapshot_download(monkeypatch, landing=landing)
+    root = fetch_checkpoint(SPEC)
+    assert seen["revision"] == "a" * 40, "the pin has to reach the Hub, not just the log line"
+    assert root == landing / "multilingual"
+    assert checkpoint_root(root, SPEC) == root
+
+
+def test_a_download_that_lands_nothing_a_loader_can_read_is_an_error(tmp_path: Path, monkeypatch) -> None:
+    """`snapshot_download` returning is not the same claim as "a checkpoint is here"."""
+    import pytest
+
+    from decis.paths import fetch_checkpoint
+
+    _fake_snapshot_download(monkeypatch, landing=tmp_path / "empty", ignore_patterns=True)
+    with pytest.raises(FileNotFoundError, match=r"holds no rl_agent_config\.json"):
+        fetch_checkpoint(SPEC)
+
+
 def test_human_bytes_reads_sensibly() -> None:
     assert human_bytes(512) == "512 B"
     assert human_bytes(1024) == "1.0 KiB"
