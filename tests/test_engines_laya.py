@@ -28,9 +28,8 @@ from decis.engines.laya import (
     LayaMultilingualEngine,
     LayaTypedDecisionsEngine,
     budgeted_head,
-    requested_device,
 )
-from decis.errors import EngineUnavailableError, InvalidRequestError
+from decis.errors import InvalidRequestError
 from decis.render import prepare_request
 from decis.schema import SystemOneRequest, validate_capacity
 
@@ -376,13 +375,7 @@ def test_an_unset_device_is_left_to_laya() -> None:
     assert laya.calls == [(("convaiinnovations/laya",), {"device": None, "subfolder": "multilingual"})]
 
 
-@pytest.mark.parametrize("name", ["cpu", "cuda", "mps", None])
-def test_documented_devices_pass_the_check(name: str | None) -> None:
-    assert requested_device(name) == name
-
-
-def test_a_misspelled_device_names_the_variable() -> None:
-    """Handing `"gpu"` to `torch.device` fails deep inside the Agent and never mentions
-    `DECIS_DEVICE`, which is the one thing the reader has to change."""
-    with pytest.raises(EngineUnavailableError, match="DECIS_DEVICE='gpu' is not a device"):
-        requested_device("gpu")
+# The `DECIS_DEVICE` vocabulary check is shared with kev and tested in `tests/test_engines.py`,
+# next to the registry that declares it. What stays Laya's own is that `None` remains `None`:
+# upstream's device order is upstream's fact, so this engine must not substitute
+# `registry.best_device()` for it.

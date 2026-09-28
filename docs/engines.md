@@ -77,7 +77,10 @@ the abstraction is wrong — that is the test the second engine was added to pas
 
 ## dtype and device
 
-`DECIS_DEVICE` selects `cpu`, `cuda` or `mps`; unset picks the best available.
+`DECIS_DEVICE` selects `cpu`, `cuda`, `mps`, `xpu` or `npu`; unset takes the first
+accelerator `torch` reports, in the order `cuda`, `xpu`, `npu`, `mps`, and otherwise
+`cpu` (`src/decis/engines/devices.py`). `kev-0.8b` asks for that choice; Laya leaves the
+unset case to its own `Agent`, whose order is CUDA, then Metal, then CPU.
 `DECIS_DTYPE` forces a precision for **`kev-0.8b` only** — it is read by the engines that
 consult `registry.DTYPE_DEFAULTS`, and Laya decides its own precision through its `Agent`.
 Setting it on a Laya engine has no effect. Its use is re-measuring on your own hardware.

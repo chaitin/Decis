@@ -49,11 +49,10 @@ def is_foreign_default(name: str) -> bool:
     return candidate in FOREIGN_DEFAULT_MODELS
 
 
-#: The device names `DECIS_DEVICE` may carry -- `torch`'s own, and the vocabulary the
-#: keys of `DTYPE_DEFAULTS` below are written in. Declared once so a misspelling is
-#: refused by name, instead of surfacing as `torch.device("gpu")` failing somewhere
-#: inside an engine's `load()` with a message that never mentions the variable.
-DEVICES = frozenset({"cpu", "cuda", "mps"})
+#: Which device to load on, whether a device name is legal, and why the unset case picks
+#: what it picks: `engines/devices.py`. `DTYPE_DEFAULTS` below is keyed by those names.
+#: The split is deliberate -- that module may ask `torch` and this one may not, because
+#: this one is imported before an engine's dependencies are known to exist (AGENTS.md §6).
 
 #: `(engine_id, device) -> dtype`. A dtype default cannot be global, because the same
 #: weights behave completely differently per engine and device: kev-0.8b on CPU in bf16

@@ -190,7 +190,7 @@ Decis 在契约之外增加的一切都放在同一个键下，所以官方 SDK�
 |---|---|
 | `engine` | 引擎 id，例如 `laya-multilingual`。 |
 | `engine_version` | 上游模型包的版本。 |
-| `device` | `cpu`、`cuda` 或 `mps`。 |
+| `device` | `cpu`、`cuda`、`mps`、`xpu` 或 `npu`。 |
 | `dtype` | `float32`、`float16` 或 `bfloat16`。 |
 | `latency_ms` | 本次请求在服务端的推理耗时。 |
 | `batch_size` | 一次前向里算了多少个问题。`1` 表示没有发生批处理。 |
@@ -230,8 +230,8 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 
 - 每一个注册过的引擎都会被列出，不管这个镜像能不能跑它。`version` 是将要执行前向的上游包的
   版本，该包缺失时为 `not-installed`——缺*依赖包*不会让引擎消失，缺*权重*同样不会。
-- `dtype` 在引擎加载前是 `unloaded`；`device` 不能当作"是否已加载"的判断依据：有的引擎在加载
-  前就报出设备（`kev-0.8b` 报 `cpu`），有的空闲时报 `unloaded`（Laya）。
+- `dtype` 与 `device` 在引擎加载前都是 `unloaded`。引擎拿到哪个设备取决于这台机器，而加载前
+  要回答就得先去探测它——所以 `unloaded` 是诚实的值，不是"先随便填一个"的占位符。
 - 这里的 `max_question_tokens` 与 `max_sequence_tokens` 是 Laya 为"没有声明上限的 checkpoint"
   准备的兜底值（`src/decis/engines/laya.py` 的 `DEFAULT_HEAD_MAX_LEN` / `DEFAULT_MAX_LEN`）——
   尚未加载的引擎报的就是它们。加载完成后这一项会被换成 checkpoint 自己声明的上限，所以请等

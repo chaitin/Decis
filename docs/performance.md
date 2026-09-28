@@ -53,6 +53,12 @@ nor a CUDA runtime, so the same image on the same machine serves from the **CPU*
 Nothing in the image can change that: Docker Desktop does not expose the Apple GPU to a Linux
 container.
 
+`kev-0.8b` now resolves the unset case the same way — the first accelerator `torch` reports,
+in the order `cuda`, `xpu`, `npu`, `mps`, then `cpu` (`src/decis/engines/devices.py`) — so on
+macOS it is the **GPU** as well. It used to load on the CPU whatever the machine had. When
+comparing this release against an older one on Apple silicon, read the device first: it is not
+the same device any more.
+
 The two CPU paths are not equal either. PyTorch's macOS wheel reaches Apple's own matrix
 kernels and its `linux-aarch64` wheel does not, so the same forward pass is measurably slower
 in the container than on the host even at the same thread count — that gap survives pinning

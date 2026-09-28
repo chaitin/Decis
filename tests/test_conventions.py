@@ -93,6 +93,7 @@ def test_canonical_files_exist() -> None:
         "app.py",
         "domain.py",
         "engines/registry.py",
+        "engines/devices.py",
     ):
         assert (PACKAGE / name).is_file(), f"AGENTS.md §2 names {name}, which does not exist"
 
@@ -341,6 +342,22 @@ def test_engine_readiness_is_classified_once() -> None:
     # A reachability check: the words a user reads must come from that one place.
     cli = _source(PACKAGE / "cli.py")
     assert "unavailable  " not in cli, "cli.py is formatting readiness itself"
+
+
+def test_device_choice_has_one_home() -> None:
+    """Which device to load on is decided once, in `engines/devices.py`.
+
+    A second answer would drift the way the readiness classifier did: `kev-0.8b` used to
+    hardcode `settings.device or "cpu"` while Laya let upstream pick, so the same release
+    on the same Mac served from a different device depending on which engine was chosen.
+    """
+    for helper in ("def available_devices(", "def best_device(", "def requested_device("):
+        definitions = [str(path.relative_to(PACKAGE)) for path in _modules() if helper in _source(path)]
+        assert definitions == ["engines/devices.py"], (helper, definitions)
+    # Engines ask; they must not carry a fallback of their own.
+    for engine in ("engines/kev.py", "engines/laya.py"):
+        source = _source(PACKAGE / engine)
+        assert 'or "cpu"' not in source, f"{engine} picks a device fallback itself"
 
 
 def test_the_reported_version_is_the_packaged_version() -> None:

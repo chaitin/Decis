@@ -59,6 +59,15 @@ REQUEST = {
 }
 
 
+#: How far Decis's batched path may sit from upstream's single-record path. Set from
+#: measurement, not taste, like `test_batch_invariance.py: TOLERANCE`: the gap is below
+#: 1e-6 on `cpu` and 1.6e-6 on `mps` -- the backend that kev now loads on by default when
+#: an Apple GPU is present -- because MPS reorders its reductions. The argmax is unchanged
+#: on either device. A real masking bug moves a distribution by order 1
+#: (`docs/design-review.md §2-D9`), so this still fails loudly on one.
+PARITY_TOLERANCE = 1e-5
+
+
 def _weights_are_cached(spec) -> bool:
     """Is this checkpoint readable right now, locally or from the Hub cache?
 
@@ -192,7 +201,7 @@ def test_probabilities_match_upstreams_own_path(engine) -> None:
         enc = engine._model.encode(engine._tok, record)
         with torch.no_grad():
             expected = engine._model.probs(enc)[0]
-        assert max(abs(a - b) for a, b in zip(ours_dist, expected.tolist(), strict=True)) < 1e-6
+        assert max(abs(a - b) for a, b in zip(ours_dist, expected.tolist(), strict=True)) < PARITY_TOLERANCE
 
 
 def test_one_predict_is_one_forward_pass_per_batch(engine) -> None:

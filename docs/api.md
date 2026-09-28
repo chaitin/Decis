@@ -200,7 +200,7 @@ contract field.
 |---|---|
 | `engine` | Engine id, e.g. `laya-multilingual`. |
 | `engine_version` | The upstream model package's version. |
-| `device` | `cpu`, `cuda` or `mps`. |
+| `device` | `cpu`, `cuda`, `mps`, `xpu` or `npu`. |
 | `dtype` | `float32`, `float16` or `bfloat16`. |
 | `latency_ms` | Server-side inference time for this request. |
 | `batch_size` | How many questions were run in one forward pass. `1` means no batching happened. |
@@ -242,9 +242,9 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
   version of the upstream package that will run the forward pass, or `not-installed` when
   that package is missing — a missing *package* does not hide an engine, and neither does a
   missing *checkpoint*.
-- `dtype` is `unloaded` until the engine has loaded, and `device` is not a load test: some
-  engines report their device before loading (`kev-0.8b` reports `cpu`), others report
-  `unloaded` while they are idle (Laya).
+- `dtype` and `device` are both `unloaded` until the engine has loaded. Which device an
+  engine gets depends on the machine, and answering before `load()` would mean probing it —
+  so `unloaded` is the honest value, not a placeholder for a guess.
 - `max_question_tokens` and `max_sequence_tokens` here are the fallbacks Laya declares for a
   checkpoint that names no limits (`DEFAULT_HEAD_MAX_LEN`, `DEFAULT_MAX_LEN` in
   `src/decis/engines/laya.py`) — which is what an engine that has not loaded reports. Once it

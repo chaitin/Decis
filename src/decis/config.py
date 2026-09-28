@@ -103,9 +103,11 @@ class Settings:
     #: `terminationGracePeriodSeconds`, or SIGKILL arrives mid-wait.
     shutdown_grace_ms: int = 20000
     torch_threads: int | None = None
-    #: `cuda`, `mps` or `cpu`. Unset means "pick the best available", which is what an
-    #: operator almost always wants; setting it lets a GPU host run a CPU-only
-    #: comparison without a code change.
+    #: `cuda`, `xpu`, `npu`, `mps` or `cpu` (`engines.devices.DEVICES`). Unset means "pick
+    #: the best available", which is what an operator almost always wants; setting it lets
+    #: a GPU host run a CPU-only comparison without a code change. The unset case is
+    #: resolved by `engines/devices.py`, by whichever engine needs it: `kev-0.8b` takes the
+    #: first accelerator the machine reports, and Laya leaves the choice to its `Agent`.
     device: str | None = None
     #: Force fp32/fp16/bf16 for the served engine. Unset picks per (engine, device) from
     #: `registry.DTYPE_DEFAULTS`. Mainly for re-measuring a dtype on your own hardware --

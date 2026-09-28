@@ -79,7 +79,7 @@ ProbDist = list[float]
                    ┌───────────────────────▼──────────────────────┐
  引擎层             │ base.py     DecisionEngine / EngineInfo       │
  (可插拔)           │ registry.py id → 引擎类 · 别名表 · 能力声明     │
-                   │ engines/kev.py    engines/laya.py             │
+                   │ engines/kev.py  engines/laya.py  devices.py  │
                    │ engines/remote.py（转发真 jev） _kev_vendor/  │
                    └───────────────────────┬──────────────────────┘
                                            │
@@ -295,6 +295,12 @@ class PreparedRequest:
   而 Laya 的精度由它自己的 `Agent` 决定，`DECIS_DTYPE` 对它无效，`AGENTS.md §7`）。
   取值规则：未列出的组合用 `cuda → fp16`、其余 `fp32`；用户显式覆盖成一个已知劣化组合时，
   **启动日志必须大声告警**，而不是安静地慢 83 倍。
+- **设备同样有唯一事实来源，但不是同一个文件**：`DECIS_DEVICE` 的合法取值、"这台机器能用哪个
+  设备"、"不设时用哪个"归 `src/decis/engines/devices.py`（`DEVICES` / `ACCELERATOR_ORDER` /
+  `available_devices` / `best_device` / `requested_device`），`registry.py` 只管
+  `(引擎, 设备) → dtype`。分开的理由是硬约束：`registry.py` 属于核心模块，**不得 import torch**，
+  而探测设备必须问 torch（`AGENTS.md §6`，`tests/test_conventions.py` 的 AST 守卫盯着）。
+  引擎只问 `devices.py`，不再各写各的 `or "cpu"`——那正是 `design-review.md §2-D24`。
 
 **`engines/remote.py`（⬜ 未实现，见 §11）** —— 转发到真 `api.typesafe.ai`。
 
@@ -720,6 +726,7 @@ Decis/
 │   ├── engines/
 │   │   ├── base.py               # ✅ DecisionEngine / EngineInfo / WorkItem / Prediction
 │   │   ├── registry.py           # ✅ id → 引擎类、别名表、惰性 import、dtype 策略
+│   │   ├── devices.py            # ✅ 设备策略：合法取值、可用设备、不设时选谁
 │   │   ├── laya.py               # ✅ 三个 Laya checkpoint 三个类
 │   │   ├── kev.py                # ✅
 │   │   ├── remote.py             # ⬜ 把请求转发给另一个 Decis/jev

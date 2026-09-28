@@ -45,6 +45,11 @@ Decis 跑的是决策模型——每个请求只有一次前向，不生成文�
 是以 `fp32` 跑在 **CPU** 上的。镜像里的任何设置都改不了这一点：Docker Desktop 不会把 Apple GPU
 暴露给 Linux 容器。
 
+`kev-0.8b` 现在也这样解决"不设"的情况——取 `torch` 报告可用的第一个加速器，顺序是 `cuda`、
+`xpu`、`npu`、`mps`，都没有则 `cpu`（`src/decis/engines/devices.py`）——所以在 macOS 上它同样跑在
+**GPU** 上。以前不管这台机器有什么，它都加载到 CPU。在 Apple 芯片上比较这个 release 与更早的版本时，
+先读设备：已经不是同一个设备了。
+
 两条 CPU 路径也不等价。PyTorch 的 macOS wheel 能用到 Apple 自己的矩阵内核，`linux-aarch64` 的
 wheel 用不到，所以同一段前向在容器里比在宿主机上可测量地更慢——即使两侧把 `DECIS_TORCH_THREADS`
 设成同一个值，这个差距依然在。这一部分是平台的性质，不是容器额外加上的开销。

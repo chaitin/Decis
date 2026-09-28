@@ -18,7 +18,7 @@ from decis.engines import kev as kev_module
 from decis.engines.base import EngineInfo
 from decis.engines.kev import MAX_BRANCH, MAX_STATE, KevEngine, _option_text
 from decis.engines.registry import SPECS, create
-from decis.errors import InvalidRequestError
+from decis.errors import EngineUnavailableError, InvalidRequestError
 from decis.render import noul_options, prepare_request
 from decis.schema import SystemOneRequest, validate_capacity
 
@@ -361,6 +361,47 @@ def test_dtype_defaults_never_select_a_degraded_combination() -> None:
 def test_the_dtype_table_is_written_in_the_documented_device_names() -> None:
     """`DEVICES` is what `DECIS_DEVICE` is checked against, and what this table is keyed
     by. A name that exists in one and not the other is a typo in one of them."""
-    from decis.engines.registry import DEVICES, DTYPE_DEFAULTS
+    from decis.engines.devices import DEVICES
+    from decis.engines.registry import DTYPE_DEFAULTS
 
     assert {device for _, device in DTYPE_DEFAULTS} <= DEVICES
+
+
+# --- device selection ----------------------------------------------------------
+
+
+def test_an_unset_device_asks_the_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bug this replaced: `settings.device or "cpu"` ignored the GPU entirely.
+
+    On an Apple-silicon Mac that meant every request ran on the CPU -- measured on an
+    M3 Pro at 3,299 ms against 215 ms on `mps` for the same 3-question request.
+    """
+    from decis.engines import kev
+
+    monkeypatch.setattr(kev, "best_device", lambda: "mps")
+    assert kev.resolve_device(None) == "mps"
+
+
+def test_a_pinned_device_still_wins_over_the_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    from decis.engines import kev
+
+    monkeypatch.setattr(kev, "best_device", lambda: "mps")
+    assert kev.resolve_device("cpu") == "cpu", "DECIS_DEVICE=cpu is what makes two runs comparable"
+
+
+def test_the_kev_device_path_refuses_a_typo(monkeypatch: pytest.MonkeyPatch) -> None:
+    from decis.engines import kev
+
+    monkeypatch.setattr(kev, "best_device", lambda: "mps")
+    with pytest.raises(EngineUnavailableError, match="DECIS_DEVICE='gpu' is not a device"):
+        kev.resolve_device("gpu")
+
+
+def test_the_device_is_unknown_until_the_engine_has_loaded() -> None:
+    """`/v1/models` must not claim `cpu` for an engine that may get a GPU.
+
+    Answering it truthfully before `load()` would mean importing torch to probe the
+    machine, which `GET /v1/models` may not do (AGENTS.md §6) -- the same reason Laya
+    reports `unloaded` while it is idle.
+    """
+    assert KevEngine().info().device == "unloaded"

@@ -38,6 +38,8 @@ from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError, InvalidRequestError
 from ..paths import BaseModel, WeightSpec, resolve
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
+from .devices import best_device, requested_device
+from .registry import default_dtype, degraded_reason
 
 _logger = logging.getLogger(__name__)
 
@@ -93,6 +95,23 @@ WEIGHTS: dict[str, WeightSpec] = {
 }
 
 
+def resolve_device(pinned: str | None) -> str:
+    """Where to load: `DECIS_DEVICE` when it names a device, else the best one here.
+
+    kev has no upstream device order to defer to -- upstream's own CLI loads on CPU --
+    and CPU is not a neutral default for this checkpoint. Measured on an M3 Pro (18 GB,
+    torch 2.14, 3 questions, 22-token state, 5 threads): 3,299 ms per request on `cpu`
+    (fp32) against 215 ms on `mps` (fp32), with the same argmax and a maximum probability
+    delta of 2e-6. Before this, an Apple-silicon Mac served kev on the CPU unless
+    `DECIS_DEVICE` was set by hand.
+
+    Split out from `load()` so the choice can be tested without torch or weights: the
+    weight-free suite has neither an accelerator to detect nor a checkpoint to load.
+    The measurement is recorded in `docs/design-review.md §2-D24`.
+    """
+    return requested_device(pinned) or best_device()
+
+
 class KevEngine(DecisionEngine):
     """Serves one kev checkpoint.
 
@@ -109,7 +128,10 @@ class KevEngine(DecisionEngine):
             raise ValueError(f"KevEngine has no weights declared for {self._id!r}")
         self._tok: Any = None
         self._model: Any = None
-        self._device = "cpu"
+        # Not "cpu": which device this engine gets depends on the machine, and answering
+        # `/v1/models` must not import torch to find out (AGENTS.md §6). Reported as
+        # "unloaded" until `load()` has decided, exactly as Laya reports it.
+        self._device = "unloaded"
 
     # --- declarative ---------------------------------------------------------
 
@@ -159,12 +181,16 @@ class KevEngine(DecisionEngine):
     def load(self) -> None:
         """Load the adapter, its base and the pointer head, then warm up.
 
-        Warmup matters more here than for Laya: the first pass through a hybrid
-        (Gated DeltaNet) backbone compiles and caches per-shape kernels, and the
-        vendored `DecisionModel.SHAPE_BUCKET` exists precisely because that cost is
-        large enough to be worth padding for on MPS. Doing it in `load()` means the
-        first real request gets the steady-state latency and `/readyz` turns green
-        only once that is true.
+        Warmup matters more here than for Laya: a pass through a hybrid (Gated DeltaNet)
+        backbone compiles kernels per tensor shape, and the vendored
+        `DecisionModel.SHAPE_BUCKET` exists precisely because that cost is large enough to
+        be worth padding the *sequence length* for on MPS. So warming one item makes the
+        first request steady-state only while it also has one question: measured on an M3
+        Pro, the first 2-question pass costs ~570 ms more than the second and the first
+        3-question pass ~190 ms more, after which that shape is cached for the process's
+        lifetime. Covering every row count would mean guessing a traffic shape, so this
+        warms the shape every request has. `/readyz` green therefore means "the model
+        runs", not "no caller ever pays a kernel compile".
         """
         if self._loaded:
             return
@@ -192,7 +218,8 @@ class KevEngine(DecisionEngine):
         if settings.torch_threads:
             torch.set_num_threads(settings.torch_threads)
 
-        device = settings.device or "cpu"
+        # `DECIS_DEVICE` pins; unset asks the machine (see `resolve_device`).
+        device = resolve_device(settings.device)
         self._device = device
         # The adapter is resolved by `paths.resolve`, so a mounted directory works with
         # no network. Upstream's own `resolve_run` would reach for the Hub here.
@@ -223,8 +250,6 @@ class KevEngine(DecisionEngine):
         # measured ~83x slower for kev (docs/feasibility.md §4). An explicit
         # DECIS_DTYPE still wins, but a known-bad combination says so out loud instead
         # of leaving someone to wonder why their service got 80x slower.
-        from ..engines.registry import default_dtype, degraded_reason
-
         chosen = settings.dtype or default_dtype(self._id, device)
         dtypes = _dtype_map()
         if chosen not in dtypes:

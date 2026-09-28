@@ -730,6 +730,47 @@ BuildKit 的缓存键——这次重建复用了上一次的依赖层，只重�
 
 ---
 
+### D24（高，已修正）kev 在 Apple 芯片上默认跑 CPU：设备回退写在了引擎里
+
+**发现方式**：在一台 M3 Pro 上用 playground 打 kev，每个请求都慢到看得见。查 `kev.py` 的
+`load()`：`device = settings.device or "cpu"`——**它从来不问机器有什么**。同一台机器上 `mps`
+是可用的，`DTYPE_DEFAULTS` 甚至已经有 `("kev-0.8b", "mps"): "fp32"` 这一行，只是永远走不到。
+
+**根因**：设备选择没有唯一事实来源。Laya 把"不设"交给上游 `Agent`（它自己按 CUDA→Metal→CPU 挑），
+kev 则各写各的 `or "cpu"`。于是文档里那句 "Unset picks the best available"
+（`configuration.md`、`config.py` 的注释）**对 kev 是假的**，而且没有任何测试对照它——
+无权重测试套在 CI 上根本没有加速器，所以"选错设备"的分支永远不会被走到。
+`DECIS_DEVICE=mps` 这个正当旋钮让手工验证也"看起来正常"，谁都不会去查默认值。
+
+**代价**：不是"慢一点"，是数量级。一次性本地探针（`kev-0.8b`，fp32，3 个问题，22 token 的 state，
+5 线程，同一进程外各跑一次）：`cpu` p50 3,299 ms，`mps` p50 215 ms；两边 argmax 相同，
+概率最大差 2e-6。**这两个数字来自一次性探针，没有进 `benchmarks/results/`，所以不进用户文档**
+（§8）；`decis bench` 目前也没有设备维度的报告项。
+
+**修法**：设备策略集中到 [`src/decis/engines/devices.py`](../src/decis/engines/devices.py)：
+`DEVICES`（`DECIS_DEVICE` 的合法取值）、`ACCELERATOR_ORDER`（cuda→xpu→npu→mps，`cpu` 是兜底）、
+`available_devices` / `best_device`（探测可注入，以便无加速器的测试套能测顺序）、
+`requested_device`（错拼拒绝并点名变量）。`kev.py` 的 `resolve_device` 只做
+"pin 优先，否则问机器"；Laya 继续让上游决定。预加载时 `device` 报 `unloaded` 而不是猜一个
+`cpu`（`api.md` 里那条"kev 加载前报 cpu"随之改掉）。守卫：
+`tests/test_conventions.py::test_device_choice_has_one_home`（helper 只有一处、
+引擎里不许再有 `or "cpu"`）+ `tests/test_devices.py`。
+
+**仍未验证**：`xpu` 与 `npu` 只实现了探测（本机没有这两种硬件，`benchmarks/results/` 里也没有
+对应的运行），它们落到 dtype 表的默认值 `fp32`；`torch_npu` 的存在性检查在真机上还没跑过。
+另外 MPS 的内核是按张量形状编译的，`SHAPE_BUCKET` 只把**序列长度**分桶，所以进程内第一次出现
+某个"问题数 × 桶长"的组合仍要付一次编译（实测：一次 `load()` 后的第一个 3 问请求比稳态多
+几百毫秒）。当前 `_warmup()` 只热一个 item，覆盖的是"1 个问题"那个形状。
+
+**顺带发现**：默认设备改成 MPS 之后，kev 那套真实权重测试第一次跑在 MPS 上，
+`test_probabilities_match_upstreams_own_path` 报 **1.6e-6**，超过那个按 CPU 标定的 `1e-6` 上限
+（CPU 上低于 1e-6，两侧 argmax 相同）。MPS 会重排归约，这是它的性质而不是缺陷；上限因此按测量
+改成 `1e-5`，与 `test_batch_invariance.py` 里真实权重那条一致——真正的掩码缺陷是数量级 1 的偏差
+（§2-D9），`1e-5` 照样会红。**教训与 D24 本身同源**：一个没被任何设备验证过的默认值，会连带
+让"哪个后端下测过"这段话失真。
+
+---
+
 ## 3. 标准符合性对照
 
 用户问"是否尊重标准"。逐条对照，**包括我们有意不遵守的地方**：

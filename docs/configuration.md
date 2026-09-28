@@ -88,9 +88,19 @@ DECIS_MODEL_DIR=./models uv run decis serve
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DECIS_DEVICE` | auto | `cpu`, `cuda` or `mps`. Unset picks the best available. |
+| `DECIS_DEVICE` | auto | `cpu`, `cuda`, `mps`, `xpu` or `npu`. Unset picks the best available. |
 | `DECIS_DTYPE` | per engine+device | Force `fp32`, `fp16` or `bf16`. Read by engines that consult `registry.DTYPE_DEFAULTS` — today that is `kev-0.8b` only. Laya decides its own precision through its `Agent` and ignores it. |
 | `DECIS_TORCH_THREADS` | one per vCPU | Thread count for the process. |
+
+Unset `DECIS_DEVICE` is resolved by `src/decis/engines/devices.py`: the first accelerator
+`torch` reports as available, in the order `cuda`, `xpu`, `npu`, `mps`, otherwise `cpu`.
+`npu` needs the `torch_npu` plugin installed; the other four are `torch`'s own. `cpu` is
+always available, so a machine with no accelerator serves from it. `kev-0.8b` asks for this
+choice; Laya leaves it to its own `Agent`.
+
+Only `cpu`, `cuda` and `mps` have been measured here. `xpu` and `npu` are detected (and
+accepted) so that they can be pinned explicitly, but no run in `benchmarks/results/` covers
+them, and they fall back to `fp32` through the dtype table's default.
 
 dtype is chosen per engine **and** device, because the same choice can be an order of
 magnitude apart on different hardware. `kev-0.8b` on CPU in `bf16` is 83× slower than

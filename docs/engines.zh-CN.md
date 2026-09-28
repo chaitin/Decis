@@ -70,7 +70,9 @@ Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加
 
 ## dtype 与设备
 
-`DECIS_DEVICE` 选择 `cpu`、`cuda` 或 `mps`；不设置则挑可用的最好的那个。
+`DECIS_DEVICE` 选择 `cpu`、`cuda`、`mps`、`xpu` 或 `npu`；不设置时取 `torch` 报告可用的第一个
+加速器，顺序 `cuda`、`xpu`、`npu`、`mps`，都没有则 `cpu`（`src/decis/engines/devices.py`）。
+要这个选择的是 `kev-0.8b`；不设置时 Laya 交给自己的 `Agent`，它的顺序是 CUDA、Metal、CPU。
 `DECIS_DTYPE` 只为 **`kev-0.8b`** 强制指定精度——读取它的是那些查 `registry.DTYPE_DEFAULTS`
 的引擎，而 Laya 由它自己的 `Agent` 决定精度。在 Laya 引擎上设置它没有效果。它的用途是在你自己
 的硬件上重新测量。不设置时，dtype 由引擎和设备决定：

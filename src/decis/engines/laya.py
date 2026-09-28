@@ -40,7 +40,7 @@ from ..errors import EngineUnavailableError, InvalidRequestError
 from ..paths import WeightSpec, resolve
 from ..render import noul_options
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
-from .registry import DEVICES
+from .devices import requested_device
 
 if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
     from ..config import Settings
@@ -160,23 +160,6 @@ def budgeted_head(instruction_tokens: int, option_tokens: int) -> int:
     return option_tokens + max(instruction_tokens, _MIN_OPTION_BUDGET)
 
 
-def requested_device(name: str | None) -> str | None:
-    """`DECIS_DEVICE`, checked, or `None` to let Laya choose.
-
-    Upstream's own order is CUDA, then Metal, then CPU (`laya/agent.py:177-182`), and on
-    an Apple-silicon Mac that means the GPU -- while the same image in a Linux container
-    has no Metal and serves from the CPU. The gap between those two is large enough to
-    look like a container problem, so pinning `cpu` has to actually pin it
-    (`docs/performance.md`).
-
-    A typo is refused here rather than handed to `torch.device`, which would fail inside
-    `Agent.__init__` with a message that never names the variable.
-    """
-    if name is None or name in DEVICES:
-        return name
-    raise EngineUnavailableError(f"DECIS_DEVICE={name!r} is not a device. Use one of: {', '.join(sorted(DEVICES))}.")
-
-
 class LayaEngine(DecisionEngine):
     """Serves one Laya checkpoint.
 
@@ -284,11 +267,14 @@ class LayaEngine(DecisionEngine):
             # number here would be a claim this code cannot back.
             torch.set_num_threads(settings.torch_threads)
 
-        # `None` means "let Laya pick", which is upstream's own default. On an
+        # `None` means "let Laya pick", which is upstream's own default and upstream's own
+        # order (CUDA, then Metal, then CPU -- `laya/agent.py:177-182`). On an
         # Apple-silicon Mac that pick is `mps`, and a Linux container has no Metal at
         # all -- the same release on the same machine therefore serves from a different
         # device depending on how it was started. `DECIS_DEVICE=cpu` is what makes the
         # two comparable, so the knob has to reach the `Agent` (docs/performance.md).
+        # Only the vocabulary check is shared with `kev-0.8b`, which has no upstream order
+        # to defer to and asks `devices.best_device()` instead.
         device = requested_device(settings.device)
         _logger.info("loading %s from %s (device=%s)", self._id, source.describe(), device or "auto")
         self._agent = self._instantiate(laya, source, device)

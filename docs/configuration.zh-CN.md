@@ -79,9 +79,18 @@ DECIS_MODEL_DIR=./models uv run decis serve
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
-| `DECIS_DEVICE` | 自动 | `cpu`、`cuda` 或 `mps`。不设则自动选最可用的。 |
+| `DECIS_DEVICE` | 自动 | `cpu`、`cuda`、`mps`、`xpu` 或 `npu`。不设则自动选最可用的。 |
 | `DECIS_DTYPE` | 按引擎+设备 | 强制 `fp32`、`fp16` 或 `bf16`。读取它的是那些查 `registry.DTYPE_DEFAULTS` 的引擎——目前只有 `kev-0.8b`。Laya 由它自己的 `Agent` 决定精度，会忽略它。 |
 | `DECIS_TORCH_THREADS` | 每个 vCPU 一个 | 该进程的线程数。 |
+
+`DECIS_DEVICE` 不设时由 `src/decis/engines/devices.py` 决定：取 `torch` 报告可用的第一个加速器，
+顺序是 `cuda`、`xpu`、`npu`、`mps`，都没有则是 `cpu`。`npu` 需要装 `torch_npu` 插件，其余四个是
+`torch` 自带的。`cpu` 永远可用，所以没有加速器的机器就从 CPU 服务。要这个选择的是 `kev-0.8b`；
+Laya 把它交给自己的 `Agent`。
+
+这里实测过的只有 `cpu`、`cuda`、`mps`。`xpu` 与 `npu` 会被探测（也会被接受），这样你可以显式
+指定它们，但 `benchmarks/results/` 里没有任何一次覆盖它们的运行，而且它们会落到 dtype 表的默认
+值 `fp32`。
 
 dtype 按引擎**和**设备分别选择，因为同一个选择在不同硬件上可能差一个数量级。`kev-0.8b`
 在 CPU 上用 `bf16` 比 `fp32` 慢 83 倍；实测表见
