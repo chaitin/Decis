@@ -75,6 +75,59 @@ items = [it for group in batch for it in group]  # 展平多组问题
   - `strict=True` 加载（缺键/错形状立即报错）、温度 clamp、归一化熵置信度
 - 它的 README 头条延迟（13.42/7.39ms）与仓库内 checked-in 结果（17.75/10.91ms）**不一致**。规划按保守值。
 
+### 2.5 open-jev-fast（lyuyiqi/open-jev-fast）
+
+一个把单机决策推理压到极限的服务：Qwen3 世代 27B 级混合模型（Gated DeltaNet + full attention）、
+**非生成式**、一次请求给一组候选，跑在 1× NVIDIA B300、bf16 上。它的公开报告给了完整的分步收益
+（`results/phase1_steps.json`、`bench/logs/**`）。**那些数字是它的、也是 B300 的**，不是 Decis 的
+实测，也不进 `docs/performance.md`（`AGENTS.md §8`）；下面只用来判断"哪些手段在原理上可搬"。
+
+它做的主要手段与它自己的测量：
+
+| 手段 | 它的实测（B300 / bf16） |
+|---|---|
+| 前缀树：一次 packed 前向算完所有候选（Hydragen/RadixAttention 的思路） | 31.0 → 24.4 ms；一个 3724 token 共享上下文的任务 846 → 193 ms |
+| 合并 LoRA、融合 RMSNorm、去掉两处 CPU 同步 | p50 109.91 → 78.64 ms |
+| 按真实序列长度捕获整模型 CUDA Graph，并按形状缓存 | 78.64 → 57.99 ms；稳态 17.3 ms |
+| 六个融合内核替换每层所有非 matmul 算子；手写 Gated DeltaNet 内核 | 32.4 → 31.0 ms（matmul 9→4/层，内核数 ~5000 → 945）；GDN 74 → 36.5 µs/层 |
+| Round-4 微调（去掉逐层 buffer fill、split-K 归约展开、down-proj S4→S2） | 内核数 946 → 642/请求 |
+| 分词/模板每请求只做一次（缓存模板 + `encode_batch`） | JevBench 混合负载 2.99 → 1.64–1.70 ms/请求 |
+| 逐形状调 cuBLASLt、split-K | 首版 full_in 53.4 → 41.1 µs；之后**穷举搜索在大 GEMM 上再无收益** |
+| **试过且没用**：FP8（改数值，14.61 → 7.82 ms 也不用）、persistent kernel、PDL、gated-RMSNorm 融进 GDN、它自己的 `score_cached` 前缀缓存（**1205 ms，慢 10 倍**） | 见它 README 的 rejected 一节 |
+
+**为什么绝大部分搬不过来**：
+
+- **前缀树对它成立，对 Laya 不成立。** 它的共享文本在**前缀**，模型是自回归式线性注意力，长上下文
+  可以把"前缀的最终递归状态"交给每个候选；Laya 的共享文本是**后缀**（
+  `[CLS] head [SEP] options [SEP] state [SEP]`），编码器是**双向**的，把 state 挪到前面会改变每个
+  token 的位置与注意力——那不是加速，那是换了模型（与 `design-review.md §2-D9` 同类）。
+  而且 playground 的贪吃蛇每请求只发**一个** question，它自己的报告也说前缀树"主要加速多问题请求"。
+  §4.2 那张生成表里 p95 超过 400 ms 的行是**3 问**配置：把两个数字当成同一件事，会把 HTTP 与
+  排队开销算到前向头上。
+- **CUDA Graph / 融合内核 / cuBLASLt 调优 / split-K / FP8 在 CPU 上没有对应物。** 它的瓶颈是
+  "CPU 发射 kernel 太慢"（launch bound，它报告里明说"CPU 发完指令的那一刻 GPU 也算完了"）；
+  Kunpeng 上的瓶颈是算力本身。两者的优化方向相反，它 26% 的 graph 收益几乎全部来自发射开销。
+- **它只处理单请求**（`server.py` 一把锁），与 Decis 的串行调度一致，没有可借鉴的并发做法。
+- **"按形状编译/捕获"与 `/v1/systemone` 必须是纯函数（§3-11）冲突**，除非只在 `/readyz` 之前
+  按形状预热；那是另一个引擎的工作量，不是配置能打开的开关。
+
+**可以接着往下想的（全部没有数据）**：
+
+1. **算子在 CPU 上的融合**（`torch.compile`，或合并 q/k/v、gate/up 投影）。它 Phase 1 的
+   `torch.compile` 是唯一原则上可搬的一条，但上游 `laya/agent.py` 明确关掉了编译
+   （注释说对 Laya 的批大小是净损失、某些平台会挂）。要动它，先得有一次剖面测量说明时间花在哪——
+   而 `benchmarks/results/` 里**没有任何 profile**：已知的只有"每问成本随问题数先降 2.4 倍、再上升"，
+   这既可能是每次调用的固定开销，也可能是形状效应，现有数据说不清是哪一种。
+2. **`measure()` 与 `predict()` 各自分词一次**（`src/decis/engines/laya.py` 两处），可以先量再合并。
+3. **服务层**：访问日志缓冲、`TCP_NODELAY`。后者 asyncio 已经默认开启（
+   `_SelectorSocketTransport` 构造时 `set_nodelay`），前者只在"日志写到网络盘"的场景下量到过收益，
+   本机不成立。
+
+**结论**：以"是否提升推理速度"衡量，这份清单对**当前 CPU fp32 的 Laya 路径几乎无可搬之物**——
+能搬的都是服务层小项，量级低于现有扫描的分辨率。真正缺的是**一次剖面测量**，而不是某个技巧。
+任何后续尝试都要按 §8 走：原型引擎 → `decis bench` → `benchmarks/results/*.json` →
+`benchmarks/report.py --write`，并由它写出文档里的数字。
+
 ---
 
 ## 3. 逐条对照项目期望
@@ -246,3 +299,4 @@ device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 - [Laya 模型卡](https://huggingface.co/convaiinnovations/laya)、[PyPI laya](https://pypi.org/project/laya/)、[laya GitHub](https://github.com/NandhaKishorM/laya)
 - 本地安装的 `laya` 0.3.5：`laya/agent.py`、`laya/common.py`
 - [laya-mlx](https://github.com/mizorewww/laya-mlx)（本地 `/data/src/github.com/mizorewww/laya-mlx`）：`pyproject.toml`、`laya_mlx/agent.py`、`tests/conftest.py`、`benchmarks/report.py`、`BENCHMARKS.md`、`docs/*_RESEARCH.md`
+- [open-jev-fast](https://github.com/lyuyiqi/open-jev-fast)（本地 `/data/src/github.com/lyuyiqi/open-jev-fast`）：`README.md`、`docs/src/make_public_en.py`（报告正文）、`src/server.py`、`src/fastmodel.py`、`results/*.json`、`bench/logs/**`、`THIRD_PARTY_NOTICES.md`。**注意**：它引用的 Hydragen / SGLang RadixAttention / SpecInfer / FlashAttention-2 / CUTLASS 都只作为**思路**来源，实现是它自己写的；Decis 只引用这条"哪些思路在别的硬件上有效"的判断，不引它的任何数字
