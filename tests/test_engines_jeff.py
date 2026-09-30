@@ -26,6 +26,7 @@ directory, because the parts of it that can be wrong without weights are the par
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -130,6 +131,50 @@ def test_both_checkpoints_are_registered_under_their_own_ids() -> None:
         assert SPECS[engine_id].target == "decis.engines.jeff:JeffQwenEngine" or SPECS[engine_id].target == (
             "decis.engines.jeff:JeffGemmaEngine"
         ), "the registry stores a string path, so nothing heavy is imported to list it"
+
+
+def test_the_declared_python_floor_has_one_number() -> None:
+    """`registry.EngineSpec.python_min` and `jeff.MIN_PYTHON` must not drift.
+
+    They are read by different callers -- `decis models` (which may not import the engine
+    module) and `load()`'s own error -- so both need the number, and this is the guard that
+    keeps two copies of it from disagreeing. `pyproject.toml`'s marker is the third copy;
+    `test_the_extra_declares_every_required_module` reads that one.
+    """
+    assert jeff_module.MIN_PYTHON == (3, 12), "the floor is a fact about the vendored code, checked below"
+    for engine_id in (QWEN, GEMMA):
+        assert SPECS[engine_id].python_min == jeff_module.MIN_PYTHON
+
+
+def test_the_python_floor_is_why_this_needs_312() -> None:
+    """The declared floor is *derived from* the vendored sources, not copied from a changelog.
+
+    Parsing each vendored file with the grammar of the interpreter one minor version below
+    the floor must fail, and parsing it with the floor's grammar must succeed. Both halves
+    matter and they point in opposite directions: if upstream ever drops the PEP 695 aliases
+    the floor could be lowered, and if it ever adds 3.13 syntax the floor has to rise -- and
+    a test that only asserted `MIN_PYTHON == (3, 12)` would sit there green through both.
+
+    `feature_version` is what makes this checkable on *any* interpreter, which is the point:
+    on a 3.14 CI leg `sys.version_info` says nothing is wrong, and the 3.11 leg would have
+    discovered the problem only as a SyntaxError from an unrelated conventions test.
+    """
+    vendored = sorted((Path(jeff_module.__file__).parent / "_jeff_vendor").glob("*.py"))
+    assert vendored, "the vendored serving code is the reason this engine has a floor at all"
+
+    unparsable = []
+    for path in vendored:
+        source = path.read_text(encoding="utf-8")
+        try:
+            ast.parse(source, filename=str(path), feature_version=(3, 11))
+        except SyntaxError:
+            unparsable.append(path.name)
+        if sys.version_info >= jeff_module.MIN_PYTHON:
+            ast.parse(source, filename=str(path), feature_version=jeff_module.MIN_PYTHON)
+    assert unparsable, (
+        "no vendored file needs 3.12 -- if that is now true, lower MIN_PYTHON and the "
+        "`python_version` marker in pyproject.toml instead of leaving a floor nothing justifies"
+    )
 
 
 def test_the_aliases_resolve_and_do_not_collide() -> None:
@@ -562,6 +607,53 @@ def test_predict_refuses_to_run_unloaded() -> None:
         engine.predict([])
 
 
+def test_load_on_an_older_interpreter_names_the_interpreter_not_a_syntax_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On 3.11 the vendored package is a `SyntaxError` three frames down, once torch is there.
+
+    `sys.version_info` is what the engine reads, so faking it is how this runs on any
+    interpreter -- including the 3.12+ legs, where the real thing would never take the branch.
+    The message must name the floor and the interpreter, and must not be the dependency
+    message: on 3.11 the extra is deliberately not installed (`pyproject.toml`), so "no torch
+    module" would be a true sentence pointing at a remedy that cannot work.
+    """
+    from decis.errors import EngineUnavailableError
+
+    monkeypatch.setattr(sys, "version_info", (3, 11, 16))
+    engine = create(QWEN)
+    with pytest.raises(EngineUnavailableError) as raised:
+        engine.load()
+    message = str(raised.value)
+    assert "Python 3.12" in message and "3.11.16" in message
+    assert "uv sync --extra jeff" not in message, "the remedy for a missing extra is not this"
+
+
+def test_status_reports_the_python_floor_before_the_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`decis models` is the first thing a user runs; it must name the real cause.
+
+    Measured on 3.11 (2026-09-30) before this was added: both Jeff rows read
+    `deps missing   uv sync --extra jeff   (no torch, transformers, ... module)` -- and that
+    command installs nothing on 3.11, so the reported remedy could not change the outcome.
+    """
+    from decis.engines.registry import status
+
+    monkeypatch.setattr(sys, "version_info", (3, 11, 16))
+    reported = status(QWEN)
+    assert reported.usable is False
+    assert reported.summary == "needs Python 3.12+"
+    assert "3.11.16" in reported.remedy
+    assert "PEP 695" in reported.remedy, "the one line has to say why, not just that"
+
+    # And at the floor the same call is about weights or deps, never about Python: on a 3.12
+    # interpreter the branch must not fire (asserted by *setting* the version rather than by
+    # undoing the patch, which on a real 3.11 leg would assert the opposite of the truth).
+    monkeypatch.setattr(sys, "version_info", (3, 12, 0))
+    assert status(QWEN).summary != "needs Python 3.12+"
+
+
 def test_a_distribution_that_does_not_match_the_options_is_rejected() -> None:
     """An engine bug, not a client error: it must not reach the wire as a strange answer."""
     model = FakeModel()
@@ -637,6 +729,12 @@ def stub_vendor(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(jeff_module, "_jeff_vendor", stub, raising=False)
     monkeypatch.setitem(sys.modules, "decis.engines._jeff_vendor", stub)
     monkeypatch.setitem(sys.modules, "torch", _Torch())
+    # Pretend this interpreter meets the floor. On a 3.11 leg the real vendored package cannot
+    # even be parsed, so `load()` refuses before it reaches the stub -- but *this* stub is
+    # exactly the stand-in for a package that can be imported. What the tests below are about
+    # (wiring `Settings` into the loader) is version-independent, and the version-specific
+    # behaviour has its own test, `test_load_on_an_older_interpreter_names_the_interpreter...`.
+    monkeypatch.setattr(jeff_module, "MIN_PYTHON", sys.version_info[:2])
     recorded["stub"] = stub
     return recorded
 

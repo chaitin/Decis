@@ -38,6 +38,27 @@ hash is what the guard checks, and the upstream hash is what makes the rewrite
 falsifiable (`tests/test_jeff_vendor.py -m network` re-fetches the pinned files,
 applies exactly this substitution, and compares the bytes).
 
+## The edit we could *not* make: this package needs Python 3.12
+
+`types.py` uses seven PEP 695 `type X = ...` aliases. That syntax is 3.12+, and Decis
+supports 3.11 (`requires-python`), so on 3.11 this file does not parse and the whole
+package is unimportable -- not a missing feature, a dead engine. CI found it on the 3.11
+leg as a `SyntaxError` from a conventions test (`docs/design-review.md §2-D31`).
+
+Rewriting the aliases the way the imports were rewritten does **not** work, and that is
+worth recording here because it is the obvious next idea: the aliases are recursive
+(`type JSONValue = ... | list[JSONValue] | dict[str, JSONValue]`), which PEP 695 evaluates
+lazily. A plain `JSONValue: TypeAlias = ... | list[JSONValue]` is evaluated at module
+execution and raises `NameError`, and turning the inner references into strings stops
+being a mechanical rewrite -- at which point the upstream hash above could no longer be
+checked.
+
+So the floor is declared instead of edited away: `engine/jeff.py: MIN_PYTHON` and
+`registry.EngineSpec.python_min` say `(3, 12)`, `pyproject.toml`'s `jeff` extra carries a
+`python_version >= '3.12'` marker, and `tests/test_engines_jeff.py` derives the number from
+these files with `ast.parse(..., feature_version=(3, 11))`. Nothing in this directory
+changed.
+
 ## Why vendor instead of depending on jeff
 
 - **jeff is not on PyPI.** The distribution name in its `pyproject.toml` is `jeff`, so a
@@ -95,3 +116,8 @@ sha256sum src/decis/engines/_jeff_vendor/{model.py,decoder.py,types.py,LICENSE}
 Then update the table above, the `REVISION` constant in `engines/jeff.py`, and the
 `NOTICE` entry -- and run the `weights` suite, because a `model.py` bump can change
 numerics.
+
+Also re-check the Python floor (`MIN_PYTHON` / `EngineSpec.python_min` / the marker in
+`pyproject.toml`): a new tag may use newer syntax, and `tests/test_engines_jeff.py`
+asserts the declared floor against the grammar of these files, so a mismatch is a red
+test rather than a user's `SyntaxError`.

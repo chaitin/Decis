@@ -52,6 +52,14 @@ uv sync --extra dev --extra kev     # only kev-0.8b
 uv sync --extra dev --extra jeff    # both Jeff checkpoints
 ```
 
+The two Jeff engines need **Python 3.12 or newer**; the project itself still supports 3.11,
+and the published images run 3.13. The reason is the vendored serving code: it uses PEP 695
+`type` aliases (`_jeff_vendor/types.py`), which do not even parse before 3.12, and they are
+recursive — `JSONValue` contains `list[JSONValue]` — so they cannot be rewritten for 3.11 the
+way that copy's imports were. The `jeff` extra therefore carries a `python_version >= '3.12'`
+marker and installs nothing on 3.11, and `decis models` reports `needs Python 3.12+` instead
+of naming a module that the extra would never install (`docs/design-review.md §2-D31`).
+
 ## Capacity
 
 Each engine reports its own limits, and the only place they are published is `GET /v1/models`

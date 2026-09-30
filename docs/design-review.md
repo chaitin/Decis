@@ -1035,6 +1035,76 @@ helper 存在的理由是"钉住引擎真正喂给模型的那串文本"，而�
 
 ---
 
+### D31（高，已修正）在项目自己声明的 Python 3.11 上，两个 Jeff 引擎连 import 都做不到
+
+**发现方式**：推送后 CI 红了，而且**只红一条腿**：
+
+```
+lint + tests (ubuntu-latest, py3.11): FAILED tests/test_conventions.py::test_engines_never_import_the_http_layer
+  File ".../src/decis/engines/_jeff_vendor/types.py", line 8
+    type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
+  SyntaxError: invalid syntax
+```
+
+3.12 / 3.13 / macOS 三条腿全绿。本地两个环境（`.venv`、`.scratch/venv`）都是 **3.14**，两套测试
+都没碰过这条路径——§7 的"两个环境"说的是**依赖**这一维，这里是**解释器版本**那一维。
+
+**根因**：`pyproject.toml` 声明 `requires-python = ">=3.11"`，而 `_jeff_vendor/types.py` 用了 7 处
+PEP 695 的 `type X = ...`（`types.py:8-12` 与 `Question`/`Answer`），那是 3.12 才有的语法。3.11 上
+这个文件**编译不过**，于是整个 `_jeff_vendor` 包无法 import：不是"少个功能"，是这个引擎根本起不来。
+CI 之所以只有 conventions 那条测试发现，是因为它用 `ast.parse` 扫引擎目录——所有**真正加载**引擎
+的测试都挂在 `-m weights` 后面，在无权重环境里是 skip。
+
+复现（两种都记下来，因为第二种不需要装 3.11）：
+
+```
+$ uv run --python 3.11 python -c "compile(open('src/decis/engines/_jeff_vendor/types.py').read(), 'types.py', 'exec')"
+3.11 cannot compile it: invalid syntax (line 8)
+
+$ python3.14 -c "import ast; ast.parse(open('.../types.py').read(), feature_version=(3, 11))"
+SyntaxError: Type statement is only supported in Python 3.12 and greater (line 8)
+```
+
+**为什么不能像 import 那样机械改写**：这已经是唯一一份非逐字节复制的 vendored 代码（绝对自引用
+改相对引用，`tests/test_jeff_vendor.py` 双向钉住）。可惜同一套办法在这里不成立：那些别名是**递归**的
+（`JSONValue` 的定义里含 `list[JSONValue]`），PEP 695 的别名**惰性求值**才能自引用；换成
+`JSONValue: TypeAlias = ... | list[JSONValue]` 会在模块执行时 `NameError`，改成字符串前向引用就不再是
+机械改写，那条逐字节守卫也就废了。**结论：floor 是上游代码的事实，不能靠改写消掉，只能声明。**
+
+**修法**：把 floor 放在能回答"这台机器能不能跑"的那个模块（§2 的唯一事实来源），并让三条路径都说
+同一件事：
+
+| 位置 | 作用 |
+|---|---|
+| `registry.EngineSpec.python_min = (3, 12)` | `status()` 在**依赖检查之前**报 `needs Python 3.12+` / `this interpreter is 3.11.16   (the vendored serving code uses PEP 695 type aliases)` |
+| `jeff.MIN_PYTHON` | `load()` 在 import vendored 之前抛 `EngineUnavailableError`，而不是三帧之下冒出 `invalid syntax (types.py, line 8)` |
+| `pyproject.toml` 的 `python_version >= '3.12'` marker | 3.11 上**根本不装**那套几个 GB 的依赖（实测：`uv pip install ".[jeff]"` 在 3.11 上只装 decis 自己） |
+
+修前的 3.11 实测（`decis models`）：两个 Jeff 行报 `deps missing   uv sync --extra jeff   (no torch, …)`。
+两处都错：原因是 Python，而补救命令在 3.11 上装不到任何东西。现在两行报的是 floor 与解释器版本。
+
+**守卫**（三条，方向不同）：
+
+- `test_the_declared_python_floor_has_one_number`：`registry` 与 `jeff.py` 的两个数字一致；
+- `pyproject.toml` 的 marker 由已有的 `test_the_extra_declares_every_required_module` 顺带读出来
+  （它按 `[<>=!\[;]` 切分依赖字符串，marker 不会迷惑它）；
+- `test_the_python_floor_is_why_this_needs_312`：**从 vendored 源码本身**把 floor 推出来——低一个
+  小版本的语法必须解析失败、floor 的语法必须成功。这条在 3.14 的腿上也有效，所以 floor 被悄悄删掉
+  或上游加了 3.13 语法，都会在**每一条腿**上红，而不是等某条腿的 `SyntaxError`。
+
+顺带修掉的一处：`test_engines_never_import_the_http_layer` 原来绕过 `_modules()` 自己去
+`rglob("*.py")`，把 vendored 树也解析了。文件头已经写明 vendored 树豁免（字节都改不了，命中也不可
+行动），现在这条测试也照办，理由写在注释里。
+
+**代价与教训**：**"两个环境都跑过"必须带上解释器版本这一维。** 本地两个环境都是 3.14，而 CI 有
+3.11/3.12/3.13 三条腿，于是这个缺陷是**推送后**才发现的——如果 CI 只跑最新解释器（很常见），它会
+直接进 release。修后实测：3.11 `794 passed / 69 skipped`、3.14 两个环境各 `818 passed / 64 skipped`
+（`.venv` 无 extra、`.scratch/venv` 带真实 torch/transformers/torchvision）。顺带一条经验：
+`ast.parse(..., feature_version=(3, 11))` 让"某个文件需要更新的语法"这件事**在任何解释器上都能断言**，
+比"等那条老腿自己撞上"要可靠得多。
+
+---
+
 ## 3. 标准符合性对照
 
 用户问"是否尊重标准"。逐条对照，**包括我们有意不遵守的地方**：

@@ -224,7 +224,12 @@ def test_registry_does_not_import_engine_modules() -> None:
 def test_engines_never_import_the_http_layer() -> None:
     http_modules = {"fastapi", "starlette", "uvicorn", "decis.routes", "decis.app", "decis.service"}
     offenders = []
-    for path in (PACKAGE / "engines").rglob("*.py"):
+    # Vendored trees are skipped here for the reason in the header (`_kev_vendor`/`_jeff_vendor`
+    # are exempt, and byte-pinned: we could not act on a hit anyway) *and* for a mechanical one:
+    # `_jeff_vendor/types.py` is PEP 695 syntax, so on 3.11 `ast.parse` raises before any import
+    # could be judged. That the file needs 3.12 is a fact about the Jeff engines, and it has its
+    # own guard -- `test_engines_jeff.py: test_the_python_floor_is_why_this_needs_312`.
+    for path in sorted(p for p in (PACKAGE / "engines").rglob("*.py") if not _is_vendored(p)):
         for node in ast.walk(_tree(path)):
             module = None
             if isinstance(node, ast.ImportFrom) and node.module:

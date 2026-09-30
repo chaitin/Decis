@@ -9,6 +9,7 @@ without the other engine's dependencies present (AGENTS.md §6).
 from __future__ import annotations
 
 import importlib
+import sys
 from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING
@@ -26,6 +27,14 @@ class EngineSpec:
     target: str  # "module:ClassName" -- never imported at module import time
     extra: str  # the pyproject extra that provides its dependencies
     aliases: tuple[str, ...] = ()
+    #: Interpreter floor, when the engine's own code needs more than `requires-python`
+    #: (which is the project's floor, 3.11). Declared here because "can this engine run
+    #: here?" is this module's question, and reported *before* the dependency check --
+    #: on an interpreter below the floor the extra is deliberately not installed at all
+    #: (`pyproject.toml`), so "no torch module" would name the wrong cause and the wrong
+    #: remedy. `engines/jeff.py: MIN_PYTHON` is the same number for the loader's own
+    #: error message; `tests/test_engines_jeff.py` asserts the two agree.
+    python_min: tuple[int, int] | None = None
 
 
 #: Model names that mean "whatever default this server runs", rather than naming a
@@ -124,17 +133,26 @@ SPECS: dict[str, EngineSpec] = {
     # `weights()` declares `bases=()`. Two ids rather than one, because they are two
     # architectures with different option ceilings: `jeff-qwen3.5-0.8b` was trained on
     # 254 options, `jeff-gemma4-e2b` on 26.
+    #
+    # Both need Python 3.12: the vendored serving code uses PEP 695 `type` aliases, and
+    # they are recursive (`types.py: JSONValue = ... | list[JSONValue]`), which is why the
+    # package cannot simply be rewritten for 3.11 the way its imports were
+    # (`design-review.md §2-D31`). The published images run 3.13, so this only affects a
+    # source install on 3.11 -- which is why it is a per-engine floor and not a change to
+    # `requires-python`.
     "jeff-qwen3.5-0.8b": EngineSpec(
         id="jeff-qwen3.5-0.8b",
         target="decis.engines.jeff:JeffQwenEngine",
         extra="jeff",
         aliases=("jeff", "jeff-qwen", "jeff-qwen3.5"),
+        python_min=(3, 12),
     ),
     "jeff-gemma4-e2b": EngineSpec(
         id="jeff-gemma4-e2b",
         target="decis.engines.jeff:JeffGemmaEngine",
         extra="jeff",
         aliases=("jeff-gemma", "jeff-gemma4"),
+        python_min=(3, 12),
     ),
 }
 
@@ -248,6 +266,19 @@ def status(engine_id: str, settings: Settings | None = None) -> EngineStatus:
     from ..paths import missing_requirements, resolve
 
     resolved = settings if settings is not None else load_settings()
+
+    floor = SPECS[engine_id].python_min
+    if floor is not None and sys.version_info[:2] < floor:
+        # The interpreter string comes from the same `sys.version_info` that was just
+        # compared, not from `platform.python_version()`: one fact, one source, and the
+        # message then cannot name a version the check did not look at.
+        running = ".".join(str(part) for part in sys.version_info[:3])
+        return EngineStatus(
+            engine_id,
+            False,
+            f"needs Python {floor[0]}.{floor[1]}+",
+            f"this interpreter is {running}   (the vendored serving code uses PEP 695 type aliases)",
+        )
 
     try:
         engine = create(engine_id)

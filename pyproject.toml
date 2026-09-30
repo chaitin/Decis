@@ -54,7 +54,22 @@ kev = ["torch>=2.6", "transformers>=5.0", "peft>=0.18", "accelerate>=1.0", "safe
 # time. So the load fails before any tensor is read. Measured, not assumed: this extra
 # shipped without torchvision for one round and `tests/test_jeff_inference.py` was the
 # only thing that noticed (2026-09-30, torchvision 0.29.0 + torch 2.14.0).
-jeff = ["torch>=2.6", "transformers>=5.0", "torchvision>=0.20", "safetensors>=0.4", "pillow>=10", "huggingface_hub>=0.30"]
+#
+# The `python_version` marker is the other half of the same honesty: the vendored serving
+# code uses PEP 695 `type` aliases (`_jeff_vendor/types.py`), which do not *parse* before
+# 3.12, so on 3.11 this extra would install a multi-gigabyte stack that cannot be imported.
+# The marker keeps it from being installed there at all, and `decis models` then says
+# "needs Python 3.12+" instead of "no torch module" -- `registry.EngineSpec.python_min` owns
+# the number, `docs/engines.md` explains it (`design-review.md §2-D31`). The project's own
+# floor stays 3.11: the other four engines work there, and the images run 3.13.
+jeff = [
+  "torch>=2.6; python_version >= '3.12'",
+  "transformers>=5.0; python_version >= '3.12'",
+  "torchvision>=0.20; python_version >= '3.12'",
+  "safetensors>=0.4; python_version >= '3.12'",
+  "pillow>=10; python_version >= '3.12'",
+  "huggingface_hub>=0.30; python_version >= '3.12'",
+]
 # Reserved: the `remote` engine and the `/metrics` endpoint are not implemented yet
 # (see docs/design.md §11). These extras are declared so the dependency choice is
 # recorded, but `uv sync --extra remote` currently buys you nothing.

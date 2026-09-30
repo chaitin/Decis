@@ -43,6 +43,20 @@ each engine will run.
 
 ### Fixed
 
+- **Both Jeff engines now say they need Python 3.12 instead of failing on 3.11 with a syntax
+  error, and say why.** The vendored serving code uses PEP 695 `type` aliases (including recursive
+  ones, which cannot be rewritten without breaking the two-way hash check in
+  `tests/test_jeff_vendor.py`), so `import decis.engines._jeff_vendor` is a `SyntaxError` on 3.11 —
+  an interpreter this project declares support for (`requires-python = ">=3.11"`) and tests in CI.
+  The first push of these engines was therefore red on the 3.11 leg while both local environments
+  (3.14) were green, and `decis models` on 3.11 blamed a missing dependency and recommended
+  `uv sync --extra jeff`, which installs nothing there. The floor now has one home per layer —
+  `EngineSpec.python_min` for `registry.status`, `jeff.MIN_PYTHON` for the `load()` guard, a
+  `python_version >= '3.12'` marker on the extra's dependencies — and `decis models` reports
+  `needs Python 3.12+   this interpreter is 3.11.16   (the vendored serving code uses PEP 695
+  type aliases)`. Guards: `tests/test_engines_jeff.py` pins the three numbers together and
+  derives the floor from the vendored sources with `ast.parse(..., feature_version=(3, 11))`
+  instead of trusting a hand-written constant (`docs/design-review.md §2-D31`).
 - **A sharded checkpoint that is only half on disk is no longer called ready.**
   `paths.checkpoint_root` accepted any directory holding the engine's marker file, which is
   enough for a single-file checkpoint and wrong for a sharded one: `model.safetensors.index.json`

@@ -47,6 +47,13 @@ uv sync --extra dev --extra kev     # 只装 kev-0.8b
 uv sync --extra dev --extra jeff    # 两个 Jeff checkpoint
 ```
 
+两个 Jeff 引擎需要 **Python 3.12 或更新**；项目本身仍支持 3.11，已发布的镜像跑的是 3.13。
+原因是 vendored 的推理代码：它用了 PEP 695 的 `type` 别名（`_jeff_vendor/types.py`），在 3.12
+之前**连解析都过不去**，而且这些别名是递归的（`JSONValue` 里含 `list[JSONValue]`），所以没法像
+那份拷贝的 import 一样改写成 3.11 能读的形式。因此 `jeff` extra 带 `python_version >= '3.12'`
+marker，在 3.11 上什么都不装，`decis models` 报的是 `needs Python 3.12+` 而不是"缺某个模块"
+——那个模块在这个 extra 里本来就不会被装上（`docs/design-review.md §2-D31`）。
+
 ## 容量
 
 每个引擎上报自己的上限，而它们唯一发布的地方是 `GET /v1/models`（在 `decis` 命名空间下）。

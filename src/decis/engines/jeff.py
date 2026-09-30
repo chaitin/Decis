@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -102,6 +103,22 @@ CHECKPOINT_DATE = "2026-09-29"
 #: requires the Torchvision library` while being imported -- so the load fails before a
 #: single tensor is read, from a code path that never touches a video.
 _REQUIRES = ("torch", "transformers", "torchvision", "safetensors", "PIL")
+
+#: The interpreter this engine needs, because the vendored serving code uses PEP 695 `type`
+#: aliases (`_jeff_vendor/types.py:8-12`, and `Question`/`Answer` below them). On 3.11 that
+#: file is a `SyntaxError`, so the *package* cannot be imported at all -- not "a feature is
+#: missing", the whole engine. The project's own floor stays 3.11 (`requires-python`) and the
+#: published images run 3.13, so this is a per-engine floor: `registry.EngineSpec.python_min`
+#: carries the same number for `decis models`, and `tests/test_engines_jeff.py` asserts the
+#: two agree so neither can drift.
+#:
+#: Why not rewrite the aliases the way the imports were rewritten (that is the one edit this
+#: vendor copy already carries): they are **recursive** (`JSONValue` contains
+#: `list[JSONValue]`), which PEP 695 evaluates lazily and a plain `TypeAlias` assignment
+#: cannot express without turning them into strings. A mechanical rewrite would therefore
+#: stop being mechanical, and `tests/test_jeff_vendor.py` would have to give up pinning the
+#: vendored text against upstream (`design-review.md §2-D31`).
+MIN_PYTHON = (3, 12)
 
 #: What one checkpoint is made of. Both repositories also carry videos and README assets
 #: that an inference server has no use for; listing the files is what keeps
@@ -240,6 +257,18 @@ class JeffEngine(DecisionEngine):
         """
         if self._loaded:
             return
+        if sys.version_info[:2] < MIN_PYTHON:
+            # Before the dependency check and before the import below: on an older
+            # interpreter the vendored package is a `SyntaxError`, which would surface as
+            # "invalid syntax (types.py, line 8)" from three frames down.
+            floor = ".".join(str(part) for part in MIN_PYTHON)
+            running = ".".join(str(part) for part in sys.version_info[:3])
+            raise EngineUnavailableError(
+                f"The {self._id} engine needs Python {floor} or newer; this interpreter is "
+                f"{running}. Its vendored serving code uses PEP 695 type aliases "
+                f"(_jeff_vendor/types.py), which are a syntax error before 3.12. The project itself "
+                f"still supports 3.11 for the other engines."
+            )
         try:
             import torch
         except ImportError as exc:  # pragma: no cover - exercised by the fast suite

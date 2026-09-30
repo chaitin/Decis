@@ -85,6 +85,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 「调用方原始 JSON 原样交给需要它的引擎」 | `domain.PreparedQuestion.raw` / `PreparedRequest.raw_state` / `WorkItem.raw_state`，由 `render.py` 填 | 引擎自己去解析请求体；把扁平化后的文本当成 `raw`（Jeff 的提示词是 `json.dumps`，喂错不报错、只是答案变差） |
 | `--model-path ENGINE=PATH` 的语法与别名规范化 | `src/decis/cli.py: _parse_model_paths`（规范化后写进 `Settings.model_paths`） | 引擎自己解析命令行参数；用把引擎 id 编进**变量名**的方式做覆盖（点号在变量名里没有表示法，见 §9） |
 | 第三方 vendored 副本的字节 | `src/decis/engines/_kev_vendor/`、`src/decis/engines/_jeff_vendor/`，各自带 `VENDOR.md` | 就地改 vendored 代码；re-vendor 时不一起改 `VENDOR.md` / `NOTICE` / 守卫里的 sha256 |
+| 「某个引擎需要哪个 Python 版本」 | `src/decis/engines/registry.py: EngineSpec.python_min`（`jeff.MIN_PYTHON` 是同一数字给 `load()` 用的那份，`pyproject.toml` 的 marker 是给包管理器的那份） | 三处各写一个数字而不加守卫；把"vendored 代码需要更新的语法"报成"缺依赖"（Jeff 要 3.12，`design-review.md §2-D31`；守卫 `tests/test_engines_jeff.py` 把三处钉在一起，并用 `ast.parse(feature_version=…)` 把 floor **从 vendored 源码推出来**） |
 | 把渲染片段排成**某个引擎自己的序列** | 该引擎（并优先用它上游库的函数，如 Laya 的 `build_sequence`） | 在 `render.py` 里重写某个模型的序列格式——那是对上游内部的复制，保证会漂移（`design.md §4.1` 的 Stage 1 修正） |
 | `noul` 的选项名 `"false"/"true"` | `src/decis/render.py: noul_options` | 任何地方写字面量 `Option("false", …)` |
 | 「这个请求会被吃掉多少 token」（容量校验的**测量**） | 各引擎的 `DecisionEngine.measure` | 用 `len(text)//4` 估算一个会截断的引擎；在 `render.py` 里猜某个模型的 head 开销 |
@@ -189,6 +190,9 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 
 1. 在 `src/decis/engines/<name>.py` 实现 `DecisionEngine`：`info()` / `load()` / `predict()` / `close()`。
 2. 在 `registry.py` 注册：id → `"module:ClassName"`（**字符串路径，惰性 import**）+ 可选依赖 extra 名。
+   若引擎自己的代码需要比 `requires-python` 更高的解释器（Jeff：3.12，因为 vendored 语法），
+   填 `EngineSpec.python_min`，并在 extra 的依赖上加同样的 `python_version` marker：`status()` 会在
+   依赖检查之前报 floor，否则会报"缺依赖"并给一条在低版本上装不出东西的补救命令（`design-review.md §2-D31`）。
 3. 在 `pyproject.toml` 加 extra：`<name> = [...]`。**引擎的重依赖只能出现在 extra 里**，不能进 `[project.dependencies]`。
 4. 实现 `weights()`（声明权重来源、pin 的 commit、体积）与 `measure()`。`EngineInfo` 必须诚实声明 `max_options`、`max_sequence_tokens`、`max_question_tokens`、`max_state_tokens`、`primitives`、`device`、`dtype`。
    - **`max_sequence_tokens` 是"state + 一个问题"的总预算**，不是 state 单独的预算。state 与 head 共享同一条序列，分开检查会让两边都合规、合起来超长的请求被静默截断（`design.md §4.1`）。
@@ -279,6 +283,8 @@ uv run decis serve --engine jeff-qwen3.5-0.8b --host 127.0.0.1
 #   18.5 GiB，加载过程中的 bf16 → fp32 转换是另算的），所以 24 GB 以下的机器会开始换页；
 #   `-m weights` 默认只加载 Qwen 那个，连它一起测要显式 `DECIS_TEST_JEFF_GEMMA=1`，
 #   而且**分两半跑**（两个引擎同时常驻 ≈ 26 GiB，一台 31 GB 的机器放不下）
+#   两个 Jeff 引擎要 **Python 3.12+**（vendored 代码用了 PEP 695 别名，改不掉，见 §2-D31）：
+#   低于 floor 时 `decis models` 报 `needs Python 3.12+`，extra 的 marker 让 3.11 上不装依赖
 ```
 
 需要让**某一个**引擎读你自己的目录时用 `--model-path ENGINE=PATH`（`serve` / `models` / `doctor`
@@ -392,7 +398,16 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 - 有额外依赖的环境（`uv sync --extra dev --extra laya`）会发现上面那类 bug，
   但会漏掉"依赖缺失时的提示是否清楚"，因为那时依赖是齐的。
 
-所以提交前的最低要求是：`.venv`（无 extra）与 `.scratch/venv`（真实 `laya`）各跑一次全量。
+- **解释器版本也算一维**：CI 跑 3.11 / 3.12 / 3.13 三条腿，而本地默认只有一条（当前是 3.14）。
+  `design-review.md §2-D31` 就是这么漏的：vendored 代码里的 PEP 695 语法在 3.11 上直接
+  `SyntaxError`，两个本地环境全绿，只有 CI 的 3.11 腿红了。接引擎或改 vendored 之后，在项目
+  floor（`requires-python`，当前 3.11）上真跑一次：
+  `uv python install 3.11 && uv venv --python 3.11 .scratch/venv311 && uv pip install -e ".[dev]"`，
+  然后跑全量。没有 3.11 解释器时，`ast.parse(..., feature_version=(3, 11))` 也能把"这个文件需要
+  更新的语法"在任何解释器上断言出来。
+
+所以提交前的最低要求是：`.venv`（无 extra）与 `.scratch/venv`（真实 `laya`）各跑一次全量，
+外加至少一次项目 floor 上的解释器。
 写测试时不要假设自己在哪个环境里——**不要断言 `laya` 没被安装、不要假设会走网络、
 不要假设别的测试没 import 过 torch**。需要"某个模块不存在"就挑一个真的不存在的名字，
 需要判断环境就 `pytest.skip` 并说清理由。**给配方一个最小 `PATH` 的 fixture，要把配方可能
@@ -534,6 +549,14 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   `laya.Agent(repo_id)` 没有 `revision`，于是日志承诺 pin、实际读 `main`，同一个模型 id 在不同时间
   给出不同答案）。走 `paths.fetch_checkpoint`，它用 `download_arguments` 带 pin 取权重、用
   `checkpoint_root` 验证拿到的目录真能被读到，再把**目录**交给上游
+- ❌ 在项目声明支持的 Python 上让引擎直接 `SyntaxError`，或把"代码需要更新的语法"报成"缺依赖"
+  （`design-review.md §2-D31`：`_jeff_vendor/types.py` 用了 PEP 695 别名，项目写着
+  `requires-python = ">=3.11"`、CI 也有 3.11 腿，于是 3.11 上连 `import` 都过不去——而
+  `decis models` 当时报的是 `deps missing   uv sync --extra jeff`，那条命令在 3.11 上装不出任何东西）。
+  floor 声明在 `registry.EngineSpec.python_min`，extra 的依赖带同样的 `python_version` marker，
+  引擎自己的报错也用同一个数字；守卫要**从 vendored/引擎源码本身**推出来
+  （`ast.parse(..., feature_version=(3, 11))` 必须失败、floor 的语法必须成功），不能只在最新解释器上
+  跑一遍就宣称测过
 
 ---
 
