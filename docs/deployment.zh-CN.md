@@ -16,12 +16,13 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 |---|---|---|
 | `chaitin/decis:laya-multilingual`（= `:latest`） | 默认引擎及其 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
 | `chaitin/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已烤进镜像 | 6.0 GB / 6.2 GB |
-| `chaitin/decis:jeff-qwen3.5-0.8b` | Qwen3.5-0.8B 的 Jeff 微调，已烤进镜像（1.61 GiB 权重） | 未实测 |
-| `chaitin/decis:jeff-gemma4-e2b` | Gemma 4 E2B 的 Jeff 微调，已烤进镜像（8.65 GiB 权重） | 未实测 |
+| `chaitin/decis:jeff-qwen3.5-0.8b` | Qwen3.5-0.8B 的 Jeff 微调，已烤进镜像（1.61 GiB 权重） | 5.9 GB / 6.0 GB |
+| `chaitin/decis:jeff-gemma4-e2b` | Gemma 4 E2B 的 Jeff 微调，已烤进镜像（8.65 GiB 权重） | 17.7 GB / 17.9 GB |
 
-两个 Jeff 行里的数字是**权重**的体积，那个是实测的；压缩后的镜像体积不是，因为这两个 tag 还没
-构建过、也没拉下来跑过——预期 Gemma 那个会是这里最大的镜像，它在同一个基座之上多烤进 8.65 GiB
-权重。两者也都会发布下面说的不带权重的 `jeff-*-runtime` 变体；如果你更想挂卷，走那条路。
+那四个 Jeff 数字是 2026-09-30 工作流第一次构建这两个 tag 后，从已发布 tag 的 registry manifest
+里读出来的。Gemma 那个如预期是这里最大的镜像：在同一个基座之上多烤进 8.65 GiB 权重。**未实测**：
+这两个 tag 的容器从来没起过，所以它们的冷启动与容器内加载都还是未知。两者也都会发布下面说的不带
+权重的 `jeff-*-runtime` 变体；如果你更想挂卷，走那条路——但那个变体也没被拉下来跑过。
 
 `chaitin/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
 以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。`make build-playground`

@@ -11,7 +11,7 @@ clone 仓库走到第一个答案。部署见[部署](deployment.zh-CN.md)；线
 
 | | |
 |---|---|
-| Python | 3.11 或更高版本，以及 [uv](https://docs.astral.sh/uv/) |
+| Python | 3.11 或更高版本，以及 [uv](https://docs.astral.sh/uv/)。两个 Jeff 引擎需要 3.12+；`decis models` 会直接这么说，而不是报成缺依赖。 |
 | 磁盘 | 默认引擎的权重约 650 MiB，另加 Python 环境 |
 | 内存 | 加载后常驻几个 GiB，峰值 RSS 是权重文件的数倍。容器要按[性能](performance.zh-CN.md)里的实测数字来定，而不是按下载体积。 |
 | GPU | 可选；本文的一切都在 CPU 上跑 |

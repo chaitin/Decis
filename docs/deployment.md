@@ -17,14 +17,16 @@ All engines share one Docker Hub repository; the engine is the tag:
 |---|---|---|
 | `chaitin/decis:laya-multilingual` (= `:latest`) | The default engine and its 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
 | `chaitin/decis:kev-0.8b` | The kev adapter and its Qwen3.5 base, baked in | 6.0 GB / 6.2 GB |
-| `chaitin/decis:jeff-qwen3.5-0.8b` | The Qwen3.5-0.8B Jeff fine-tune, baked in (1.61 GiB of weights) | not measured |
-| `chaitin/decis:jeff-gemma4-e2b` | The Gemma 4 E2B Jeff fine-tune, baked in (8.65 GiB of weights) | not measured |
+| `chaitin/decis:jeff-qwen3.5-0.8b` | The Qwen3.5-0.8B Jeff fine-tune, baked in (1.61 GiB of weights) | 5.9 GB / 6.0 GB |
+| `chaitin/decis:jeff-gemma4-e2b` | The Gemma 4 E2B Jeff fine-tune, baked in (8.65 GiB of weights) | 17.7 GB / 17.9 GB |
 
-The two Jeff rows are the size the **weights** take, which is measured; the compressed image
-size is not, because these tags have not been built or pulled yet — expect the Gemma one to be
-by far the largest image here, since it bakes 8.65 GiB of weights on top of the same base. Both
-also publish the weightless `jeff-*-runtime` variant described below, and the weightless path
-is the one to use if you would rather mount a volume.
+The four Jeff numbers were read from the registry manifests of the published tags on
+2026-09-30, when the workflow built them for the first time. Gemma is the largest image here by
+a wide margin, as expected: 8.65 GiB of weights on top of the same base. **Not measured**: a
+container built from either tag has never been started, so their cold start and in-container load
+are unknown. Both also publish the weightless `jeff-*-runtime` variant described below, and the
+weightless path is the one to use if you would rather mount a volume, but that variant has not
+been pulled and run either.
 
 `chaitin/decis:playground` is the third image in the same repository, built and pushed by the
 same workflow: three browser games and the proxy that fronts them, with no model weights and

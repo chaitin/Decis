@@ -53,6 +53,8 @@ from decis.engines.registry import SPECS, canonical, create
 from decis.render import prepare_request
 from decis.schema import SystemOneRequest
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 QWEN = "jeff-qwen3.5-0.8b"
 GEMMA = "jeff-gemma4-e2b"
 
@@ -322,8 +324,14 @@ def test_the_extra_declares_every_required_module() -> None:
     that is missing from the *extra* is never noticed by the fast suite. Measured: the
     `jeff` extra shipped without `torchvision` and only the weights suite caught it
     (2026-09-30). This assertion is the cheap guard that runs in CI.
+
+    `pyproject.toml` is found from this file, not from `jeff_module.__file__`: a
+    non-editable install of `decis` (which is what `uv pip install ".[jeff]"` does when it
+    is used to check the marker) puts `__file__` under site-packages, and the walk up from
+    there lands in the virtualenv. The test only exists in a checkout, so its own path is
+    the honest anchor.
     """
-    pyproject = tomllib.loads((Path(jeff_module.__file__).parents[3] / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     declared = {
         re.split(r"[<>=!\[;]", dependency, maxsplit=1)[0].strip().lower()
         for dependency in pyproject["project"]["optional-dependencies"]["jeff"]

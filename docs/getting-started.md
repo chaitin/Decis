@@ -12,7 +12,7 @@ decision model. This page takes you from a clone to a first answer. For deployme
 
 | | |
 |---|---|
-| Python | 3.11 or newer, with [uv](https://docs.astral.sh/uv/) |
+| Python | 3.11 or newer, with [uv](https://docs.astral.sh/uv/). The two Jeff engines need 3.12+; `decis models` says so instead of blaming a missing dependency. |
 | Disk | ~650 MiB of weights for the default engine, plus the Python environment |
 | Memory | A few GiB resident once loaded, and peak RSS is several times the weight files. Size a container from the measured figures in [Performance](performance.md), not from the download size. |
 | GPU | optional; everything here runs on CPU |

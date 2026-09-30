@@ -1323,7 +1323,7 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 | 8 | SBOM / provenance | **已实现**：推送的构建腿带 `sbom=true` + `provenance=mode=max`（§3） |
 | 9 | `remote` 引擎转发真 jev 的合规性（用户自有 key） | **未评估**，需要时再确认 ToS |
 | 10 | `jeff-gemma4-e2b` 的真实加载与推理 | **两个都测了**（`tests/test_jeff_inference.py`，`-k <engine>` 各 18 项全过，2026-09-30，CPU 无 GPU）。Gemma 的加载实测 139 s、峰值 RSS **23.8 GiB**（`/usr/bin/time -v` 的 max RSS，24,915,744 KiB；`fp32` 权重本身 18.5 GiB，差值来自 bf16 → fp32 的转换），Qwen 的峰值 **5.3 GiB**；一次三问题的 `predict` 分别 4.4 s / 30.1 s，但**那两个数字是一次未入库的探针观测（而且 CPU 当时被并发的测试占着），不作为基准使用**（§8）。两个引擎的 weights 套**分两半跑**，因为同时常驻约 26 GiB，这台 31 GiB 的机器放不下；这一点本身也记在 `docs/engines.md` 的 Memory 一节 |
-| 11 | 两个 Jeff 引擎镜像的构建、体积与容器内冷启动 | **未测**：tag 已进工作流矩阵，但没构建过也没拉下来跑过（`docs/deployment.md` 的体积列写的是"未实测"） |
+| 11 | 两个 Jeff 引擎镜像的构建、体积与容器内冷启动 | **构建与体积已测**（2026-09-30 工作流首次构建并推送；体积取自已发布 tag 的 registry manifest：Qwen amd64 5.9054 GB / arm64 6.0471 GB，Gemma amd64 17.7453 GB / arm64 17.8870 GB，已记入 `docs/deployment.md`）。**容器内冷启动仍未测**：这两个 tag 从来没被拉下来起过容器 |
 | 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。Qwen 与 Gemma 各只有一次探针观测（4.4 s / 30.1 s，三问题一批，CPU 被并发测试占着），要报就得进 `benchmarks/results/` |
 
 ---
