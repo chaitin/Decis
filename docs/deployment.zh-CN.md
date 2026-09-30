@@ -16,6 +16,12 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 |---|---|---|
 | `chaitin/decis:laya-multilingual`（= `:latest`） | 默认引擎及其 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
 | `chaitin/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已烤进镜像 | 6.0 GB / 6.2 GB |
+| `chaitin/decis:jeff-qwen3.5-0.8b` | Qwen3.5-0.8B 的 Jeff 微调，已烤进镜像（1.61 GiB 权重） | 未实测 |
+| `chaitin/decis:jeff-gemma4-e2b` | Gemma 4 E2B 的 Jeff 微调，已烤进镜像（8.65 GiB 权重） | 未实测 |
+
+两个 Jeff 行里的数字是**权重**的体积，那个是实测的；压缩后的镜像体积不是，因为这两个 tag 还没
+构建过、也没拉下来跑过——预期 Gemma 那个会是这里最大的镜像，它在同一个基座之上多烤进 8.65 GiB
+权重。两者也都会发布下面说的不带权重的 `jeff-*-runtime` 变体；如果你更想挂卷，走那条路。
 
 `chaitin/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
 以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。`make build-playground`
@@ -34,9 +40,9 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 就是默认引擎。每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。注册的 `laya`（英文）
 与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
-release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会生成
-`laya-multilingual-v<version>` 与 `kev-0.8b-v<version>`——当前 release 是
-`laya-multilingual-v0.3.2`——以及下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
+release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会为矩阵里的每个引擎生成
+`<engine>-v<version>`——当前 release 是 `laya-multilingual-v0.3.2` 与 `kev-0.8b-v0.3.2`——以及
+下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
 对应的 GitHub Release。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，所以要钉住的
 是带版本的 tag。
 

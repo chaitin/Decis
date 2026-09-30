@@ -37,6 +37,13 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "docker-build.yml"
 DOCKERFILE = ROOT / "docker" / "Dockerfile"
 
+#: Every engine the workflow images on a branch push. Pinned as a literal rather than
+#: derived, because this is the set of *published tags*: `chaitin/decis:jeff-gemma4-e2b`
+#: appearing in Docker Hub is a promise, and it should take a deliberate edit here to
+#: start making it. `test_the_published_engines_are_the_workflows_own_list` then checks
+#: this literal against the workflow's own array, so the two cannot drift apart.
+PUBLISHED_ENGINES = {"laya-multilingual", "kev-0.8b", "jeff-qwen3.5-0.8b", "jeff-gemma4-e2b"}
+
 yaml = pytest.importorskip("yaml", reason="pyyaml is needed to read the workflow; it is not a runtime dependency")
 
 
@@ -117,11 +124,26 @@ def push_to_master(tmp_path: Path, plan_script: str) -> dict:
 
 def test_a_branch_push_builds_every_engine_for_both_architectures(push_to_master: dict) -> None:
     engines = {build["engine"] for build in push_to_master["builds"]}
-    assert engines == {"laya-multilingual", "kev-0.8b"}, engines
+    assert engines == PUBLISHED_ENGINES, engines
     arches = {build["arch"] for build in push_to_master["builds"]}
     assert arches == {"amd64", "arm64"}, arches
     assert push_to_master["push"] == "true"
     assert push_to_master["tag"] == "latest"
+
+
+def test_the_published_engines_are_the_workflows_own_list(plan_script: str) -> None:
+    """`PUBLISHED_ENGINES` is checked against the array that produces the matrix.
+
+    Otherwise the expectation is a memory of the workflow, and the way this fails is the
+    quiet one: an engine is added to `all_engines`, the literal is updated by reflex, and
+    nobody notices that `extra_for` has no case for it until a release build stops with
+    "no pip extra is mapped".
+    """
+    match = re.search(r"^\s*all_engines=\(([^)]*)\)", plan_script, flags=re.MULTILINE)
+    assert match, "the plan step no longer declares an `all_engines` array"
+    assert set(match.group(1).split()) == PUBLISHED_ENGINES, (
+        f"the workflow would image {sorted(match.group(1).split())} but this file expects {sorted(PUBLISHED_ENGINES)}"
+    )
 
 
 def test_a_branch_push_bakes_the_weights_in(push_to_master: dict) -> None:
@@ -156,7 +178,7 @@ def test_weights_are_never_baked_for_an_engine_that_has_none(tmp_path: Path, pla
     for build in plan["builds"]:
         assert build["bake"] in ("", build["engine"]), build
     baked = {build["engine"] for build in plan["builds"] if build["bake"]}
-    assert baked == {"laya-multilingual", "kev-0.8b"}, baked
+    assert baked == PUBLISHED_ENGINES, baked
 
     # ...and baking needs the engine's extra: `decis download` verifies its work through
     # `paths.resolve`, which needs the engine installed. An engine-free leg that asked for
@@ -199,12 +221,14 @@ def test_dispatch_inputs_are_honoured(tmp_path: Path, plan_script: str) -> None:
         EVENT="workflow_dispatch",
         REF="refs/heads/master",
         REF_NAME="master",
-        INPUT_ENGINES="laya-multilingual kev-0.8b",
+        # Includes a dotted engine id: `--model-path` and the compose profile both carry
+        # ids verbatim now, so nothing may quietly normalise the dot away on this path.
+        INPUT_ENGINES="laya-multilingual kev-0.8b jeff-qwen3.5-0.8b",
         INPUT_RUNTIME="true",
         INPUT_PUSH="true",
     )
     engines = {build["engine"] for build in plan["builds"]}
-    assert engines == {"laya-multilingual", "kev-0.8b"}, engines
+    assert engines == {"laya-multilingual", "kev-0.8b", "jeff-qwen3.5-0.8b"}, engines
     assert {build["variant"] for build in plan["builds"]} == {"baked", "runtime"}
     assert plan["push"] == "true"
 
@@ -269,7 +293,7 @@ def test_the_planned_extra_matches_the_registry(push_to_master: dict) -> None:
     shipped = {name for name, spec in SPECS.items() if not spec.target.startswith("fixture_engine")}
 
     planned = {build["engine"]: build["extra"] for build in push_to_master["builds"]}
-    assert set(planned) == {"laya-multilingual", "kev-0.8b"}, sorted(planned)
+    assert set(planned) == PUBLISHED_ENGINES, sorted(planned)
     for engine, extra in planned.items():
         assert engine in shipped, f"{engine} is in the workflow but not the registry"
         assert SPECS[engine].extra == extra, (
@@ -582,6 +606,10 @@ def test_no_two_engines_publish_the_same_provenance_tag(build_meta_script: str, 
         ("laya-multilingual", "runtime"),
         ("kev-0.8b", "baked"),
         ("kev-0.8b", "runtime"),
+        ("jeff-qwen3.5-0.8b", "baked"),
+        ("jeff-qwen3.5-0.8b", "runtime"),
+        ("jeff-gemma4-e2b", "baked"),
+        ("jeff-gemma4-e2b", "runtime"),
     ):
         for arch in ("amd64", "arm64"):
             out = tmp_path / f"{engine}-{variant}-{arch}"

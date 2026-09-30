@@ -10,8 +10,61 @@ each engine will run.
 
 ## [Unreleased]
 
+### Added
+
+- **Two more engines: `jeff-qwen3.5-0.8b` and `jeff-gemma4-e2b`.** Both are fine-tunes of
+  [jeff](https://github.com/firelex/jeff) (MIT, vendored as a minimal subset — see `NOTICE`),
+  a prefill-only decision-model family: one readout over the last hidden state, a per-checkpoint
+  answer vocabulary and a fitted softmax temperature from `decision_config.json`. The Qwen one
+  is 1.61 GiB of weights, the Gemma one 8.65 GiB, each baked into its own image tag. `jeff`,
+  `jeff-qwen` and `jeff-qwen3.5` are aliases for the Qwen checkpoint; `jeff-gemma` and
+  `jeff-gemma4` for the Gemma one.
+- **The caller's own JSON now reaches engines that were trained on it.**
+  `PreparedQuestion` gained `raw`, `PreparedRequest` gained `raw_state`, and `WorkItem` carries
+  `raw_state`. Jeff prompts with `json.dumps(state)` and the criteria object as written, not with
+  the flattened `key: value` text `render.py` produces for the classification-family engines —
+  and a fine-tune fed the flattened form does not error, it just answers worse. The flattened
+  path is unchanged for every existing engine. This is the one recorded exception to "adding an
+  engine never changes `render.py`" (`AGENTS.md §5`).
+- **`--model-path ENGINE=PATH`** on `serve`, `models` and `doctor` (repeatable, aliases
+  accepted), replacing the per-engine `DECIS_MODEL_PATH_<ENGINE_ID>` variables.
+- The `jeff` extra, plus the two new tags in the workflow matrix, the `docker-compose.yml`
+  profiles, `.env.example` and the playground's engine picker.
+
+### Removed
+
+- **`DECIS_MODEL_PATH_<ENGINE_ID>` is gone, and reading it never worked for most ids.** The
+  variable *name* had to encode the engine id, and no variable name can hold the dot in
+  `kev-0.8b`: `config.py` normalised the suffix to `kev-0-8b`, found no such registered engine,
+  and **dropped the override without a word**. Every Jeff id contains a dot, so the form was
+  removed rather than documented around — `--model-path ENGINE=PATH` puts the id in the value,
+  where it can be spelled exactly, canonicalises aliases in `cli._parse_model_paths`, and reports
+  an unknown id as a `ConfigError` instead of doing nothing (`docs/design-review.md §2-D27`).
+
 ### Fixed
 
+- **A sharded checkpoint that is only half on disk is no longer called ready.**
+  `paths.checkpoint_root` accepted any directory holding the engine's marker file, which is
+  enough for a single-file checkpoint and wrong for a sharded one: `model.safetensors.index.json`
+  arrives before the shards do, so an interrupted `decis download --dest`, a `cp` that ran out of
+  disk, or a partly synced volume produced a directory that `decis models` called **ready** while
+  the loader raised `FileNotFoundError` for a shard nobody was told to expect. Found by pointing a
+  load probe at the Gemma Jeff checkpoint while its 8.65 GiB were still arriving
+  (`docs/design-review.md §2-D29`). The new `paths.missing_shards` reads the checkpoint's own
+  `weight_map` and requires every file it names, so an incomplete local copy now falls through to
+  the Hub fetch it was shadowing, and `decis download` says which files are missing instead of
+  suggesting you look for `config.json`, which is there.
+- **The `jeff` extra did not install `torchvision`, and the load failed without it.**
+  `AutoProcessor.from_pretrained` builds every sub-processor the checkpoint's
+  `processor_config.json` names; the Qwen checkpoint descends from Qwen3-VL, so that file names a
+  `Qwen3VLVideoProcessor`, and that class raises `ImportError: ... requires the Torchvision
+  library` while being imported — before any weight is read, from a path that never touches a
+  video. "It is a text-only model, so the image dependency is not needed" was a conclusion drawn
+  from reading code, and the weights suite disproved it on the first real load
+  (`docs/design-review.md §2-D28`). The new fast guard,
+  `tests/test_engines_jeff.py::test_the_extra_declares_every_required_module`, reads the extra
+  out of `pyproject.toml` and compares it with `WeightSpec.requires`, so the two lists cannot
+  drift again in the environment where the dependency is not installed.
 - **A `NO_PROXY` entry written as a bracketed IPv6 literal stopped every weight download.**
   `httpx` builds a `URLPattern` for each bypass entry and does not recognise `[::1]` as an
   address, so it takes the domain branch, builds `all://*[::1]`, and raises

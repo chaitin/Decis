@@ -308,10 +308,11 @@ Laya 没有这个问题：它只有一个约束（`max_len`），state 按剩余
 `DecisionModel(meta.base, ...)`（`checkpoint.py:127-128`），于是无论适配器从哪来，基座都只会
 按 repo id 去 Hub 找（缓存命中或联网）。
 
-实测后果：用户若把基座单独下到本地目录、用 `DECIS_MODEL_PATH_KEV_0_8B` 指过去，**基座那份
-配置不会生效**——引擎仍然去 Hub 要 `Qwen/Qwen3.5-0.8B-Base`。离线机器上只要缓存里有基座就没
-问题（`decis download` 正是把它放进缓存的，`paths.BaseModel` 那条路径刻意不带 `local_dir`），
-所以这不是"离线不可用"，而是"**挂载基座不生效**"。
+实测后果：用户若把基座单独下到本地目录、用 `--model-path kev-0.8b=<目录>` 指过去（写这条缺陷
+时那个覆盖还是环境变量 `DECIS_MODEL_PATH_KEV_0_8B`，它后来被 D27 删掉了），**基座那份配置不会
+生效**——引擎仍然去 Hub 要 `Qwen/Qwen3.5-0.8B-Base`。离线机器上只要缓存里有基座就没问题
+（`decis download` 正是把它放进缓存的，`paths.BaseModel` 那条路径刻意不带 `local_dir`），所以
+这不是"离线不可用"，而是"**挂载基座不生效**"。
 
 **为什么现在不修**：修它要动 vendored 的 `checkpoint.py`，而那份文件是逐字节复制、有 sha256
 守卫、且刻意不做本地修改的（`VENDOR.md`）。可行的修法有两条，都留到真要支持"挂载自定义基座"
@@ -884,6 +885,156 @@ pin 和实际读到的权重是三件不同的事。
 
 ---
 
+### D27（中，已修正）单引擎权重覆盖写成环境变量，对任何带点号的引擎 id 都静默失效
+
+**发现方式**：接 Jeff 时准备注册 `jeff-qwen3.5-0.8b` / `jeff-gemma4-e2b`，`config.py` 的
+`DECIS_MODEL_PATH_<ENGINE_ID>` 读法要求把 id 规范化成环境变量名（大写 + 非字母数字换成 `_`）。
+`kev-0.8b` 已经在文档里被写成"可覆盖"，但它规范化后是 `KEV_0_8B`——**一个从未被读回的键**。
+
+**根因**：环境变量名是一套比引擎 id 更小的字母表。归一化是**双射失败**：id → 变量名是满射，
+反向不成立，而代码只做正向。`config._model_paths()` 遍历 `os.environ` 里的 `DECIS_MODEL_PATH_*`，
+把后缀小写化后拿去和 `SPECS` 比对：`kev-0-8b` 不在注册表里，于是**丢弃**。没有警告，没有日志，
+覆盖不生效，用户看到的是"我明明指了目录还是去联网下载"。
+
+**代价**：与 D11 叠加时最难查——用户按文档把基座下到本地、用那个变量指过去，覆盖被丢弃，引擎
+去 Hub 要基座；如果缓存里恰好有，一切看起来正常，于是"文档说的功能"在用户侧从没生效过。
+
+**修法**：**删除这套变量，改成命令行参数 `--model-path ENGINE=PATH`**（可重复，
+`serve` / `models` / `doctor` 都有）。id 放进**值**里，于是点号只是 id 的一部分，不需要编码；
+别名在 `cli._parse_model_paths` 里规范化（`jeff` 与 `jeff-qwen3.5-0.8b` 等价），未知 id
+直接是 `ConfigError` 而不是空操作。`Settings.model_paths` 因此成了**只由 CLI 填充**的字段，
+`config.py` 不再从环境变量里猜。
+
+**代价与边界**：命令行参数进不了 `.env`/compose 的 `environment:`——这正是要点：那套变量形式
+"看起来能配"，实际不能；宁可让"没有这个开关"一眼可见（compose 用户走挂载目录 + 引擎 id 子目录，
+那条路一直是好的）。`--model-path` 也**不**作用于基座（见 D11）：它只定位一个引擎自己的目录。
+
+守卫：`tests/test_paths.py::test_the_environment_cannot_carry_a_per_engine_override`（真的把三个
+`DECIS_MODEL_PATH_*` 塞进 `monkeypatch.setenv` 再断言它们**不被采纳**）、
+`tests/test_docs.py::test_the_documented_per_engine_override_is_a_flag_whose_engine_exists`
+（任何面向读者的页面都不许再出现 `DECIS_MODEL_PATH_*`，且每个 `--model-path` 示例里的引擎
+都能解析）、`tests/test_engines_jeff.py`（别名规范化走到 `cli._parse_model_paths`）。
+
+**教训**：把用户数据编码进**标识符**时，"翻译不过去"必须报错，不能丢。这里的两侧（id 与变量名）
+都是我们自己造的，中间那层编码却没有任何守卫，于是它错了一整轮都没人发现——因为错的形态是
+"什么也没发生"。
+
+---
+
+### D28（中，已修正）"纯文本所以不需要 torchvision"：一个从未被加载过的 extra 写下的断言
+
+**发现方式**：Jeff 的权重套测试第一次真的加载 Qwen checkpoint，`AutoProcessor.from_pretrained`
+在读到任何张量之前抛 `ImportError: Qwen3VLVideoProcessor requires the Torchvision library`。
+
+**根因**：Qwen 那个 checkpoint 的 processor 是 `Qwen3VLProcessor`（继承自 Qwen3-VL），它的
+`processor_config.json` 里列着 `video_processor_type: Qwen3VLVideoProcessor`，而
+`AutoProcessor.from_pretrained` 会**急切地构造配置里列出的每一个子 processor**。那个类在
+**被 import 时**就要求 torchvision。于是"这是一条纯文本路径"这个判断在模块导入层面就不成立：
+torchvision 与是否发送图片无关，只与"配置文件里提到了一个视频 processor"有关。
+
+**代价**：`pyproject.toml` 的 `jeff` extra 少一个依赖，而**没有任何快速测试会碰它**——快速套
+刻意不 import vendored 包（`.venv` 里没有 torch/PIL）。这个错误在 CI 上表现为全绿，
+在用户那里表现为"按文档装好 extra，模型加载不起来"。
+
+**修法**：`jeff` extra 加 `torchvision>=0.20`，`_REQUIRES` 加 `torchvision`，
+`EngineUnavailableError` 的文案跟上；`docs/design.md §7.2`、`docs/engines{,.zh-CN}.md` 里
+"torchvision 故意不装"的说法全部改成实测结论。
+
+守卫：`tests/test_engines_jeff.py::test_the_extra_declares_every_required_module`——
+从 `pyproject.toml` **读出** `jeff` extra 的依赖名，逐条对照 `WeightSpec.requires`
+（模块名→发行名的映射是一个关于 PyPI 的事实，不是配置的副本）。这条守卫的价值在于它跑在
+**无权重**环境里：它检查的是"两份清单是否一致"，不需要 torchvision 真的存在。
+`tests/test_jeff_inference.py` 是第二道：真的加载一次。
+
+**教训**："这个依赖我们用不到"是一个可以由**代码阅读**得出的结论，但结论的正确性取决于上游
+愿意在 import 期做多少事。凡是"没有实测过就没有发言权"的依赖判断，都要有一个**能在 CI 里跑**
+的对照——这里就是"两份清单必须一致"这条不需要权重也能跑的断言。
+
+---
+
+### D29（中，已修正）分片权重"下到一半"被判成 ready：marker 在，分片不在
+
+**发现方式**：本机下载 8.65 GiB 的 `jeff-gemma4-e2b` 期间，顺手用刚下到的那份目录做加载探针，
+得到 `FileNotFoundError: .../model-00001-of-00002.safetensors`。此时目录里
+`decision_config.json`、`readout.safetensors`、`model.safetensors.index.json` 都在，
+**只有分片在陆续到达**。
+
+**根因**：`paths.checkpoint_root` 的"这是个 checkpoint 吗"只问一件事——`WeightSpec.marker`
+在不在。对**单文件** checkpoint 这够了（Laya 的 `rl_agent_config.json`、kev adapter 的三个文件），
+但分片 checkpoint 是**先到清单、后到分片**：`*.safetensors.index.json` 里 `weight_map` 已经
+写着两个分片，而第二个还不存在。于是 `resolve` 报 `local`、`decis models` 报 **ready**，
+真加载时异常从 `transformers` 深处抛出来，指着一个没人被告知过要等的文件。触发条件不少：
+下载中途断网/按了 Ctrl-C、`cp` 到一半磁盘满、卷同步到一半、`--dest` 的目录还没拷完。
+
+**代价**：与 D26 第一条同源——"端口开了不等于能答"的权重版本。`decis models` 是运维和启动脚本
+用来决定"要不要把流量发过来"的命令，它说 ready 而加载器崩溃，比说 `needs weights` 糟得多。
+更糟的是它会**盖住网络那条路**：本地永远优先于是安全性质（离线镜像靠它），但一份半拷贝的目录
+让这个性质变成"一份坏的本地副本赢过一份好的远端副本"。
+
+**修法**：`paths.missing_shards(root)` —— 读 checkpoint 自己的 `*.safetensors.index.json`，
+`weight_map` 点到的文件挨个查在不在（清单本身读不出来也算不合格，因为一份读不懂的清单无法为
+这个目录背书）。`checkpoint_root` 现在要**两条**都过。不检查 `expected_bytes` 是因为那是每个
+checkpoint 手写的数字、会漂移，而 index 是**加载器真正会去打开的那份清单**，不可能和它不一致。
+`decis download` 失败时的文案分成两种（`cli._why_unusable`）：缺 marker 说"期待找到 X"，
+缺分片说"清单里有 N 个文件不在，重新下载"——后者才是那个用户需要知道的事。
+
+**实测确认**（就在那台机器上、那份真的下到一半的目录上）：`resolve` 从 `local` 变成
+`hub mstrasser/Jeff-Gemma4-E2B@e3de3e99…`，`missing_shards` 报出
+`['model-00002-of-00002.safetensors']`。也就是说这份目录现在会**回退到网络取完整的那份**，
+而不是被当成可用权重。
+
+守卫：`tests/test_paths.py` 五条——缺分片不算 checkpoint、分片齐全算、清单读不出来不算、
+单文件 checkpoint 不受影响、以及半拷贝的挂载目录必须回退到 `hub`。
+
+**教训**：`marker` 这种"一个文件代表整体"的判据，在**分片**存在时就不成立了，而它的失效形态
+恰好是"更晚、更远、更难懂的那个错误"。判断"这份权重完整吗"时，要问的是**加载器接下来会打开
+哪些文件**，而不是"最能代表这个 checkpoint 的那个文件在不在"。
+
+---
+
+### D30（中，已修正）测试自己重建提示词，于是第二个 checkpoint 上守卫的是**另一条**渲染路径
+
+**发现方式**：给 Gemma 那个 checkpoint 跑 weights 套（`DECIS_TEST_JEFF_GEMMA=1`，
+`-k jeff-gemma4-e2b`），**14 项通过、4 项失败**，失败全部在"提示词里是什么"这一类断言上：
+
+```
+AttributeError: 'GenericDecoderDecisionModel' object has no attribute 'processor'
+```
+
+**根因**：两个上游 loader 渲染提示词的方式**不一样**，而测试里的 `prompt_of()` 只写了其中一种：
+
+| | Qwen（`_jeff_vendor/model.py`） | Gemma（`_jeff_vendor/decoder.py`） |
+|---|---|---|
+| 文本从哪来 | `self.processor.apply_chat_template(messages, …, enable_thinking=False)`（`:213`） | `self.chat_text(messages)` → `self.tokenizer.apply_chat_template(…)`（`:105`） |
+| user 轮 | 原样的多模态 content | **被改写**成只剩最后一个 part 的 `text`（`:118-120`） |
+| 分词 | `self.processor(text=…, images=…)` | `self.tokenizer(…, add_special_tokens=False)`（`:121`） |
+| 属性 | 有 `.processor` | **只有 `.tokenizer`**（`:53`） |
+
+于是 `prompt_of()` 对 Gemma 直接 `AttributeError`。**这不是"测试少写一个分支"那么简单**：那个
+helper 存在的理由是"钉住引擎真正喂给模型的那串文本"，而它钉的是**Qwen 那条路**。更值得记的是，
+我为它配的那条守卫——`test_the_engine_tokenises_the_prompt_this_suite_asserts_on`——**自己也走的
+`decision_messages` + `processor.apply_chat_template` 这份镜像**，所以它在 Qwen 上永远是绿的，
+在 Gemma 上直接崩。守卫与被守卫的东西共用同一个错误假设时，它守不住任何东西。
+
+**代价**：Gemma 是第二个 Jeff checkpoint，接它的意义之一就是"证明 `render.py` 之外的那层兼容层
+不是为一个模型写死的"。这个 helper 让 weights 套在第二个模型上红成一片，而**红的理由是测试自己
+写错了**——比绿得可疑更糟：它把"引擎能不能跑"和"测试写得对不对"混在同一个信号里，第一反应会是
+"Gemma 不支持"，而实际上 14 项（含真实推理、批不变性、超长拒绝、readout 接线）都是过的。
+
+**修法**：不再在测试里**重建**提示词，而是从引擎**自己 token 化出来的 `input_ids`** 读回来
+（`tokenizer.decode(prepare([row]).inputs["input_ids"][0])`）。镜像被删掉，两个 loader 的模板差异
+就再也无法让测试断言的文本与实际发送的文本分叉——这正是那条守卫原本想达到的效果，现在它是
+结构性的而不是断言性的。守卫 `test_the_engine_tokenises_the_prompt_this_suite_asserts_on` 保留，
+但断言改成"从 ids 里读回来的文本含有 `describe(state)`、不含 `state_text`"，也就是**对两个引擎
+都成立的那件事**。
+
+**教训**：测试里"自己拼一份被测系统会拼的东西"就是 §2 说的第二处实现，**在提示词这种多模型
+格式上尤其危险**：两个真实 checkpoint 的模板路径不同，第一个模型上用这份镜像写下的断言会全绿，
+第二个模型上暴露出来的却是一个测试 bug。凡是"引擎实际发出去的字节"这类断言，都要从**引擎自己
+的产物**（token id、请求体、日志）读回来，而不是重算一遍。
+
+---
+
 ## 3. 标准符合性对照
 
 用户问"是否尊重标准"。逐条对照，**包括我们有意不遵守的地方**：
@@ -1101,6 +1252,9 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 | 7 | Qwen3 世代 kev 在 CPU 上是否可用 | **未测**。若可用，可能是 CPU 镜像更好的默认选择 |
 | 8 | SBOM / provenance | **已实现**：推送的构建腿带 `sbom=true` + `provenance=mode=max`（§3） |
 | 9 | `remote` 引擎转发真 jev 的合规性（用户自有 key） | **未评估**，需要时再确认 ToS |
+| 10 | `jeff-gemma4-e2b` 的真实加载与推理 | **两个都测了**（`tests/test_jeff_inference.py`，`-k <engine>` 各 18 项全过，2026-09-30，CPU 无 GPU）。Gemma 的加载实测 139 s、峰值 RSS **23.8 GiB**（`/usr/bin/time -v` 的 max RSS，24,915,744 KiB；`fp32` 权重本身 18.5 GiB，差值来自 bf16 → fp32 的转换），Qwen 的峰值 **5.3 GiB**；一次三问题的 `predict` 分别 4.4 s / 30.1 s，但**那两个数字是一次未入库的探针观测（而且 CPU 当时被并发的测试占着），不作为基准使用**（§8）。两个引擎的 weights 套**分两半跑**，因为同时常驻约 26 GiB，这台 31 GiB 的机器放不下；这一点本身也记在 `docs/engines.md` 的 Memory 一节 |
+| 11 | 两个 Jeff 引擎镜像的构建、体积与容器内冷启动 | **未测**：tag 已进工作流矩阵，但没构建过也没拉下来跑过（`docs/deployment.md` 的体积列写的是"未实测"） |
+| 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。Qwen 与 Gemma 各只有一次探针观测（4.4 s / 30.1 s，三问题一批，CPU 被并发测试占着），要报就得进 `benchmarks/results/` |
 
 ---
 

@@ -40,6 +40,29 @@ services:
         DECIS_ENGINE: kev-0.8b
         DECIS_PREDOWNLOAD: kev-0.8b
 
+  jeff-qwen3.5-0.8b:
+    image: decis-local:jeff-qwen3.5-0.8b
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DECIS_EXTRAS: jeff
+        DECIS_ENGINE: jeff-qwen3.5-0.8b
+        DECIS_PREDOWNLOAD: jeff-qwen3.5-0.8b
+
+  # ~8.65 GiB of weights in the baked variant, so a local build of this one is slow and
+  # large. Set `DECIS_PREDOWNLOAD: ""` here (or build the `-runtime` image) if you want the
+  # weightless variant and intend to mount or download the checkpoint yourself.
+  jeff-gemma4-e2b:
+    image: decis-local:jeff-gemma4-e2b
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DECIS_EXTRAS: jeff
+        DECIS_ENGINE: jeff-gemma4-e2b
+        DECIS_PREDOWNLOAD: jeff-gemma4-e2b
+
   # A different Dockerfile, because the playground is not an engine image: it installs no
   # engine extra and imports no `decis`. It is in this file for the same reason the engines
   # are -- a checkout builds what it runs, so `docker compose up` does not depend on a

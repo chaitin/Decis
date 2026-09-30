@@ -11,9 +11,13 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from functools import cache
+from typing import TYPE_CHECKING
 
 from ..errors import InvalidRequestError
 from .base import DecisionEngine, EngineInfo
+
+if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
+    from ..config import Settings
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,22 @@ SPECS: dict[str, EngineSpec] = {
         target="decis.engines.laya:LayaTypedDecisionsEngine",
         extra="laya",
         aliases=("decis-laya-typed-decisions",),
+    ),
+    # Jeff checkpoints are full-weight fine-tunes (no base model to fetch), so
+    # `weights()` declares `bases=()`. Two ids rather than one, because they are two
+    # architectures with different option ceilings: `jeff-qwen3.5-0.8b` was trained on
+    # 254 options, `jeff-gemma4-e2b` on 26.
+    "jeff-qwen3.5-0.8b": EngineSpec(
+        id="jeff-qwen3.5-0.8b",
+        target="decis.engines.jeff:JeffQwenEngine",
+        extra="jeff",
+        aliases=("jeff", "jeff-qwen", "jeff-qwen3.5"),
+    ),
+    "jeff-gemma4-e2b": EngineSpec(
+        id="jeff-gemma4-e2b",
+        target="decis.engines.jeff:JeffGemmaEngine",
+        extra="jeff",
+        aliases=("jeff-gemma", "jeff-gemma4"),
     ),
 }
 
@@ -218,10 +238,16 @@ class EngineStatus:
     remedy: str = ""
 
 
-def status(engine_id: str) -> EngineStatus:
-    """Classify one engine. Never downloads and never loads weights."""
+def status(engine_id: str, settings: Settings | None = None) -> EngineStatus:
+    """Classify one engine. Never downloads and never loads weights.
+
+    `settings` is what `decis models` resolved, so a `--model-path` given on that
+    command line is reflected here; `None` means "resolve it yourself".
+    """
     from ..config import load_settings
     from ..paths import missing_requirements, resolve
+
+    resolved = settings if settings is not None else load_settings()
 
     try:
         engine = create(engine_id)
@@ -244,7 +270,7 @@ def status(engine_id: str) -> EngineStatus:
             f"uv sync --extra {extra}   (no {', '.join(absent)} module)",
         )
 
-    source = resolve(spec, load_settings())
+    source = resolve(spec, resolved)
     if source.is_local:
         return EngineStatus(engine_id, True, "ready", f"weights at {source.path}")
     # Whether a *download* is possible is a property of the checkpoint's declaration,

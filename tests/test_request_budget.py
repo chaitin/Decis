@@ -42,7 +42,7 @@ class BlockingEngine(StubEngine):
         self.calls = 0
         self._count_lock = threading.Lock()
 
-    def load(self) -> None:
+    def load(self, settings: object | None = None) -> None:
         # Skip StubEngine's work; `loaded` is what the scheduler checks.
         self._loaded = True
 

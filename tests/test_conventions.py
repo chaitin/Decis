@@ -21,20 +21,32 @@ PACKAGE = Path(__file__).resolve().parent.parent / "src" / "decis"
 REPO = PACKAGE.parent.parent
 
 
-# `engines/_kev_vendor/` holds byte-identical third-party copies; its VENDOR.md explains
-# why. Those files are exempt from the rules below because editing them to suit our
-# conventions would break the sha256 pin that makes the copy auditable -- the
-# `os.environ` and `torch` in them are upstream's, not ours. Every exemption here is a
-# hole in a rule, so `test_only_the_vendor_tree_is_exempt` keeps it from growing.
-VENDORED = PACKAGE / "engines" / "_kev_vendor"
+# `engines/_kev_vendor/` and `engines/_jeff_vendor/` hold byte-identical third-party
+# copies; their VENDOR.md explains why. Those files are exempt from the rules below
+# because editing them to suit our conventions would break the sha256 pin that makes the
+# copy auditable -- the `os.environ` and `torch` in them are upstream's, not ours. Every
+# exemption here is a hole in a rule, so `test_only_the_vendor_trees_are_exempt` keeps it
+# from growing.
+VENDORED = (PACKAGE / "engines" / "_kev_vendor", PACKAGE / "engines" / "_jeff_vendor")
+
+
+def _is_vendored(path: Path) -> bool:
+    return any(directory in path.parents for directory in VENDORED)
 
 
 def _modules(*, include_vendored: bool = False) -> list[Path]:
-    return sorted(p for p in PACKAGE.rglob("*.py") if include_vendored or VENDORED not in p.parents)
+    return sorted(p for p in PACKAGE.rglob("*.py") if include_vendored or not _is_vendored(p))
 
 
 def _source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _pyproject() -> dict:
+    """`pyproject.toml`, parsed. Some rules below are configuration and live only there."""
+    import tomllib
+
+    return tomllib.loads((PACKAGE.parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 def _tree(path: Path) -> ast.Module:
@@ -423,9 +435,7 @@ def test_the_reported_version_is_the_packaged_version() -> None:
     every response reports. Two copies of one number is a canonical-home problem (§2), and
     the failure it causes is a user comparing an image tag against `/healthz`.
     """
-    import tomllib
-
-    pyproject = tomllib.loads((PACKAGE.parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = _pyproject()
     sys.path.insert(0, str(PACKAGE.parent))
     import decis
 
@@ -434,15 +444,31 @@ def test_the_reported_version_is_the_packaged_version() -> None:
     )
 
 
-def test_only_the_vendor_tree_is_exempt_from_these_rules() -> None:
-    """Exactly one hole is cut in the rules above, it is the vendored copy, and it says so.
+def test_only_the_vendor_trees_are_exempt_from_these_rules() -> None:
+    """The holes cut in the rules above are exactly the vendored copies, and they say so.
 
     Without this, `_modules()`'s exemption could be widened to hide a Decis module from
-    every convention at once, and nothing else here would notice.
+    every convention at once, and nothing else here would notice. The first assertion is
+    the one that catches a *new* vendored copy: it is derived from what is on disk, not
+    from `VENDORED`, so adding `engines/_foo_vendor/` without declaring it here fails --
+    and the same declaration is what `pyproject.toml`'s ruff `extend-exclude` needs.
     """
-    vendored = sorted(p.relative_to(PACKAGE).as_posix() for p in PACKAGE.rglob("*.py") if VENDORED in p.parents)
-    assert vendored, "the exemption exists for engines/_kev_vendor, which has no Python files"
-    assert all(path.startswith("engines/_kev_vendor/") for path in vendored), vendored
-    # and the tree must genuinely be the vendored one, not a normal package
-    assert (VENDORED / "VENDOR.md").is_file(), "engines/_kev_vendor must document its provenance"
+    on_disk = {p.name for p in (PACKAGE / "engines").iterdir() if p.is_dir() and p.name.endswith("_vendor")}
+    assert on_disk == {directory.name for directory in VENDORED}, (
+        f"engines/ contains vendor trees {sorted(on_disk)} but the exemption list is "
+        f"{sorted(directory.name for directory in VENDORED)}; a new vendored copy must be declared in "
+        f"VENDORED here and in pyproject.toml's ruff extend-exclude"
+    )
+
+    ruff_excluded = set(_pyproject()["tool"]["ruff"]["extend-exclude"])
+    for directory in VENDORED:
+        vendored = sorted(p.relative_to(PACKAGE).as_posix() for p in PACKAGE.rglob("*.py") if directory in p.parents)
+        assert vendored, f"{directory.name} has no Python files"
+        assert all(path.startswith(f"engines/{directory.name}/") for path in vendored), vendored
+        # and the tree must genuinely be a vendored one, not a normal package
+        assert (directory / "VENDOR.md").is_file(), f"{directory.name} must document its provenance"
+        assert f"src/decis/engines/{directory.name}" in ruff_excluded, (
+            f"{directory.name} is exempt from these conventions but not from ruff; add it to "
+            f"pyproject.toml [tool.ruff] extend-exclude"
+        )
     assert _modules(include_vendored=True) != _modules(), "the exemption must actually exclude something"

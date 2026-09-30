@@ -119,7 +119,12 @@ class DecisionService:
         validate_capacity(prepared, info, self._scheduler.measure)
 
         items = [
-            WorkItem(request_id=request_id, state_text=prepared.state_text, question=question)
+            WorkItem(
+                request_id=request_id,
+                state_text=prepared.state_text,
+                question=question,
+                raw_state=prepared.raw_state,
+            )
             for question in prepared.questions
         ]
 

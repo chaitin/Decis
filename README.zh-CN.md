@@ -98,10 +98,10 @@ uv run decis serve --host 127.0.0.1 --port 8000
 
 ## 引擎
 
-出厂四个引擎。`laya-multilingual`（默认，约 100 种语言）与 `kev-0.8b` 有发布的多架构镜像；
-`laya` 与 `laya-typed-decisions` 要在源码目录里跑。一个引擎一个镜像，引擎就是 tag，权重文件就在
-镜像里——启动时不需要网络、不需要卷、也没有下载步骤。服务要求 Bearer token，比较用常数时间，并且
-在公开地址上没配 token 时拒绝启动。
+出厂六个引擎。`laya-multilingual`（默认，约 100 种语言）、`kev-0.8b`、`jeff-qwen3.5-0.8b`
+与 `jeff-gemma4-e2b` 有发布的多架构镜像；`laya` 与 `laya-typed-decisions` 要在源码目录里跑。
+一个引擎一个镜像，引擎就是 tag，权重文件就在镜像里——启动时不需要网络、不需要卷、也没有下载步骤。
+服务要求 Bearer token，比较用常数时间，并且在公开地址上没配 token 时拒绝启动。
 
 骨干、权重大小与每个引擎的上限见 [引擎](docs/engines.zh-CN.md)；镜像体积、不带权重的 runtime
 变体、Kubernetes 探针与在代理后面构建，见 [部署](docs/deployment.zh-CN.md)。

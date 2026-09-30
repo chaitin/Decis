@@ -75,7 +75,11 @@ def create_app(
         engine_id = resolve_or_raise(resolved.default_engine)
         # The engine's request budget comes from settings, so the invariant is a
         # property of configuration rather than a constant buried in the scheduler.
-        scheduler = InProcessScheduler(create(engine_id), request_timeout_ms=resolved.request_timeout_ms)
+        scheduler = InProcessScheduler(
+            create(engine_id),
+            settings=resolved,
+            request_timeout_ms=resolved.request_timeout_ms,
+        )
 
     service = DecisionService(resolved, scheduler)
 

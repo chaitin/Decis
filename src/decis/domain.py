@@ -48,6 +48,15 @@ class PreparedQuestion:
     type: QuestionType
     instructions: str
     options: tuple[Option, ...]
+    #: The caller's own values for this question, before `render.py` flattened them:
+    #: `{"type", "instructions"?, "criteria"?}` with `None` fields already dropped, the
+    #: same shape upstream's HTTP layer builds. It exists because a prompt is not
+    #: always a function of the *rendered* text -- jeff's sequence is defined in terms
+    #: of `json.dumps` of the caller's objects and arrays, which is not recoverable
+    #: from `instructions`/`Option.description` (AGENTS.md §2 names the engine as the
+    #: owner of "what an option looks like in this model's prompt"). `None` for a
+    #: question built in-process, such as an engine's warmup.
+    raw: Any = None
 
     def text(self) -> str:
         """Everything the model reads for this question, options included.
@@ -67,6 +76,10 @@ class PreparedRequest:
     model: str
     state_text: str
     questions: tuple[PreparedQuestion, ...]
+    #: The caller's `state` value, before `render.py` flattened it. Same reason as
+    #: `PreparedQuestion.raw`; `None` means "not supplied" (the wire schema has no null
+    #: state, so a real state is never `None`).
+    raw_state: Any = None
 
 
 def estimate_tokens(text: str) -> int:

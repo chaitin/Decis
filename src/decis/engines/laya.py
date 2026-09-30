@@ -78,7 +78,8 @@ _MIN_OPTION_BUDGET = 16
 
 #: The commit this repository pins. A tag or branch would let an upstream force-push
 #: change what a given Decis image loads, which makes a release unreproducible. A
-#: local checkpoint mounted with `DECIS_MODEL_PATH_*` is the escape hatch.
+#: local checkpoint mounted with `DECIS_MODEL_DIR` (or `--model-path`) is the escape
+#: hatch.
 REVISION = "1c5edc17a7acd8701df6fc341c0d179f1c62c982"
 
 #: The date of the revision above, from the Hub's own metadata. It is the checkpoint's
@@ -231,7 +232,7 @@ class LayaEngine(DecisionEngine):
 
     # --- lifecycle -----------------------------------------------------------
 
-    def load(self) -> None:
+    def load(self, settings: Settings | None = None) -> None:
         """Load the checkpoint and run one warmup pass.
 
         Warmup is not optional. The first forward pass pays for lazy kernel selection
@@ -252,13 +253,13 @@ class LayaEngine(DecisionEngine):
 
         from ..config import load_settings
 
-        settings: Settings = load_settings()
+        settings = settings if settings is not None else load_settings()
         source = resolve(self.weights(), settings)
         if source.kind == "none":
             raise EngineUnavailableError(
                 f"No weights found for {self._id}, and this engine has no repository to fetch them "
-                f"from. Set DECIS_MODEL_DIR or DECIS_MODEL_PATH_{self._id.upper().replace('-', '_')} to a "
-                f"directory containing {self.weights().marker}."
+                f"from. Point DECIS_MODEL_DIR at a tree containing {self._id}/, or pass "
+                f"--model-path {self._id}=<dir> for a directory containing {self.weights().marker}."
             )
 
         if settings.torch_threads:

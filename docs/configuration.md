@@ -75,14 +75,19 @@ looks like in the log.
 | `DECIS_DEFAULT_ENGINE` | `laya-multilingual` | The engine `decis serve` loads, and the one that answers requests whose `model` is a "your default" name such as `jev-latest`. `--engine` overrides it. |
 | `DECIS_ACCEPT_FOREIGN_DEFAULTS` | `1` | Answer `jev-latest` (the official SDK's default) with the loaded engine instead of 422. This is what makes swapping `base_url` sufficient. The substitution is reported as `decis.requested_model`. |
 | `DECIS_MODEL_DIR` | unset | A directory of pre-downloaded weights. Expected layout: `<DECIS_MODEL_DIR>/<engine-id>/`. |
-| `DECIS_MODEL_PATH_<ENGINE_ID>` | unset | Point one engine at a directory of its own. Beats `DECIS_MODEL_DIR`. The name is the engine id upper-cased, so it can only address ids without a dot — see the `kev-0.8b` caveat below. |
 
 Weight resolution is a fixed order; the first hit wins, and a local directory beats the
 network:
 
-1. `DECIS_MODEL_PATH_<ENGINE_ID>` — e.g. `DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage`.
+1. The directory given to `--model-path` for this engine (see below).
 2. `DECIS_MODEL_DIR/<engine-id>/`.
 3. The Hugging Face cache, downloading if needed.
+
+A candidate only counts if it is a *complete* checkpoint: the file the engine's
+`WeightSpec.marker` names has to be there, and for a sharded checkpoint every file its
+`*.safetensors.index.json` lists has to be there too. A directory that fails either check is
+treated as absent, so a download you interrupted half way falls through to step 3 instead of
+being served and then failing to load.
 
 ```bash
 uv run decis download --engine laya-multilingual                  # into the HF cache
@@ -90,21 +95,37 @@ uv run decis download --engine laya-multilingual --dest ./models  # into ./model
 DECIS_MODEL_DIR=./models uv run decis serve
 ```
 
-> **A caveat for `kev-0.8b`.** The per-engine override cannot address it: the variable name is
-> the engine id upper-cased with `_` in place of `-`, and a dot has no representation there, so
-> the variable for this engine would normalise to the id `kev-0-8b` — which is registered as
-> nothing, and is silently ignored. Use `DECIS_MODEL_DIR` with a `kev-0.8b/` subdirectory
-> instead. That directory is the **adapter** (the LoRA and pointer head), which is the part you
-> fine-tune; the Qwen3.5 **base** model is referenced by the adapter's checkpoint metadata as a
-> Hub repo id, so a separately mounted copy of the base is not picked up. `decis download`
-> places the base in the Hugging Face cache, and the engine works offline from there.
+### Serving one engine from a directory of your own
+
+`--model-path` names a checkpoint directory for one engine, and beats `DECIS_MODEL_DIR` for
+it. It is repeatable, and it accepts an engine id or any of its aliases:
+
+```bash
+uv run decis serve --engine kev-0.8b --model-path kev-0.8b=/srv/finetunes/acme-triage
+uv run decis serve --model-path laya-multilingual=/srv/mine --model-path jeff=/srv/jeff-qwen
+```
+
+There is deliberately **no `DECIS_MODEL_PATH_<ENGINE_ID>` variable**. That form had to encode
+the engine id in a variable *name*, upper-cased with `_` for `-`, and no variable name can
+contain the dot in `kev-0.8b`, `jeff-qwen3.5-0.8b` or `jeff-gemma4-e2b`: the name for
+`kev-0.8b` normalises to the id `kev-0-8b`, which is registered as nothing, so the override
+was silently dropped. Putting the id in the *value* removes the restriction. `decis doctor`
+prints every override that was resolved, and an unknown engine id on the command line is a
+configuration error rather than a no-op.
+
+> **A caveat for `kev-0.8b`.** The directory you point at is the **adapter** (the LoRA and
+> pointer head), which is the part you fine-tune; the Qwen3.5 **base** model is referenced by
+> the adapter's checkpoint metadata as a Hub repo id, so a separately mounted copy of the base
+> is not picked up. `decis download` places the base in the Hugging Face cache, and the engine
+> works offline from there. The two Jeff engines are different: each is a full-weight
+> fine-tune, so one directory holds everything and nothing is fetched alongside it.
 
 ## Compute
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `DECIS_DEVICE` | auto | `cpu`, `cuda`, `mps`, `xpu` or `npu`. Unset picks the best available. |
-| `DECIS_DTYPE` | per engine+device | Force `fp32`, `fp16` or `bf16`. Read by engines that consult `registry.DTYPE_DEFAULTS` — today that is `kev-0.8b` only. Laya decides its own precision through its `Agent` and ignores it. |
+| `DECIS_DTYPE` | per engine+device | Force `fp32`, `fp16` or `bf16`. Read by engines that consult `registry.DTYPE_DEFAULTS` — today that is `kev-0.8b` only. Laya decides its own precision through its `Agent`, and both Jeff checkpoints decide theirs inside the loader (bf16 on an accelerator, fp32 on CPU), so all three ignore this variable. |
 | `DECIS_TORCH_THREADS` | one per vCPU | Thread count for the process. |
 
 Unset `DECIS_DEVICE` is resolved by `src/decis/engines/devices.py`: the first accelerator
@@ -172,7 +193,7 @@ the engine, and this container runs none of it — so only the variables below a
 | `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | How long one proxied `/v1/systemone` call may take. Generous on purpose: a proxy timeout that fires while the engine is still thinking reports an error for an answer that was about to arrive. |
 | `DECIS_PLAYGROUND_PROBE_TIMEOUT_S` | `2` | How long a `/readyz` probe of one candidate engine may take. |
 | `DECIS_PLAYGROUND_UPSTREAM` | unset | Name one engine to try first instead of searching. It is still probed, not trusted. |
-| `DECIS_PLAYGROUND_CANDIDATES` | built-in list | Comma-separated `/readyz` candidates, tried in order. Compose sets it to the two engine service names plus `host.docker.internal`. |
+| `DECIS_PLAYGROUND_CANDIDATES` | built-in list | Comma-separated `/readyz` candidates, tried in order. Compose sets it to every engine service name (four today) plus `host.docker.internal`. |
 
 The probes bypass any proxy in the environment: a proxied probe would ask the proxy about
 `127.0.0.1` and learn nothing about the engine.

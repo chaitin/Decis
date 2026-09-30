@@ -213,14 +213,38 @@ def cli(monkeypatch):
 
 
 def test_models_marks_unusable_engines(cli) -> None:
+    """The two columns have to agree with the classifier, on whichever machine this is.
+
+    It used to assert `usable: stub`, on the reasoning that `stub` is weight-free so it is
+    "the only one that can say ready in the no-weights test environment". That is a
+    statement about CI, not about the product: the same suite run in a checkout that has
+    the extras *and* the weights on disk lists four engines as usable, and the test failed
+    there (`AGENTS.md §7` -- the no-weights environment and the extras environment miss
+    different things). The expectation now comes from `registry.status` called with the
+    settings the command itself resolves, so the assertion is the rendering contract: every
+    engine the classifier calls usable is named in the `usable:` line, and every engine it
+    does not is marked in its row.
+    """
+    from decis.config import load_settings
+    from decis.engines.registry import status as engine_status
+
     code, output = cli("models", "--env-file", "")
     assert code == 0
-    # `stub` is installed and weight-free, so it is the only one that can say "ready"
-    # in the no-weights test environment.
-    assert "ready" in output
-    assert "usable: stub" in output
+
+    settings = load_settings(env_file="")
+    states = {engine_id: engine_status(engine_id, settings) for engine_id in SPECS}
+    usable = sorted(engine_id for engine_id, state in states.items() if state.usable)
+    assert usable, "some engine must be runnable anywhere: `stub` needs no weights"
+    assert f"usable: {', '.join(usable)}" in output
+    for engine_id in usable:
+        assert "ready" in output
+        assert not any(line.startswith(f" *{engine_id}") for line in output.splitlines()), (
+            f"{engine_id} is usable but its row carries the not-runnable marker"
+        )
     # And the engines that cannot run here are marked, not silently called ready.
-    assert "*" in output
+    if len(usable) < len(states):
+        assert "*" in output
+        assert "* = registered but not runnable here" in output
 
 
 def test_models_prints_the_command_that_fixes_each_gap(cli) -> None:

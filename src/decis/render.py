@@ -74,9 +74,41 @@ def noul_options(false_description: str = "", true_description: str = "") -> tup
     return (Option("false", false_description), Option("true", true_description))
 
 
+def raw_question(question: Question) -> dict[str, Any]:
+    """The caller's own values for one question, unrendered.
+
+    Shaped like the object upstream's HTTP layer would build (a `model_dump` with
+    `None` fields dropped), because that is what an engine whose prompt is defined in
+    terms of the caller's JSON has to be handed. Only the *values* travel: `type` is
+    the discriminator an engine already knows, and no engine may see a `qid`
+    (`AGENTS.md §3-6`). Kept here rather than in the engine so that "which fields a
+    question has" stays a fact about the wire format, which this module owns.
+
+    A choice criterion's explicit `null` is preserved inside `criteria` on purpose: it
+    means "decide by name alone", and dropping it would change how many options the
+    question has.
+    """
+    raw: dict[str, Any] = {"type": question.type}
+    if question.instructions is not None:
+        raw["instructions"] = question.instructions
+    if isinstance(question, NoulQuestion):
+        # `NoulCriteria` is a model, so its unset halves have to be dropped to match what
+        # upstream's HTTP layer would have received.
+        if question.criteria is not None:
+            raw["criteria"] = question.criteria.model_dump(exclude_none=True)
+    else:
+        # A choice's criteria are a plain `dict` and a score's are a plain `list`, so the
+        # caller's values are already here verbatim -- `None` included, because a choice
+        # criterion of explicit `null` means "decide by name alone" and dropping it would
+        # change how many options the question has.
+        raw["criteria"] = question.criteria
+    return raw
+
+
 def prepare_question(qid: str, question: Question) -> PreparedQuestion:
     """Turn one wire question into rendered options."""
     instructions = render_value(question.instructions)
+    raw = raw_question(question)
 
     if isinstance(question, NoulQuestion):
         yes = render_value(question.criteria.true) if question.criteria else ""
@@ -86,17 +118,18 @@ def prepare_question(qid: str, question: Question) -> PreparedQuestion:
             type="noul",
             instructions=instructions,
             options=noul_options(no, yes),
+            raw=raw,
         )
 
     if isinstance(question, ChoiceQuestion):
         options = tuple(Option(name, render_value(description)) for name, description in question.criteria.items())
-        return PreparedQuestion(qid=qid, type="choice", instructions=instructions, options=options)
+        return PreparedQuestion(qid=qid, type="choice", instructions=instructions, options=options, raw=raw)
 
     if isinstance(question, ScoreQuestion):
         options = tuple(
             Option(str(level), render_value(description)) for level, description in enumerate(question.criteria)
         )
-        return PreparedQuestion(qid=qid, type="score", instructions=instructions, options=options)
+        return PreparedQuestion(qid=qid, type="score", instructions=instructions, options=options, raw=raw)
 
     raise AssertionError(f"unhandled question type: {type(question).__name__}")
 
@@ -106,7 +139,8 @@ def prepare_request(request: SystemOneRequest) -> PreparedRequest:
         model=request.model,
         state_text=render_state(request.state),
         questions=tuple(prepare_question(qid, question) for qid, question in request.questions.items()),
+        raw_state=request.state,
     )
 
 
-__all__ = ["noul_options", "prepare_question", "prepare_request", "render_state", "render_value"]
+__all__ = ["noul_options", "prepare_question", "prepare_request", "raw_question", "render_state", "render_value"]

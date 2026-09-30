@@ -11,10 +11,13 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist, estimate_tokens
 from ..paths import WeightSpec
+
+if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
+    from ..config import Settings
 
 Primitive = Literal["noul", "choice", "score"]
 
@@ -84,6 +87,11 @@ class WorkItem:
     request_id: str
     state_text: str
     question: PreparedQuestion
+    #: The caller's `state` value, carried alongside `state_text` for an engine whose
+    #: prompt is defined in terms of the caller's JSON rather than of the flattened
+    #: text (`domain.PreparedRequest.raw_state`; jeff is the engine that needs it).
+    #: `None` for a synthetic item, such as a warmup.
+    raw_state: Any = None
 
 
 @dataclass(frozen=True)
@@ -126,8 +134,15 @@ class DecisionEngine(ABC):
         """Static description. Must not load weights."""
 
     @abstractmethod
-    def load(self) -> None:
-        """Load weights. Idempotent. Called before the server accepts traffic."""
+    def load(self, settings: Settings | None = None) -> None:
+        """Load weights. Idempotent. Called before the server accepts traffic.
+
+        `settings` is the already-resolved configuration, so an engine never has to
+        read the environment itself -- which is what lets `decis serve --model-path
+        ENGINE=PATH` reach a load (a command-line option is not in `os.environ`).
+        `None` means "resolve it yourself" and exists for a caller that has no
+        `Settings` to hand, such as a unit test.
+        """
 
     @abstractmethod
     def predict(self, items: list[WorkItem]) -> Prediction:

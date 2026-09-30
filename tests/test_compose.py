@@ -392,6 +392,48 @@ def test_the_playground_is_in_every_engine_profile(compose: dict) -> None:
     assert set(playground["profiles"]) == set(engines(compose)), playground["profiles"]
 
 
+def test_the_playground_probes_every_engine_compose_can_start(compose: dict) -> None:
+    """The playground finds its engine by probing service names; each one must be there.
+
+    `playground/server.py` cannot be told which engine `.env` selected (that is the point of
+    probing), so its `DEFAULT_CANDIDATES` is a second copy of the Compose service names -- and
+    a copy is exactly what `AGENTS.md` §2 forbids. Adding an engine to this file without adding
+    it to that tuple ships a `docker compose --profile <new-engine> up` whose games never find
+    the engine that is right next to them.
+
+    Read out of the Compose file rather than written here, for the same reason the tests above
+    derive their expectations: a hand-written list can stay right while the thing it copies
+    moves (`design-review.md` §2-D14). The container port is fixed at 8000 because
+    `test_every_port_mapping_mirrors_the_port_inside_the_container` pins it there.
+    """
+    from playground.server import DEFAULT_CANDIDATES
+
+    probed = {entry.rsplit(":", 1)[0].removeprefix("http://").rstrip("/") for entry in DEFAULT_CANDIDATES}
+    for engine in engines(compose):
+        assert engine in probed, (
+            f"compose can start {engine!r} but the playground never probes http://{engine}:8000, "
+            f"so `--profile {engine} up` gives you games that cannot find the engine"
+        )
+
+
+def test_the_playground_probes_the_compose_engines_before_the_host_one(compose: dict) -> None:
+    """Order matters: a container usually has no host engine, and probing one costs a timeout.
+
+    `host.docker.internal` is the expensive probe -- with nothing listening there it is a DNS
+    or connect timeout rather than a refusal -- so every Compose service name has to be tried
+    before it.
+    """
+    from playground.server import DEFAULT_CANDIDATES
+
+    before = DEFAULT_CANDIDATES.index("http://host.docker.internal:8000")
+    assert DEFAULT_CANDIDATES[-1] == "http://127.0.0.1:8000", "the loopback entry is the last resort"
+    for engine in engines(compose):
+        assert f"http://{engine}:8000" in DEFAULT_CANDIDATES[:before], (
+            f"{engine} must be probed before host.docker.internal, or a container that has "
+            f"that name resolvable waits out a timeout on every cold start"
+        )
+
+
 def test_the_ci_compose_check_derives_what_a_profile_starts(compose: dict) -> None:
     """The one place that runs the real Compose must not name a service itself.
 

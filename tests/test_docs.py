@@ -338,37 +338,52 @@ def test_the_documented_environment_variables_are_read_by_something() -> None:
     assert not invented, f"docs/configuration.md documents variables nothing reads: {invented}"
 
 
-def test_every_documented_per_engine_override_names_a_registered_engine() -> None:
-    """`DECIS_MODEL_PATH_<ID>` is the engine id upper-cased, so a dot cannot be encoded.
+def test_the_documented_per_engine_override_is_a_flag_whose_engine_exists() -> None:
+    """The per-engine override is `--model-path ENGINE=PATH`, and the pages must say so.
 
-    The variable for `kev-0.8b` would normalise to the id `kev-0-8b`, a name no engine
-    registers, and `config.py` would drop it without a word. A documented override that
-    silently does nothing is therefore a real defect, and this is what catches it:
-    `docs/configuration.md` explains the `kev-0.8b` case in prose instead of printing a name
-    for it.
+    It used to be `DECIS_MODEL_PATH_<ENGINE_ID>`, which encoded the engine id in a variable
+    *name* upper-cased with `_` for `-`. No variable name can hold the dot in `kev-0.8b`,
+    `jeff-qwen3.5-0.8b` or `jeff-gemma4-e2b`, so the name for `kev-0.8b` normalised to the id
+    `kev-0-8b` -- registered as nothing, and dropped without a word. A documented override
+    that silently does nothing is a real defect, so both halves are asserted: no reader-facing
+    page resurrects the variable, and every engine named in a documented example is one that
+    actually resolves.
     """
-    from decis.engines.registry import SPECS
+    from decis.engines.registry import canonical
 
     # Reader-facing pages only: `design-review.md` names the broken variable on purpose, as
-    # the record of the defect.
+    # the record of the defect, and `AGENTS.md` quotes it as the thing not to re-add.
     reader_facing = [
         ROOT / "README.md",
         ROOT / "README.zh-CN.md",
         *[DOCS / name for name in GUIDES],
         *[DOCS / name.replace(".md", ".zh-CN.md") for name in GUIDES],
     ]
-    pattern = re.compile(r"\bDECIS_MODEL_PATH_([A-Z0-9_]+)")
-    documented = {
+
+    offenders = {
+        path.name: pattern
+        for path in reader_facing
+        if (pattern := re.findall(r"\bDECIS_MODEL_PATH_([A-Z0-9_]+)", _without_code(_text(path))))
+    }
+    assert not offenders, (
+        f"these pages document a per-engine variable that no longer exists: {offenders}. "
+        f"The override is `--model-path ENGINE=PATH`."
+    )
+
+    # Commands live in fenced blocks, so this one deliberately looks at the whole file: an
+    # example is exactly where a typo would reach a reader. The regex needs the id right
+    # after the flag, so the prose placeholder (`--model-path` takes an `ENGINE=PATH` pair)
+    # does not count as an example.
+    examples = {
         match.group(1)
         for path in reader_facing
-        for match in pattern.finditer(_without_code(_text(path)))
-        if match.group(1)
+        for match in re.finditer(r"--model-path[= ]([A-Za-z0-9][A-Za-z0-9._-]*)=", _text(path))
     }
-    assert documented, "no concrete DECIS_MODEL_PATH_* variable is documented anywhere"
-    unusable = sorted(name for name in documented if name.lower().replace("_", "-") not in SPECS)
+    assert examples, "no reader-facing page shows a --model-path example"
+    unusable = sorted(name for name in examples if canonical(name) is None)
     assert not unusable, (
-        "these DECIS_MODEL_PATH_* names normalise to an engine id that is not registered, so "
-        f"setting them would be silently ignored: {unusable}"
+        f"these --model-path examples name an engine id or alias that is not registered, so "
+        f"copying them would fail: {unusable}"
     )
 
 

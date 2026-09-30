@@ -75,7 +75,9 @@ def test_the_shipped_registry_registers_no_test_double() -> None:
         env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "kev-0.8b,laya,laya-multilingual,laya-typed-decisions"
+    assert result.stdout.strip() == (
+        "jeff-gemma4-e2b,jeff-qwen3.5-0.8b,kev-0.8b,laya,laya-multilingual,laya-typed-decisions"
+    )
 
 
 @pytest.mark.parametrize(

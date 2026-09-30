@@ -15,11 +15,12 @@ import argparse
 import importlib.util
 import os
 import sys
+from pathlib import Path
 
 from . import __version__
 from .app import create_app
 from .config import ConfigError, Settings, load_settings
-from .engines.registry import SPECS, known_names
+from .engines.registry import SPECS, canonical, known_names
 from .observability import configure_logging
 from .paths import WeightSpec
 
@@ -56,14 +57,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     serve.add_argument("--env-file", default=None, help="path to a .env file (default: ./.env)")
+    _add_model_path(serve)
     serve.set_defaults(handler=_serve)
 
     models = sub.add_parser("models", help="list registered engines and whether they are usable here")
     models.add_argument("--env-file", default=None)
+    _add_model_path(models)
     models.set_defaults(handler=_models)
 
     doctor = sub.add_parser("doctor", help="check the environment before you deploy")
     doctor.add_argument("--env-file", default=None)
+    _add_model_path(doctor)
     doctor.set_defaults(handler=_doctor)
 
     download = sub.add_parser("download", help="fetch model weights ahead of time")
@@ -100,6 +104,27 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_model_path(parser: argparse.ArgumentParser) -> None:
+    """`--model-path ENGINE=PATH`, repeatable.
+
+    Deliberately a command-line option rather than `DECIS_MODEL_PATH_<ENGINE_ID>`: an
+    engine id may contain a dot (`kev-0.8b`, `jeff-qwen3.5-0.8b`), no environment
+    variable *name* can, and the old form therefore had to mangle the id -- which meant
+    it silently addressed nothing. `DECIS_MODEL_DIR` still covers "a tree of
+    `<engine id>/` directories" for deployment, where a flag is awkward.
+    """
+    parser.add_argument(
+        "--model-path",
+        action="append",
+        default=[],
+        metavar="ENGINE=PATH",
+        help=(
+            "serve ENGINE from the checkpoint in PATH (repeatable). Beats DECIS_MODEL_DIR for that "
+            "engine. Example: --model-path kev-0.8b=/srv/kev"
+        ),
+    )
+
+
 # --- commands ----------------------------------------------------------------
 
 
@@ -118,7 +143,6 @@ def _bench(args: argparse.Namespace) -> int:
     inside it, and neither is reimplemented here (`AGENTS.md §2`).
     """
     import subprocess
-    from pathlib import Path
 
     name = "batch_gain.py" if args.cross_request else "run.py"
     harness = Path(__file__).resolve().parent.parent.parent / "benchmarks" / name
@@ -285,7 +309,7 @@ def _models(args: argparse.Namespace) -> int:
 
     print(f"decis {__version__}  default engine: {settings.default_engine}\n")
     width = max(len(spec.id) for spec in SPECS.values())
-    states = {engine_id: status(engine_id) for engine_id in SPECS}
+    states = {engine_id: status(engine_id, settings) for engine_id in SPECS}
     statwidth = max(len(state.summary) for state in states.values())
     for engine_id in sorted(SPECS):
         state = states[engine_id]
@@ -313,6 +337,8 @@ def _doctor(args: argparse.Namespace) -> int:
     print(f"  default engine   {settings.default_engine}")
     print(f"  request limit    {settings.max_request_bytes} bytes, timeout budget {settings.request_timeout_ms} ms")
     print(f"  torch threads    {settings.torch_threads if settings.torch_threads else 'auto'}")
+    paths = ", ".join(f"{engine}={path}" for engine, path in sorted(settings.model_paths.items()))
+    print(f"  model paths      {paths if paths else '(none; DECIS_MODEL_DIR and the Hub cache only)'}")
     print(f"  DECIS_* set      {', '.join(settings.sources) if settings.sources else '(none)'}")
     # Only when something was actually changed: a silent rewrite of the environment is
     # the kind of thing an operator should be able to see, and a "no changes" line on
@@ -360,10 +386,15 @@ def _download(args: argparse.Namespace) -> int:
     model directory (`<dir>/<engine id>/`) or, with none configured, the Hub cache.
     So this cannot fetch somewhere the server will not later look.
     """
-    from pathlib import Path
-
     from .engines.registry import canonical
-    from .paths import checkpoint_root, describe_local, download_arguments, filesystem_has_room, human_bytes, resolve
+    from .paths import (
+        checkpoint_root,
+        describe_local,
+        download_arguments,
+        filesystem_has_room,
+        human_bytes,
+        resolve,
+    )
 
     settings = _load(args)
     engine_id = canonical(args.engine) or args.engine
@@ -417,7 +448,7 @@ def _download(args: argparse.Namespace) -> int:
         if checkpoint_root(cached, spec) is None:
             print(
                 f"error: download finished but {cached} still has no usable checkpoint. "
-                f"Expected to find {spec.marker} there.",
+                f"{_why_unusable(cached, spec.marker)}",
                 file=sys.stderr,
             )
             return 1
@@ -448,12 +479,33 @@ def _download(args: argparse.Namespace) -> int:
         # that is exactly the question `resolve` answers.
         print(
             f"error: download finished but {destination} still has no usable checkpoint. "
-            f"Expected to find {spec.marker} there.",
+            f"{_why_unusable(destination, spec.marker)}",
             file=sys.stderr,
         )
         return 1
     print(f"{engine_id}: ready at {resolved.path} ({describe_local(resolved.path)})")
     return _download_bases(spec)
+
+
+def _why_unusable(directory: Path, marker: str | None) -> str:
+    """Why `checkpoint_root` rejected a directory, in the words of the actual reason.
+
+    Two ways a downloaded directory is still unusable, and they need different actions: a
+    missing marker means the fetch did not land a checkpoint at all, while a manifest whose
+    shards are absent means it landed *part* of one. Telling a user with a half-copied
+    8.65 GiB checkpoint to look for `config.json` -- which is sitting right there -- sends
+    them to re-check the one thing that is fine (`docs/design-review.md` §2-D29).
+    """
+    from .paths import missing_shards
+
+    missing = missing_shards(directory)
+    if missing:
+        shown = ", ".join(missing[:3])
+        more = f" (and {len(missing) - 3} more)" if len(missing) > 3 else ""
+        return (
+            f"Its weight manifest names {len(missing)} file(s) that are not there: {shown}{more}. Re-run the download."
+        )
+    return f"Expected to find {marker} there."
 
 
 def _download_bases(spec: object) -> int:
@@ -505,7 +557,34 @@ def _weight_spec(engine_id: str) -> WeightSpec | None:
 
 
 def _load(args: argparse.Namespace) -> Settings:
-    return load_settings(args.env_file)
+    settings = load_settings(args.env_file)
+    overrides = _parse_model_paths(getattr(args, "model_path", None) or [])
+    if overrides:
+        settings = _with(settings, model_paths={**settings.model_paths, **overrides})
+    return settings
+
+
+def _parse_model_paths(entries: list[str]) -> dict[str, Path]:
+    """`["kev-0.8b=/srv/kev"]` -> `{"kev-0.8b": Path("/srv/kev")}`.
+
+    An unknown or misspelled engine id is a configuration error rather than a silently
+    ignored flag: the reason the id moved out of the variable name and into the value
+    is precisely so that it can be written exactly, dots included.
+    """
+    found: dict[str, Path] = {}
+    for entry in entries:
+        engine, separator, path = entry.partition("=")
+        engine, path = engine.strip(), path.strip()
+        if not separator or not engine or not path:
+            raise ConfigError(f"--model-path takes ENGINE=PATH, got {entry!r}")
+        resolved = canonical(engine)
+        if resolved is None:
+            raise ConfigError(
+                f"--model-path names {engine!r}, which is not a registered engine. "
+                f"Registered: {', '.join(sorted(SPECS))}."
+            )
+        found[resolved] = Path(path)
+    return found
 
 
 def _with(settings: Settings, **changes: object) -> Settings:

@@ -27,11 +27,14 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .domain import MeasuredTokens, PreparedRequest
 from .engines.base import DecisionEngine, EngineInfo, Prediction, WeightSpec, WorkItem
 from .errors import EngineFailedError, EngineOverloadedError, EngineUnavailableError
+
+if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
+    from .config import Settings
 
 _logger = logging.getLogger("decis.scheduler")
 
@@ -130,8 +133,18 @@ class InProcessScheduler:
     caller's budget is refused instead of piling up: see `run`.
     """
 
-    def __init__(self, engine: DecisionEngine, *, request_timeout_ms: int = 8000) -> None:
+    def __init__(
+        self,
+        engine: DecisionEngine,
+        *,
+        settings: Settings | None = None,
+        request_timeout_ms: int = 8000,
+    ) -> None:
         self._engine = engine
+        # Handed to `engine.load` so the engine resolves weights from the settings the
+        # process actually started with -- including `--model-path`, which is not in
+        # the environment. `None` leaves the engine to resolve its own.
+        self._settings = settings
         self._lock = threading.Lock()
         # Separate from `_lock`, which is held for the whole of `predict`. Sharing
         # one lock would make `/readyz` block behind an in-flight inference, which
@@ -181,7 +194,7 @@ class InProcessScheduler:
             self._phase = LoadPhase.LOADING
             self._error = None
         try:
-            self._engine.load()
+            self._engine.load(self._settings)
         except Exception as exc:
             with self._status_lock:
                 self._phase = LoadPhase.FAILED

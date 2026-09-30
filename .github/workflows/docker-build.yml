@@ -44,7 +44,7 @@ on:
     inputs:
       engines:
         description: Space-separated engine ids to build
-        default: "laya-multilingual kev-0.8b"
+        default: "laya-multilingual kev-0.8b jeff-qwen3.5-0.8b jeff-gemma4-e2b"
       runtime_variants:
         description: Also build the weightless `-runtime` variants
         type: boolean
@@ -138,13 +138,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Every engine with an image. Both are real checkpoints; there is no
+          # Every engine with an image. All four are real checkpoints; there is no
           # weight-free image any more (the test double lives in `tests/`, not in the
           # registry), so a base image with no extras is a build-time check, not a
           # thing to publish.
-          all_engines=(laya-multilingual kev-0.8b)
+          #
+          # `jeff-gemma4-e2b` bakes ~8.65 GiB of weights, so its image is the largest
+          # thing this workflow produces by a wide margin. It is still in the default
+          # list: `AGENTS.md` §2-D20 says the tag that carries an engine's name carries
+          # its weights, and a `jeff-gemma4-e2b` image that has to download 8.65 GiB
+          # before it answers would be exactly the mislabelling that entry records. Use
+          # the `jeff-gemma4-e2b-runtime-*` variant (release builds) when the weights
+          # belong on a volume instead.
+          all_engines=(laya-multilingual kev-0.8b jeff-qwen3.5-0.8b jeff-gemma4-e2b)
           # Engines whose weights can be baked in.
-          bakeable=(laya-multilingual kev-0.8b)
+          bakeable=(laya-multilingual kev-0.8b jeff-qwen3.5-0.8b jeff-gemma4-e2b)
 
           # Set by the PR branch below: build the Dockerfile with no engine extra at all.
           # An engine-free image is the cheapest way to prove the install path still
@@ -205,6 +213,8 @@ jobs:
             case "$1" in
               laya-multilingual) echo "laya" ;;
               kev-0.8b) echo "kev" ;;
+              jeff-qwen3.5-0.8b) echo "jeff" ;;
+              jeff-gemma4-e2b) echo "jeff" ;;
               *)
                 echo "error: no pip extra is mapped for engine '$1'." >&2
                 echo "       Add it here and to the build-args test's expectations." >&2

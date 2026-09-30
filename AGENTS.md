@@ -6,19 +6,21 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 > **当前状态**：契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象、
 > `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、`docker/Dockerfile`
-> 与 CI 都已实现，两个真实模型家族跑在同一个契约后面：
+> 与 CI 都已实现，三个真实模型家族跑在同一个契约后面：
 > `uv sync --extra laya && uv run decis serve --engine laya-multilingual`、
-> `uv sync --extra kev && uv run decis serve --engine kev-0.8b`。
+> `uv sync --extra kev && uv run decis serve --engine kev-0.8b`、
+> `uv sync --extra jeff && uv run decis serve --engine jeff-qwen3.5-0.8b`。
 > **未实现**：kev 的 prefix 缓存路径、`/metrics`；`docs/design.md` 里那批只在设计稿里出现的旋钮
 > （`DECIS_BATCH_MODE`、`DECIS_BATCH_MAX_WAIT_MS`、`DECIS_BATCH_MAX_SIZE`、`DECIS_MAX_QUEUE`、
 > `DECIS_MAX_QUESTIONS`、`DECIS_MAX_STATE_CHARS`、`DECIS_CORS_ORIGINS`、`DECIS_HTTP_WORKERS`、
 > `DECIS_ENGINE_WORKERS`、`DECIS_RATE_LIMIT_RPM`、`DECIS_RATE_LIMIT_TOKENS_PER_S`）没有任何代码读，别照它们写文档。`docs/design.md §11` 的目录树是
 > 目标结构，其中未出现的文件即尚未实现的部分。
 >
-> **引擎注册表**：出厂四个——`laya`、`laya-multilingual`、`laya-typed-decisions`、`kev-0.8b`
-> （kev 适配器 + Qwen3.5-0.8B 基座，见 `paths.BaseModel`）。**注册表里没有假引擎**：无权重的确定性
-> 测试替身住在 `tests/fixture_engine.py`，由 `tests/conftest.py` 以 id `stub` 只在测试进程里注册，
-> 出厂镜像永远不会用它作答。
+> **引擎注册表**：出厂六个——`laya`、`laya-multilingual`、`laya-typed-decisions`、`kev-0.8b`、
+> `jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b`。其中两个需要第二个仓库：`kev-0.8b` 是适配器 + Qwen3.5-0.8B
+> 基座（见 `paths.BaseModel`），而两个 Jeff 是**全权重微调**，一个目录里就是全部，`bases` 为空。
+> **注册表里没有假引擎**：无权重的确定性测试替身住在 `tests/fixture_engine.py`，由 `tests/conftest.py`
+> 以 id `stub` 只在测试进程里注册，出厂镜像永远不会用它作答。
 >
 > **镜像**：`.github/workflows/docker-build.yml` 按引擎构建、推送到 Docker Hub 的**一个**仓库
 > `chaitin/decis`，**引擎就是 tag**（`chaitin/decis:laya-multilingual`）。命名空间来自工作流的
@@ -80,6 +82,9 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 |---|---|---|
 | 各层共享的领域类型（`Option`/`PreparedQuestion`/`PreparedRequest`/`ProbDist`） | `src/decis/domain.py` | 在 `schema.py`/`render.py` 里另定义一份；`domain.py` **不得 import 包内任何模块** |
 | `state`/`instructions`/`criteria` → 可读文本（任意 JSON 的扁平化） | `src/decis/render.py` | 引擎各自实现 JSON 扁平化；引擎各自做分隔符转义 |
+| 「调用方原始 JSON 原样交给需要它的引擎」 | `domain.PreparedQuestion.raw` / `PreparedRequest.raw_state` / `WorkItem.raw_state`，由 `render.py` 填 | 引擎自己去解析请求体；把扁平化后的文本当成 `raw`（Jeff 的提示词是 `json.dumps`，喂错不报错、只是答案变差） |
+| `--model-path ENGINE=PATH` 的语法与别名规范化 | `src/decis/cli.py: _parse_model_paths`（规范化后写进 `Settings.model_paths`） | 引擎自己解析命令行参数；用把引擎 id 编进**变量名**的方式做覆盖（点号在变量名里没有表示法，见 §9） |
+| 第三方 vendored 副本的字节 | `src/decis/engines/_kev_vendor/`、`src/decis/engines/_jeff_vendor/`，各自带 `VENDOR.md` | 就地改 vendored 代码；re-vendor 时不一起改 `VENDOR.md` / `NOTICE` / 守卫里的 sha256 |
 | 把渲染片段排成**某个引擎自己的序列** | 该引擎（并优先用它上游库的函数，如 Laya 的 `build_sequence`） | 在 `render.py` 里重写某个模型的序列格式——那是对上游内部的复制，保证会漂移（`design.md §4.1` 的 Stage 1 修正） |
 | `noul` 的选项名 `"false"/"true"` | `src/decis/render.py: noul_options` | 任何地方写字面量 `Option("false", …)` |
 | 「这个请求会被吃掉多少 token」（容量校验的**测量**） | 各引擎的 `DecisionEngine.measure` | 用 `len(text)//4` 估算一个会截断的引擎；在 `render.py` 里猜某个模型的 head 开销 |
@@ -199,6 +204,12 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 
 **不要**为了接一个引擎去改 `render.py` / `answers.py`。如果非改不可，说明抽象错了——先改 `docs/design.md §2` 并说明理由。
 
+**已记录的唯一例外（Jeff，2026-09-30）**：接 Jeff 时确实动了 `render.py`——不是改渲染规则，而是给
+`PreparedQuestion` 加了 `raw`、给 `PreparedRequest` 加了 `raw_state`，把调用方原始 JSON 原样带到引擎，
+因为 Jeff 的提示词是 `json.dumps(state)` 而不是扁平化文本（`docs/design.md §2` 已补）。判断标准没变：
+"任意 JSON → 可读文本"仍然只住在 `render.py`，"某个 primitive 的选项长什么样"仍然由引擎决定。第二个
+引擎若又要求"另一种 JSON 渲染"，先改 `design.md §2` 再动手，不要各自再解析一遍请求。
+
 ---
 
 ## 6. 惰性 import 是硬要求
@@ -259,7 +270,29 @@ uv run pytest -m weights             # 真实推理 + 批不变性（需要权�
 uv sync --extra kev
 uv run decis download --engine kev-0.8b   # adapter 取 3 个文件约 13 MB（仓库共 43 MiB）+ 基座 1.65 GiB
 uv run decis serve --engine kev-0.8b --host 127.0.0.1   # 需要权重；容器内未验证
+
+uv sync --extra jeff
+uv run decis download --engine jeff-qwen3.5-0.8b   # 全权重微调：一个目录 1.61 GiB，没有基座要另外放
+uv run decis serve --engine jeff-qwen3.5-0.8b --host 127.0.0.1
+#   `jeff` / `jeff-qwen` / `jeff-qwen3.5` 都是它的别名。同一个 extra 里的 `jeff-gemma4-e2b` 是
+#   8.65 GiB 的另一个 checkpoint：CPU 上 fp32 加载实测 139 s、峰值 RSS **23.8 GiB**（权重本身
+#   18.5 GiB，加载过程中的 bf16 → fp32 转换是另算的），所以 24 GB 以下的机器会开始换页；
+#   `-m weights` 默认只加载 Qwen 那个，连它一起测要显式 `DECIS_TEST_JEFF_GEMMA=1`，
+#   而且**分两半跑**（两个引擎同时常驻 ≈ 26 GiB，一台 31 GB 的机器放不下）
 ```
+
+需要让**某一个**引擎读你自己的目录时用 `--model-path ENGINE=PATH`（`serve` / `models` / `doctor`
+都有，可重复，接受别名）：
+
+```bash
+uv run decis serve --engine kev-0.8b --model-path kev-0.8b=/srv/finetunes/acme-triage
+uv run decis models --model-path jeff=/srv/jeff-qwen        # 别名在这里也会被规范化
+```
+
+**没有** `DECIS_MODEL_PATH_<ENGINE_ID>` 这类环境变量，而且是刻意删掉的：它把引擎 id 编进变量**名**，
+任何变量名都装不下 `kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b` 里的点号——`kev-0.8b` 会规范化成
+`kev-0-8b`，一个没注册的 id，于是覆盖被静默丢弃。把 id 放进**值**里就没有这个限制；未知 id 现在是
+`ConfigError`，`decis doctor` 会打印解析到的每一条覆盖。
 
 镜像（CI 构建并推送，tag 方案见 `docs/deployment.md`）：
 
@@ -402,6 +435,16 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   `design-review.md §2-D24`）。设备由 `src/decis/engines/devices.py` 决定，引擎只问它
 - ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会静默降质）
 - ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
+- ❌ 改动 `src/decis/engines/_jeff_vendor/` 里的任何字节（同一条规则：整体 re-vendor，并一起改
+  `VENDOR.md` / `NOTICE` / `jeff.REVISION`。`tests/test_jeff_vendor.py` 同时比对 vendored 与上游两份
+  sha256，还会把 vendored 文本反向套回 import 重写再和上游逐字节比——只更新期望哈希是过不去的）
+- ❌ 让一个按调用方 JSON 训练的引擎去读 `render.py` 扁平化后的文本（Jeff 的提示词是
+  `json.dumps(state)` 与原样 criteria，不是 `key: value` 行；喂错了不报错，只是答案比 checkpoint 的
+  基准差。引擎读 `WorkItem.raw_state` / `PreparedQuestion.raw`，不要自己再解析一次请求）
+- ❌ 用把引擎 id 编进**变量名**的方式覆盖单个引擎的权重目录（`DECIS_MODEL_PATH_<ENGINE_ID>` 已在本轮
+  删除）。任何变量名都装不下 `kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b` 里的点号，那个名字会
+  规范化成一个没注册的 id 然后被静默丢弃。引擎目录覆盖只有 `--model-path ENGINE=PATH`：id 放在**值**
+  里，别名由 `cli._parse_model_paths` 规范化，未知 id 是配置错误而不是空操作
 - ❌ 用"上游截断后的输出"反推 `measure()` 的数字（会得到永远等于上限的假测量）
 - ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` / `<!-- BATCHING -->` 标记块里的数字
   （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）。**标记块里的散文同样是生成物**——
@@ -419,7 +462,8 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   把一个点号无法表示的引擎覆盖变量写成可用（`kev-0.8b` 会规范化成 `kev-0-8b`，
   `config.py` 静默丢弃）；给一个从不返回的 504 写了错误行。**文档里出现的每个值都要能在
   代码里指出处。** 其中两类已经机械化：`tests/test_docs.py` 断言配置文档里的每个 `DECIS_*`
-  都被某处读到，且每个具体的 `DECIS_MODEL_PATH_*` 都规范化到一个已注册的引擎 id
+  都被某处读到，且没有任何面向读者的页面还写着 `DECIS_MODEL_PATH_*`，每个 `--model-path`
+  示例里的引擎都能解析（别名算数）
 - ❌ 让一行性能表的不同列取自不同配置（`design-review.md §2-D12`：线程数混用曾真实发生过）
 - ❌ 手工把一张表从一个文件抄到另一个文件（`README.zh-CN.md` 抄过，于是它**只在中文版里**带着 D12）：
   抄写就是第二处实现（§2），要么生成，要么不要放
@@ -444,6 +488,12 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   于是这条命令对**任何** `--dest` 都失败，`DECIS_PREDOWNLOAD` 离线镜像也从没构建成功过）。
   下载完必须用 `paths.resolve` 本身验证；测试必须让 stub 写出**真实下载器的布局**，
   而不是只断言"传了哪些参数"——那是把写和读之间剪断还宣称它们连着
+- ❌ 用一个 marker 文件判断**分片**权重是否完整（`design-review.md §2-D29`：分片是陆续到达的，
+  `config.json` / `decision_config.json` 与 `*.safetensors.index.json` 先落地，于是"下到一半"
+  被 `decis models` 报成 ready，加载器再抛 `FileNotFoundError` 指向一个没人被告知要等的分片；
+  更糟的是它**盖住了网络那条路**，让"本地优先"从离线保证变成"坏副本赢过好副本"）。
+  完整性要问的是**加载器接下来会打开哪些文件**：走 `paths.missing_shards`（读 checkpoint 自己的
+  `weight_map`），不要新增第二个"代表文件"
 - ❌ 在 compose 的 `command:` 里只写镜像 `CMD` 的后半截（compose 的 `command:` **替换** `CMD`
   而不是追加：`Dockerfile` 没有 `ENTRYPOINT` 时容器会去 exec 一个叫 `download` 的程序，
   `design-review.md §2-D18`）。测试要**从 Dockerfile 读**入口点再决定断言什么，
@@ -455,6 +505,13 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 让**引擎名那个 tag** 指向不带权重的镜像（`design-review.md §2-D20`：一个引擎的镜像存在的
   意义就是"拿到就能用"，而 README 曾把它写成"需要网络或挂卷"，同时真正的烤权重变体叫 `-offline`
   并且从没构建成功过）。默认变体必须是烤权重那个，瘦身变体只能带后缀；同一个东西不给两个名字
+- ❌ 在测试里**重建**被测系统会拼的东西，尤其是引擎的提示词文本
+  （`design-review.md §2-D30`：weights 套里的 `prompt_of()` 用 `decision_messages` +
+  `processor.apply_chat_template` 拼了一份提示词，而 Gemma 那个 loader 走的是
+  `decoder.py: chat_text`/`tokenizer`、user 轮被改写成最后一个 text part、而且**根本没有
+  `.processor`**，于是 4 项断言在 Gemma 上直接 `AttributeError`，而配来"钉住这份镜像"的那条守卫
+  自己也是用同一份镜像写的、在 Qwen 上永远绿）。要断言"引擎实际发出去的字节"，就从**引擎自己的
+  产物**读回来——解码它 `prepare()` 出来的 `input_ids`、看它真的写出去的请求体——不要重算一遍
 - ❌ 在 compose 里把卷/目录挂到镜像烤权重的路径上（`DECIS_MODEL_DIR`，`design-review.md §2-D21`：
   命名卷会用镜像内容初始化一次然后自己留一份，bind mount 直接盖掉整个目录，于是"离线镜像"变成
   "启动就联网下载"，而且不报任何错）。守卫必须**从 Dockerfile 读出**那个路径再断言没人挂它
@@ -487,6 +544,14 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - **kev**：已 vendor 最小子集（Apache-2.0），来源 `https://github.com/jaredpalmer/kev`，pin commit
   `90990a5`，文件清单、sha256 与取舍见 `src/decis/engines/_kev_vendor/VENDOR.md`，`NOTICE` 已记录。
   逐字节复制，**不得修改**；`tests/test_kev_vendor.py` 守卫其 sha256。
+- **jeff**：已 vendor 最小子集（**MIT**，不是 Apache），来源 `https://github.com/firelex/jeff`，
+  pin tag `v1.1` = `f0397f3`，文件清单、两份 sha256（vendored 与上游）与取舍见
+  `src/decis/engines/_jeff_vendor/VENDOR.md`，`NOTICE` 已记录，署名保留 Mathias Strasser 与
+  Denis Yarats（AutoJev）。这是**唯一一份非逐字节复制**的 vendored 代码：它需要把绝对自引用
+  （`from jeff.X import`）改成相对引用（`from .X import`）才能在 `decis` 里当子包用，
+  `tests/test_jeff_vendor.py` 把这个改写**双向**钉住。**除此之外不得修改**。
+  注意代码许可与权重许可是两件事：两个 checkpoint 在 Hub 上都声明 `apache-2.0`，Gemma 那个还带
+  Google 的 Gemma 4 terms 链接。
 - **laya-mlx**：仅作为工程做法参考（测试 fixture、基准方法论），**不复制代码**。若复制，其 `NOTICE` 要求保留对 Convai Innovations 的署名。
 - 新增任何第三方代码前，先在 `NOTICE` 加条目。
 

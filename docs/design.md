@@ -30,16 +30,31 @@
 
 ## 2. 核心抽象：一切决策模型都是"给选项打分"
 
-这是整个设计的支点。观察两个完全独立的开源实现：
+这是整个设计的支点。观察三个完全独立的开源实现：
 
-| | kev（自回归 LM 变种） | Laya（双向编码器变种） |
-|---|---|---|
-| 骨架 | Qwen3.5 + LoRA r=16 | ModernBERT-large / mmBERT-base |
-| 读出头 | pointer head 对每个 `</opt>` 的 hidden state 与 `<decide>` 打分 | 每个选项一个 `[MASK]` marker token，对 marker 位置打分 |
-| 三种 primitive | 全部降维成 2/ K / L 个"选项" | 同左 |
-| 一次前向 | 打包所有问题的分支，共享 state 前缀 | `collate_items` 展平所有问题成 batch |
+| | kev（自回归 LM 变种） | Laya（双向编码器变种） | Jeff（decoder-only + readout） |
+|---|---|---|---|
+| 骨架 | Qwen3.5 + LoRA r=16 | ModernBERT-large / mmBERT-base | Qwen3.5-0.8B / Gemma-4-E2B，全量微调 |
+| 读出头 | pointer head 对每个 `</opt>` 的 hidden state 与 `<decide>` 打分 | 每个选项一个 `[MASK]` marker token，对 marker 位置打分 | 最后一个 token 的 hidden state × 一个 255×d 的 readout 矩阵，按 option code 取行 |
+| 三种 primitive | 全部降维成 2/ K / L 个"选项" | 同左 | 同左（`noul` 两个、`score` = 层级数） |
+| 一次前向 | 打包所有问题的分支，共享 state 前缀 | `collate_items` 展平所有问题成 batch | 每行一条独立序列，`predict(batch_size=8)` 自己分块 |
+| 提示词 | 引擎自己排 `no`/`yes` 与裸层级文本 | 上游 `build_sequence` | 上游 `decision_messages`：**`json.dumps(state)`**，不是扁平化文本 |
 
-**两者殊途同归：`(state, instructions, [option…]) → 每个选项一个概率`。**
+**三者殊途同归：`(state, instructions, [option…]) → 每个选项一个概率`。**
+
+**第三个实现带来一个必须显式处理的兼容层。** kev 与 Laya 都能吃 `render.py` 扁平化后的
+`key: value` 文本；Jeff 的 checkpoint 是在 `json.dumps(state)` 上训练的（`_jeff_vendor/model.py`
+的 `describe()`：字符串原样、其余 `json.dumps(v, ensure_ascii=False)`）。把 state 换成扁平化文本
+**不会报错**，只是答案比它自己的基准差——正是 §9 明令禁止的"静默降质"，而且远比截断难发现
+（形状完全正常）。所以：
+
+- `PreparedQuestion` 增加 `raw`、`PreparedRequest` 增加 `raw_state`，由 `render.py` 在准备阶段
+  **原样填入**调用方 JSON（`domain.py` 里两个字段，`render.py` 一处赋值，`service.py` 把它搬进
+  每个 `WorkItem.raw_state`）。**渲染规则本身没有第二个实现**：扁平化文本仍然只有 `render.py`
+  一份，`raw` 是"同一份输入的另一半"而不是另一种渲染。
+- 引擎按需取用：Jeff 读 `raw`，kev/Laya 继续读文本。`raw` 为 `None` 时 Jeff **大声失败**
+  （`ValueError`），不回退到扁平化文本——静默回退正是要避免的那件事。
+- 反过来的约束也记在 `AGENTS.md §9`：不许引擎自己解析一遍请求体去拿原 JSON。
 
 所以 Decis 的中间表示（IR）就是这个：
 
@@ -264,7 +279,7 @@ class PreparedRequest:
 "谁来负责 state 一致性"这个问题也一并消失。
 
 
-### 5.2 三个引擎的正确性边界
+### 5.2 各引擎的正确性边界
 
 **`engines/laya.py`** —— 依赖 PyPI `laya>=0.3.5,<0.4`（Apache-2.0，wheels 仅 42KB）。
 
@@ -302,6 +317,34 @@ class PreparedRequest:
   而探测设备必须问 torch（`AGENTS.md §6`，`tests/test_conventions.py` 的 AST 守卫盯着）。
   引擎只问 `devices.py`，不再各写各的 `or "cpu"`——那正是 `design-review.md §2-D24`。
 
+**`engines/jeff.py`** —— **不 pip 依赖 jeff**（未发布到 PyPI），vendor 一份最小子集到
+`src/decis/engines/_jeff_vendor/`，pin tag `v1.1`。
+
+- **代码许可与权重许可是两件事**：vendored 代码是 MIT（Mathias Strasser / Jeff，与 AutoJev 的
+  Denis Yarats），两个 checkpoint 在 Hub 上声明 Apache-2.0（Gemma 那个另带 Google 的 Gemma 4
+  terms 链接）。`NOTICE` 两边都记，`VENDOR.md` 记文件清单与两份 sha256。
+- 与 kev 的 vendored 副本有一处结构差别：jeff 的自引用是绝对的（`from jeff.types import`），
+  当子包用必须改写成相对引用（`from .types import`）。这是**唯一**允许的改动，
+  `tests/test_jeff_vendor.py` 双向钉住（把改写反向套回去必须与上游逐字节相同）。
+- **两个 loader，不是两套引擎**：`JeffEngine` 是基类，`DecisionModel`（Qwen3.5 路径，用
+  `AutoProcessor`）与 `GenericDecoderDecisionModel`（任意 causal decoder，用 `AutoTokenizer`）
+  只差一个类名、一个默认 `max_options` 和权重会话，行构造 / 测量 / 分块推理全部共用。
+- 两个 checkpoint 都带 `decision_config.json`，里面是训练时定下的 `max_options`（Qwen 254 /
+  Gemma 26）、`temperature`（1.1289… / 1.0191…）与 `prompt_layout`。**加载后以文件为准重读**，
+  不相信子类里的常量：`temperature` 不套用会给出过度自信的分布（形状正常、数值错），
+  `max_options` 读错会让超宽请求通过校验后被 mask 成 `-1e9`。
+- 容量测量的细节：state 与 question 是两段独立的 `describe()` 文本，tokenizer 的边界效应让
+  "量 state"与"量 state+question"两个数字不能相加得到正确答案，所以 `measure()` 对每个候选
+  问题做**两次** `prepare`（`max_length=1<<30`，即不设上限）取 `input_tokens` 之差。这是
+  `AGENTS.md §5-4`"必须用真实 tokenizer 测量"的直接后果，不是可选优化。
+- 两个 readout 都是 255 行（`MAX_OPTIONS` 的硬上限），但 `max_options` 是 checkpoint 训练时
+  的宽度。两者不是一回事：255 是"读出头能表达的"，254/26 是"训练过的"。超宽请求按后者拒。
+- 上游 `prepare()` 超过 `max_length` 会**抛异常**（"no input was truncated"），所以 Decis 没有
+  自己实现截断防护的必要：`measure()` 报真实长度，`validate_capacity` 在推理前把超长请求变成
+  422，上游那次抛异常只剩兜底作用（`AGENTS.md §9`）。
+- 未接的路径：`mlx_backend.py`（Apple 专用后端，与"一个 `DECIS_DEVICE` 故事"冲突）、
+  `server.py`（会引入第二份答案格式，且硬编码 `host="127.0.0.1"`）、训练与评测代码。
+
 **`engines/remote.py`（⬜ 未实现，见 §11）** —— 转发到真 `api.typesafe.ai`。
 
 - 价值有三：用户可以同一套 API 在本地/托管之间切换；**它是差分测试的 oracle**（见 §9）；成本极低（一个 httpx 客户端）。
@@ -315,14 +358,16 @@ class PreparedRequest:
 ### 5.3 引擎的加载必须是惰性的
 
 引擎注册表是 `src/decis/engines/registry.py` 里的 `SPECS`：id → `"module:ClassName"` + 可选依赖
-extra，**字符串路径、用时才 import**。出厂四个：`laya`、`laya-multilingual`、`laya-typed-decisions`、
-`kev-0.8b`（每个 Laya checkpoint 各一条，因为它们的权重与容量不同，`GET /v1/models` 要能分别描述）。
+extra，**字符串路径、用时才 import**。出厂六个 id、三个引擎族：`laya`、`laya-multilingual`、
+`laya-typed-decisions`（每个 Laya checkpoint 各一条，因为它们的权重与容量不同，`GET /v1/models`
+要能分别描述）、`kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b`。
 **注册表里没有假引擎**：测试替身住在 `tests/fixture_engine.py`，只在测试进程里注册（§5.2 末尾）。
 
 惰性 import 的理由：一个只装 `decis[laya]` 的镜像里**没有 peft**，反之亦然；`/healthz`、`/readyz`、
 `GET /v1/models` 必须在只装了所选引擎依赖的情况下可用（`AGENTS.md §6`）。可选的 extras 以
-`pyproject.toml` 为准（`laya` / `kev` / `remote` / `metrics` / `dev` / `download` / `all`；`remote` 与
-`metrics` 目前只登记了依赖，没有实现），这里不抄版本号——一个下界就是一个兼容性承诺，抄一份保证会漂移。
+`pyproject.toml` 为准（`laya` / `kev` / `jeff` / `remote` / `metrics` / `dev` / `download` / `all`；
+`remote` 与 `metrics` 目前只登记了依赖，没有实现），这里不抄版本号——一个下界就是一个兼容性承诺，
+抄一份保证会漂移。
 
 ---
 
@@ -463,24 +508,36 @@ Decis 责任而非模型责任的部分。于是：
 
 ```
 resolve(spec, settings) →                                    src/decis/paths.py
-  1. $DECIS_MODEL_PATH_<ENGINE_ID> 指向的目录是完整 checkpoint  → 用它（你自己的权重）
-  2. $DECIS_MODEL_DIR/<engine-id>/ 是完整 checkpoint           → 用它（挂载模式）
-  3. $DECIS_MODEL_DIR/<engine-id>/<subfolder>/ 是完整 checkpoint → 用它（仓库布局的挂载）
-  4. 有 repo_id → 交给调用方去 snapshot_download（decis download）→ 再回到上面的判断
-  5. 否则 → 报错，错误信息里给出确切的下载命令
+  0. --model-path <engine>=<dir> 指向本引擎的一个完整 checkpoint → 用它（你自己的权重）
+  1. $DECIS_MODEL_DIR/<engine-id>/ 是完整 checkpoint           → 用它（挂载模式）
+  2. $DECIS_MODEL_DIR/<engine-id>/<subfolder>/ 是完整 checkpoint → 用它（仓库布局的挂载）
+  3. 有 repo_id → 交给调用方去 snapshot_download（decis download）→ 再回到上面的判断
+  4. 否则 → 报错，错误信息里给出确切的下载命令
 ```
 
-- **"完整"是有定义的**：目录里必须有 `rl_agent_config.json`（引擎在 `WeightSpec.marker` 里声明）。
-  这条不是形式主义：`DECIS_MODEL_DIR` 通常是个挂载点，而**挂载点在卷为空时依然存在**，
-  这是最常见的故障，且不检查的话会以模型加载器深处的一个费解错误浮现。`tests/test_paths.py`
-  钉住了"存在但为空"和"存在但缺文件"两种情况都必须回退到网络而不是被当成可用权重。
+- **第 0 条是命令行参数，不是一个环境变量。** 这里曾经是 `DECIS_MODEL_PATH_<ENGINE_ID>`，已删除：
+  变量名里放不下引擎 id 里的点号（`kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b`），
+  规范化后变成一个没注册的 id 然后被静默丢弃——"覆盖不生效"最糟的形态。`--model-path`
+  把 id 放进**值**里（`--model-path kev-0.8b=/srv/finetunes/acme`），未知 id 直接是配置错误。
+- **`resolve` 只按 `spec.engine_id` 查表**，所以第 0 条的别名规范化（`jeff` → `jeff-qwen3.5-0.8b`）
+  必须发生在更早的地方：`cli._parse_model_paths`。`paths.py` 不能 import `registry`（那会引入
+  反向依赖），于是"哪些 id 合法"只有 `cli.py` 一个地方判定，`resolve` 保持成一个纯查表函数。
+- **"完整"是有定义的**，而且是两条：目录里必须有引擎在 `WeightSpec.marker` 里声明的那个文件
+  （Laya 是 `rl_agent_config.json`，Jeff 是 `decision_config.json`），**并且** checkpoint 自己的
+  `*.safetensors.index.json` 里 `weight_map` 点到的每个分片文件都必须在。第一条不是形式主义：
+  `DECIS_MODEL_DIR` 通常是个挂载点，而**挂载点在卷为空时依然存在**，这是最常见的故障，
+  且不检查的话会以模型加载器深处的一个费解错误浮现。第二条是为**分片** checkpoint 加的
+  （`design-review.md §2-D29`，本轮实测 Gemma 的 8.65 GiB 拷贝时发现）：分片是**陆续**到达的，
+  config、tokenizer、index 往往先落地，于是只看 marker 会把"下到一半"判成 ready，
+  而 `decis models` 说 ready、加载器说 `FileNotFoundError`。`tests/test_paths.py` 钉住了这四种
+  情况：存在但为空、存在但缺文件、有 index 但缺分片、以及分片齐全。
 - **本地永远优先于网络**。这是安全性质而非偏好：把权重烘进镜像或挂载的全部意义就是
   镜像可以无出口网络运行，所以一个缺失的卷绝不能导致容器去访问 Hub。
-- 第 3 步返回的是**解析后的根目录**（`checkpoint_root`），所以调用方不会把 subfolder 加两次——
+- 第 2 步返回的是**解析后的根目录**（`checkpoint_root`），所以调用方不会把 subfolder 加两次——
   那正是这个函数要防的错误。
 - **revision 钉在 commit sha 上**，不是 tag 或 branch：否则上游一次 force-push 就会改变某个已发布的
   Decis 镜像加载的是什么权重，可复现性就没有了（`engines/laya.py: REVISION`）。
-  要跑自己的微调就用第 1 条，那是这条规则预留的出口。
+  要跑自己的微调就用第 0 条，那是这条规则预留的出口。
 - 离线：`HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`。
 
 ### 7.2 各引擎的权重清单 — ✅ 体积取自 Hub 文件列表实测
@@ -495,6 +552,8 @@ resolve(spec, settings) →                                    src/decis/paths.p
 | `laya-multilingual` | 同上，`subfolder="multilingual"` | 646.8 MiB | 614.0 MiB | 322M 参数，mmBERT-base，~2.2× 快 |
 | `laya-typed-decisions` | 同上，`subfolder="typed-decisions"` | 807.0 MiB | 803.6 MiB | typed-decisions workflow 专用 |
 | `kev-0.8b` | adapter `jaredpalmer/kev-0.8b`（pin `54f4f87`）+ 基座 `Qwen/Qwen3.5-0.8B-Base`（pin `dc7cdfe`） | **45,443,000 B (43.3 MiB) + 1,769,896,333 B (1.65 GiB)** | 43.3 MiB + 1.63 GiB | 实测自本机 Hub 缓存；**基座是大头**，adapter 只占 2.5% |
+| `jeff-qwen3.5-0.8b` | `mstrasser/Jeff-Qwen3.5-0.8B`（pin `0f212b3`） | **1,726,570,651 B (1.61 GiB)** | 1,706,027,688 B (1.59 GiB) | 全量微调 **无基座**（`bases=()`）；852,985,920 参数（Hub `safetensors.parameters`） |
+| `jeff-gemma4-e2b` | `mstrasser/Jeff-Gemma4-E2B`（pin `e3de3e9`） | **9,290,236,873 B (8.65 GiB)** | 9,257,198,246 B (8.62 GiB，两个分片) | 同上；4,628,569,379 参数。基座 `google/gemma-4-E2B-it` 的许可另算（`NOTICE`） |
 | `kev-4b` / `kev-9b` | 同上 | 未实测 | ≈582MB + 8GB / ≈392MB + 18GB | 超出"轻量"定位，只做可选镜像 |
 
 三个 Laya checkpoint 共用同一个仓库，但 `allow_patterns` 只列出一个 checkpoint 的文件
@@ -502,10 +561,31 @@ resolve(spec, settings) →                                    src/decis/paths.p
 所以装一个不会顺带拉另外两个。`tests/test_paths.py` 断言了这一点，包括"根 checkpoint 的前缀为空
 时不能退化成下载全部"。
 
+两个 Jeff 条目同样是 `allow_patterns` 实测的总和（`*.json` / `*.safetensors` / `tokenizer*` /
+`*.jinja` / `LICENSE` / `NOTICE`），因此**不含** `README.md`、`.gitattributes` 与 Hub 上的
+`assets/`、`videos/` 示例目录——`tests/test_engines_jeff.py` 断言了后两个被排除。
+`expected_bytes` 与这份模式的交集逐字节相等，多一个少一个文件 `decis download` 就会报体积不符。
+
 **实测过的组合**（`benchmarks/results/`）：`laya 0.3.5` + `torch 2.14.0+cpu` +
 `transformers 5.17.0` + `safetensors 0.8.0` + `numpy 2.5.3`。`pyproject.toml` 里只钉
 `laya>=0.3.5,<0.4`，不重复声明它自己已经声明的 torch 等依赖——加一个我们没测过的下界，
 是一个无法支撑的兼容性承诺。
+
+Jeff 用的是同一套 `torch` / `transformers` / `safetensors`。额外的两个依赖都不是"因为要看图"：
+
+- `pillow`：vendored `_jeff_vendor/types.py` 在模块顶层 import `PIL`（不装就是 ImportError，
+  不是降级）。
+- `torchvision`：**本轮实测补上的**，理由反直觉。Qwen 那个 checkpoint 的 processor 是
+  `Qwen3VLProcessor`（继承自 Qwen3-VL），因此它的 `processor_config.json` 里写着一个
+  `Qwen3VLVideoProcessor`；`AutoProcessor.from_pretrained` 会**急切地构造其中列出的每一个**
+  子 processor，而那个类在**被 import 时**就抛
+  `ImportError: Qwen3VLVideoProcessor requires the Torchvision library`。于是纯文本加载在读到
+  任何一个张量之前就失败了，报错指向一个永远用不到的路径。这个 extra 曾有一轮声明
+  "torchvision 故意不装"，只有 `tests/test_jeff_inference.py` 发现了它是错的
+  （2026-09-30，`torchvision 0.29.0` + `torch 2.14.0`）。
+
+权重体积与文件清单已实测；**推理本身**（真实前向、批不变性、与上游提示词逐字节一致、
+`-m weights`）在 Qwen 上已通过，Gemma 见下面的"未实测"一节。
 
 `EngineInfo` 里的 `release_date` 用 Hub 元数据里的 `lastModified`（`2026-09-20`），
 那是唯一可核实的日期；它不是营销意义上的发布日。

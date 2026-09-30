@@ -43,6 +43,18 @@ laya = ["laya>=0.3.5,<0.4"]
 # docs/design.md §7.2 -- a floor is a compatibility claim, and 4.44 was one we could
 # not back.
 kev = ["torch>=2.6", "transformers>=5.0", "peft>=0.18", "accelerate>=1.0", "safetensors>=0.4", "huggingface_hub>=0.30"]
+# What the vendored copy actually calls: `AutoProcessor` / `AutoTokenizer` and
+# `...Model.from_pretrained(..., dtype=..., attn_implementation="sdpa")` (the `dtype=`
+# spelling is transformers 5), `safetensors.torch.load_file` for `readout.safetensors`,
+# `pillow`, which `_jeff_vendor/model.py` imports at module scope, and `torchvision`,
+# which the *text* path needs despite appearances: the Qwen checkpoint's processor is
+# `Qwen3VLProcessor` (Qwen3-VL), and `AutoProcessor.from_pretrained` eagerly builds every
+# sub-processor named in `processor_config.json` -- including the video one, whose class
+# raises `ImportError: Qwen3VLVideoProcessor requires the Torchvision library` at *import*
+# time. So the load fails before any tensor is read. Measured, not assumed: this extra
+# shipped without torchvision for one round and `tests/test_jeff_inference.py` was the
+# only thing that noticed (2026-09-30, torchvision 0.29.0 + torch 2.14.0).
+jeff = ["torch>=2.6", "transformers>=5.0", "torchvision>=0.20", "safetensors>=0.4", "pillow>=10", "huggingface_hub>=0.30"]
 # Reserved: the `remote` engine and the `/metrics` endpoint are not implemented yet
 # (see docs/design.md §11). These extras are declared so the dependency choice is
 # recorded, but `uv sync --extra remote` currently buys you nothing.
@@ -60,7 +72,7 @@ dev = [
   "ruff>=0.6",
   "typesafe-sdk>=0.7.1",
 ]
-all = ["decis[laya,kev,remote,metrics]"]
+all = ["decis[laya,kev,jeff,remote,metrics]"]
 
 # `decis download` needs huggingface_hub, which arrives with any engine that has
 # weights. `decis doctor` says so explicitly when it is missing.
@@ -93,7 +105,7 @@ src = ["src", "tests"]
 # Vendored third-party code is kept byte-identical to upstream so that its sha256 is
 # a meaningful pin (tests/test_kev_vendor.py). Reformatting it to our style would
 # break that, so it is excluded rather than edited. See VENDOR.md.
-extend-exclude = ["src/decis/engines/_kev_vendor"]
+extend-exclude = ["src/decis/engines/_kev_vendor", "src/decis/engines/_jeff_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "PTH"]

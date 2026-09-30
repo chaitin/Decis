@@ -104,13 +104,36 @@ services:
     command: ["decis", "serve", "--engine", "kev-0.8b"]
     ports: ["${DECIS_KEV_HOST_PORT:-8001}:8000"]
 
+  # The two Jeff checkpoints. `jeff-gemma4-e2b` bakes ~8.65 GiB of weights, so its image
+  # is by far the largest one here; the `-runtime` variant exists for deployments that
+  # would rather keep that on a volume.
+  jeff-qwen3.5-0.8b:
+    <<: *engine
+    image: chaitin/decis:jeff-qwen3.5-0.8b
+    profiles: [jeff-qwen3.5-0.8b]
+    environment:
+      <<: *environment
+      DECIS_DEFAULT_ENGINE: jeff-qwen3.5-0.8b
+    command: ["decis", "serve", "--engine", "jeff-qwen3.5-0.8b"]
+    ports: ["${DECIS_JEFF_QWEN_HOST_PORT:-8002}:8000"]
+
+  jeff-gemma4-e2b:
+    <<: *engine
+    image: chaitin/decis:jeff-gemma4-e2b
+    profiles: [jeff-gemma4-e2b]
+    environment:
+      <<: *environment
+      DECIS_DEFAULT_ENGINE: jeff-gemma4-e2b
+    command: ["decis", "serve", "--engine", "jeff-gemma4-e2b"]
+    ports: ["${DECIS_JEFF_GEMMA_HOST_PORT:-8003}:8000"]
+
   playground:
     <<: *restart
     image: chaitin/decis:playground
-    # In both engine profiles, so it starts with whichever engine does. It cannot be in
+    # In every engine profile, so it starts with whichever engine does. It cannot be in
     # neither and start by default: a service with no profile starts on *every* `up`,
     # including a deployment that deliberately runs one engine.
-    profiles: [laya-multilingual, kev-0.8b]
+    profiles: [laya-multilingual, kev-0.8b, jeff-qwen3.5-0.8b, jeff-gemma4-e2b]
     # No `env_file: [.env]` on purpose: the values in that file are the engine's
     # (`DECIS_PORT`, `DECIS_MODEL_DIR`, ...), and this container runs none of it. Only the
     # things that are actually its interface are passed.
@@ -118,11 +141,11 @@ services:
       DECIS_PLAYGROUND_HOST: 0.0.0.0
       DECIS_PLAYGROUND_PORT: "8080"
       # Empty means "find the engine yourself": `server.py` tries this first when it is
-      # set, then the candidate list below. The candidates name both engine services and
-      # the host, so the same image works under either profile and next to a
+      # set, then the candidate list below. The candidates name every engine service and
+      # the host, so the same image works under any profile and next to a
       # `decis serve` running outside Compose.
       DECIS_PLAYGROUND_UPSTREAM: ${DECIS_PLAYGROUND_UPSTREAM:-}
-      DECIS_PLAYGROUND_CANDIDATES: ${DECIS_PLAYGROUND_CANDIDATES:-http://laya-multilingual:8000,http://kev-0.8b:8000,http://host.docker.internal:8000}
+      DECIS_PLAYGROUND_CANDIDATES: ${DECIS_PLAYGROUND_CANDIDATES:-http://laya-multilingual:8000,http://kev-0.8b:8000,http://jeff-qwen3.5-0.8b:8000,http://jeff-gemma4-e2b:8000,http://host.docker.internal:8000}
       DECIS_API_KEY: ${DECIS_API_KEY:?set DECIS_API_KEY in .env (cp .env.example .env)}
     # Makes `host.docker.internal` resolve on Linux too, for the "engine running on the
     # host" case above.

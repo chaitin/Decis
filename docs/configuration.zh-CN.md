@@ -67,13 +67,16 @@ decis serve --preload
 | `DECIS_DEFAULT_ENGINE` | `laya-multilingual` | `decis serve` 加载的引擎，也是回答 `model` 为“你的默认值”这类名字（如 `jev-latest`）的请求所用的引擎。`--engine` 会覆盖它。 |
 | `DECIS_ACCEPT_FOREIGN_DEFAULTS` | `1` | 用已加载的引擎回答 `jev-latest`（官方 SDK 的默认值），而不是 422。正是它让只换 `base_url` 就够了。这个替换会记在 `decis.requested_model` 里。 |
 | `DECIS_MODEL_DIR` | 未设置 | 预先下载好的权重目录。期望布局：`<DECIS_MODEL_DIR>/<engine-id>/`。 |
-| `DECIS_MODEL_PATH_<ENGINE_ID>` | 未设置 | 让单个引擎指向它自己的目录。优先级高于 `DECIS_MODEL_DIR`。名字是引擎 id 全大写，所以只能寻址不含点号的 id——见下面的 `kev-0.8b` 注意点。 |
 
 权重解析的顺序是固定的；第一个命中的生效，本地目录优先于网络：
 
-1. `DECIS_MODEL_PATH_<ENGINE_ID>` —— 例如 `DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage`。
+1. 用 `--model-path` 为这个引擎指定的目录（见下）。
 2. `DECIS_MODEL_DIR/<engine-id>/`。
 3. Hugging Face 缓存，必要时下载。
+
+一个候选目录只有在是**完整** checkpoint 时才算数：引擎 `WeightSpec.marker` 指名的那个文件要
+在，分片 checkpoint 还要满足 `*.safetensors.index.json` 里列出的每个文件都在。任何一条不满足
+就当作"这里没有"，于是下到一半的目录会落到第 3 步，而不是先被拿去服务、再在加载时失败。
 
 ```bash
 uv run decis download --engine laya-multilingual                  # 下载进 HF 缓存
@@ -81,19 +84,34 @@ uv run decis download --engine laya-multilingual --dest ./models  # 下载进 ./
 DECIS_MODEL_DIR=./models uv run decis serve
 ```
 
-> **`kev-0.8b` 有一个注意点。** 按引擎的覆盖变量寻址不到它：变量名是引擎 id 全大写并把 `-`
-> 换成 `_`，而点号在那里没有任何表示，所以这个引擎对应的变量会规整成 id `kev-0-8b`——它没有
-> 注册任何东西，于是被静默忽略。请改用 `DECIS_MODEL_DIR` 加一个 `kev-0.8b/` 子目录。那个目录
-> 是**适配器**（LoRA 加 pointer head），也正是你会去微调的部分；Qwen3.5 **基座**模型在适配器的
-> checkpoint 元数据里是以 Hub repo id 的形式被引用的，所以单独挂载一份基座不会被读到。
-> `decis download` 会把基座放进 Hugging Face 缓存，之后引擎就能离线运行。
+### 让单个引擎读你自己的目录
+
+`--model-path` 为某个引擎指定一个 checkpoint 目录，对这个引擎而言优先于 `DECIS_MODEL_DIR`。
+它可以重复，并且接受引擎 id 或它的任一别名：
+
+```bash
+uv run decis serve --engine kev-0.8b --model-path kev-0.8b=/srv/finetunes/acme-triage
+uv run decis serve --model-path laya-multilingual=/srv/mine --model-path jeff=/srv/jeff-qwen
+```
+
+这里**故意没有 `DECIS_MODEL_PATH_<ENGINE_ID>` 变量**。那种形式必须把引擎 id 编进变量*名*里，
+全大写并把 `-` 换成 `_`，而任何变量名都装不下 `kev-0.8b`、`jeff-qwen3.5-0.8b`、
+`jeff-gemma4-e2b` 里的点号：`kev-0.8b` 对应的变量会规整成 id `kev-0-8b`，它没有注册任何东西，
+于是这个覆盖被静默丢弃。把 id 放进*值*里就没有这个限制。`decis doctor` 会打印所有解析到的覆盖，
+命令行上出现未知引擎 id 是配置错误，而不是什么都不做。
+
+> **`kev-0.8b` 有一个注意点。** 你指过去的那个目录是**适配器**（LoRA 加 pointer head），也正是
+> 你会去微调的部分；Qwen3.5 **基座**模型在适配器的 checkpoint 元数据里是以 Hub repo id 的形式
+> 被引用的，所以单独挂载一份基座不会被读到。`decis download` 会把基座放进 Hugging Face 缓存，
+> 之后引擎就能离线运行。两个 Jeff 引擎不一样：它们各自都是全权重微调，所以一个目录里就是全部，
+> 不会再额外取别的东西。
 
 ## 计算
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `DECIS_DEVICE` | 自动 | `cpu`、`cuda`、`mps`、`xpu` 或 `npu`。不设则自动选最可用的。 |
-| `DECIS_DTYPE` | 按引擎+设备 | 强制 `fp32`、`fp16` 或 `bf16`。读取它的是那些查 `registry.DTYPE_DEFAULTS` 的引擎——目前只有 `kev-0.8b`。Laya 由它自己的 `Agent` 决定精度，会忽略它。 |
+| `DECIS_DTYPE` | 按引擎+设备 | 强制 `fp32`、`fp16` 或 `bf16`。读取它的是那些查 `registry.DTYPE_DEFAULTS` 的引擎——目前只有 `kev-0.8b`。Laya 由它自己的 `Agent` 决定精度，两个 Jeff checkpoint 由加载器内部决定（有加速器就 bf16，否则 fp32），所以这三个都忽略它。 |
 | `DECIS_TORCH_THREADS` | 每个 vCPU 一个 | 该进程的线程数。 |
 
 `DECIS_DEVICE` 不设时由 `src/decis/engines/devices.py` 决定：取 `torch` 报告可用的第一个加速器，
@@ -157,7 +175,7 @@ playground 是独立的进程，它直接读 `os.environ`
 | `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | 一次经代理的 `/v1/systemone` 调用最多允许多久。故意给得宽：代理超时如果在引擎还在算的时候触发，就会把一个即将到达的答案报成错误。 |
 | `DECIS_PLAYGROUND_PROBE_TIMEOUT_S` | `2` | 探测某个候选引擎的 `/readyz` 最多允许多久。 |
 | `DECIS_PLAYGROUND_UPSTREAM` | 未设置 | 直接指定一个先试的引擎，跳过搜索。它仍然要被探测，不是无条件信任。 |
-| `DECIS_PLAYGROUND_CANDIDATES` | 内置列表 | 逗号分隔的 `/readyz` 候选，按顺序尝试。Compose 把它设成两个引擎服务名加 `host.docker.internal`。 |
+| `DECIS_PLAYGROUND_CANDIDATES` | 内置列表 | 逗号分隔的 `/readyz` 候选，按顺序尝试。Compose 把它设成每个引擎的服务名（目前四个）加 `host.docker.internal`。 |
 
 探测会绕开环境里的任何代理：走代理的探测会去问代理 `127.0.0.1`，问不出关于引擎的任何事情。
 

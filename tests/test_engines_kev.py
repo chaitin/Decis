@@ -326,17 +326,33 @@ def test_every_registered_engine_with_deps_has_a_cpu_dtype() -> None:
 
     `default_dtype` falls back to fp32 on cpu and fp16 on cuda. For an engine whose
     upstream defaults differently that guess is wrong in a way nothing reports, so the
-    engines that need an entry are listed explicitly and this keeps the list honest.
+    engines that need an entry are listed explicitly and this keeps the list honest --
+    and so is the exception: an engine whose *upstream loader* picks the precision and
+    accepts no override cannot have a meaningful table entry. That is Laya (its `Agent`)
+    and both Jeff checkpoints (bf16 on an accelerator, fp32 on cpu -- see
+    `engines/jeff.py: load`).
     """
     from decis.engines.registry import DTYPE_DEFAULTS, default_dtype
+
+    #: Engines that do not consult `DTYPE_DEFAULTS` because their loader decides instead.
+    owns_precision = {
+        "laya",
+        "laya-multilingual",
+        "laya-typed-decisions",
+        "jeff-qwen3.5-0.8b",
+        "jeff-gemma4-e2b",
+    }
+    assert owns_precision <= set(SPECS), (
+        f"the precision exemption names engines that no longer exist: {sorted(owns_precision - set(SPECS))}"
+    )
 
     # Every engine that declares heavy dependencies must have decided its cpu dtype.
     for engine_id, spec in SPECS.items():
         if not spec.extra:
             continue
-        assert (engine_id, "cpu") in DTYPE_DEFAULTS or spec.extra == "laya", (
-            f"{engine_id} declares the {spec.extra!r} extra but no cpu dtype; "
-            f"either add a DTYPE_DEFAULTS entry or say here why the fallback is right"
+        assert (engine_id, "cpu") in DTYPE_DEFAULTS or engine_id in owns_precision, (
+            f"{engine_id} declares the {spec.extra!r} extra but no cpu dtype; either add a "
+            f"DTYPE_DEFAULTS entry or add it to `owns_precision` here with the reason"
         )
     assert default_dtype("kev-0.8b", "cpu") == "fp32", "kev in bf16 on cpu is ~83x slower"
 

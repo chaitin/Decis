@@ -10,6 +10,7 @@ the model loader fail with something unhelpful much later.
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 from decis.config import Settings, load_settings
@@ -20,6 +21,7 @@ from decis.paths import (
     download_arguments,
     filesystem_has_room,
     human_bytes,
+    missing_shards,
     resolve,
 )
 
@@ -165,6 +167,79 @@ def test_a_spec_with_no_marker_accepts_any_non_empty_directory(tmp_path: Path) -
     assert checkpoint_root(tmp_path / "opaque", spec) == tmp_path / "opaque"
 
 
+# --- a checkpoint that is only half here ---------------------------------------
+#
+# Found by downloading the 8.65 GiB Gemma Jeff checkpoint and pointing a loader at the
+# directory while the shards were still landing: `decision_config.json` and
+# `model.safetensors.index.json` arrive first, so the marker meant "complete checkpoint"
+# while `model-00001-of-00002.safetensors` did not exist yet. `decis models` called that
+# **ready** and the loader raised `FileNotFoundError` from inside `transformers`
+# (`docs/design-review.md` §2-D29). These are the assertions that keep the marker honest.
+
+
+def sharded_checkpoint(root: Path, *, present: tuple[str, ...] = (), subfolder: str | None = None) -> Path:
+    """A checkpoint with an index naming two shards, `present` of which are written."""
+    directory = checkpoint(root, subfolder=subfolder)
+    names = ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors")
+    (directory / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {"total_size": 8},
+                "weight_map": {f"layer.{index}": name for index, name in enumerate(names)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in present:
+        (directory / name).write_bytes(b"weights")
+    return directory
+
+
+def test_a_manifest_with_missing_shards_is_not_a_checkpoint(tmp_path: Path) -> None:
+    """The marker is there and the weights are not: that is not a checkpoint."""
+    directory = sharded_checkpoint(tmp_path / "half", present=("model-00001-of-00002.safetensors",))
+    assert (directory / SPEC.marker).is_file(), "the precondition: the marker alone says yes"
+    assert checkpoint_root(tmp_path / "half", SPEC) is None
+    assert missing_shards(directory) == ["model-00002-of-00002.safetensors"]
+
+
+def test_a_manifest_whose_shards_are_all_there_is_a_checkpoint(tmp_path: Path) -> None:
+    directory = sharded_checkpoint(
+        tmp_path / "whole",
+        present=("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),
+    )
+    assert missing_shards(directory) == []
+    assert checkpoint_root(tmp_path / "whole", SPEC) == tmp_path / "whole"
+
+
+def test_an_unreadable_manifest_is_not_silently_ignored(tmp_path: Path) -> None:
+    """A manifest nobody can parse cannot vouch for the directory it sits in."""
+    directory = sharded_checkpoint(tmp_path / "broken", present=("model-00001-of-00002.safetensors",))
+    (directory / "model.safetensors.index.json").write_text("{not json", encoding="utf-8")
+    assert missing_shards(directory) == ["model.safetensors.index.json"]
+    assert checkpoint_root(tmp_path / "broken", SPEC) is None
+
+
+def test_a_single_file_checkpoint_has_no_manifest_to_answer_to(tmp_path: Path) -> None:
+    """Every Laya checkpoint and every kev adapter is one `model.safetensors`."""
+    directory = checkpoint(tmp_path / "single")
+    assert missing_shards(directory) == []
+    assert checkpoint_root(tmp_path / "single", SPEC) == tmp_path / "single"
+
+
+def test_a_half_downloaded_mount_falls_through_to_the_hub(tmp_path: Path) -> None:
+    """The point of the predicate: a half-copied volume must not shadow a real fetch.
+
+    `resolve` prefers local over network on purpose (offline containers depend on it), so a
+    directory that *looks* local has to be a directory the loader can actually read --
+    otherwise the security property "a mounted copy wins" turns into "an interrupted copy
+    wins, and the service dies on startup".
+    """
+    sharded_checkpoint(tmp_path / "models" / "laya-multilingual", present=("model-00001-of-00002.safetensors",))
+    source = resolve(SPEC, settings_with(model_dir=tmp_path / "models"))
+    assert source.kind == "hub", "an incomplete local copy must not be reported as ready"
+
+
 # --- downloads -----------------------------------------------------------------
 
 
@@ -271,35 +346,39 @@ def test_a_small_request_obviously_fits(tmp_path: Path) -> None:
 # --- configuration plumbing ----------------------------------------------------
 
 
-def test_per_engine_overrides_are_read_from_the_environment(monkeypatch) -> None:
-    """`DECIS_MODEL_PATH_LAYA_MULTILINGUAL` -> the `laya-multilingual` engine."""
+def test_the_environment_cannot_carry_a_per_engine_override(monkeypatch) -> None:
+    """There is no `DECIS_MODEL_PATH_*`, and this is the assertion that keeps it gone.
+
+    The variable had to encode the engine id in its own *name*, upper-cased with
+    underscores, so `kev-0.8b` normalised to `kev-0-8b` and the override addressed no
+    engine at all -- silently, because an override for an unknown id looks exactly like
+    no override. Every Jeff id contains a dot, so the form was removed rather than
+    documented around: `--model-path ENGINE=PATH` puts the id in the *value*, where it can
+    be spelled exactly (AGENTS.md §9).
+    """
     monkeypatch.setenv("DECIS_MODEL_PATH_LAYA_MULTILINGUAL", "/srv/acme")
     monkeypatch.setenv("DECIS_MODEL_PATH_KEV_0_8B", "/srv/kev")
-    settings = load_settings(env_file="")
-    assert settings.model_paths["laya-multilingual"] == Path("/srv/acme")
-    assert settings.model_paths["kev-0-8b"] == Path("/srv/kev")
-
-
-def test_a_blank_override_is_ignored(monkeypatch, tmp_path: Path) -> None:
-    """An unset variable in a compose file arrives as an empty string, not as absent."""
-    monkeypatch.setenv("DECIS_MODEL_PATH_LAYA", "   ")
-    assert "laya" not in load_settings(env_file="").model_paths
+    monkeypatch.setenv("DECIS_MODEL_PATH_JEFF_QWEN3_5_0_8B", "/srv/jeff")
+    assert load_settings(env_file="").model_paths == {}
 
 
 def test_an_override_wins_even_when_the_shared_directory_also_has_one(tmp_path: Path) -> None:
-    """Documented precedence, asserted end to end through the environment."""
-    import os
+    """Documented precedence, asserted end to end from the command line to the loader.
+
+    Written through `cli._parse_model_paths` rather than by hand so that the flag's own
+    parsing is part of what this test connects: a typo there would leave the override
+    pointing at a directory nobody reads, which is precisely the failure the removed
+    environment variable had.
+    """
+    from decis.cli import _parse_model_paths
 
     checkpoint(tmp_path / "models" / "laya")
     fine_tune = tmp_path / "mine"
     checkpoint(fine_tune)
 
-    os.environ["DECIS_MODEL_PATH_LAYA"] = str(fine_tune)
-    try:
-        settings = load_settings(env_file="")
-    finally:
-        del os.environ["DECIS_MODEL_PATH_LAYA"]
+    overrides = _parse_model_paths([f"laya={fine_tune}"])
+    settings = settings_with(model_dir=tmp_path / "models", model_paths=overrides)
 
     root_spec = dataclasses.replace(SPEC, engine_id="laya", subfolder=None)
-    source = resolve(root_spec, dataclasses.replace(settings, model_dir=tmp_path / "models"))
+    source = resolve(root_spec, settings)
     assert source.path == fine_tune

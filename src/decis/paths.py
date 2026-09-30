@@ -18,6 +18,7 @@ a missing volume.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -170,8 +171,47 @@ def candidate_directories(spec: WeightSpec, settings: Settings) -> list[Path]:
     return directories
 
 
+def missing_shards(root: Path) -> list[str]:
+    """Files a checkpoint's own manifest names but that are not in `root`.
+
+    A sharded checkpoint ships `*.safetensors.index.json`, whose `weight_map` maps every
+    tensor to the file holding it. That manifest is the exact list `transformers` will
+    open, which is why this is the check rather than a byte count: `expected_bytes` is
+    declared per checkpoint and could drift, while the index cannot disagree with the
+    loader.
+
+    It matters because a checkpoint arrives at a mounted directory *in pieces* -- the last
+    shard lands last -- so an interrupted `decis download --dest`, a `cp` that ran out of
+    disk, or a partially synced volume all look complete from the outside: the config, the
+    tokenizer and the index are there. Without this, that directory is resolved as a local
+    checkpoint, `decis models` calls it **ready**, and the loader raises
+    `FileNotFoundError` from inside `transformers` naming a shard nobody was told to expect
+    (`docs/design-review.md` §2-D29).
+
+    Empty list means "nothing to complain about": either there is no index (single-file
+    checkpoints, and every base model of the Laya family) or every file it names is present.
+    """
+    for index_file in sorted(root.glob("*.safetensors.index.json")):
+        try:
+            manifest = json.loads(index_file.read_text(encoding="utf-8"))
+            weight_map = manifest["weight_map"]
+        except (OSError, ValueError, KeyError, TypeError):
+            # An unreadable or malformed manifest cannot be trusted to describe what is
+            # here, so it is reported as the missing piece rather than skipped.
+            return [index_file.name]
+        if not isinstance(weight_map, dict):
+            return [index_file.name]
+        names = {name for name in weight_map.values() if isinstance(name, str)}
+        if not names:
+            return [index_file.name]
+        missing = sorted(name for name in names if not (root / name).is_file())
+        if missing:
+            return missing
+    return []
+
+
 def checkpoint_root(directory: Path, spec: WeightSpec) -> Path | None:
-    """The directory to hand the loader, or None if this is not a checkpoint.
+    """The directory to hand the loader, or None if this is not a usable checkpoint.
 
     Two layouts are valid and both occur in practice:
 
@@ -181,16 +221,26 @@ def checkpoint_root(directory: Path, spec: WeightSpec) -> Path | None:
 
     Returning the resolved root rather than a boolean keeps the caller from
     appending the subfolder twice, which is the failure this exists to prevent.
+
+    "Usable" is two conditions, not one: the marker must be there, *and* every shard the
+    checkpoint's own index names must be there (`missing_shards`). The marker alone is not
+    enough -- see `design-review.md` §2-D29 -- and a directory that fails the second
+    condition is reported as "not a checkpoint here", so resolution falls through to the
+    Hub and the user gets a complete copy instead of a crash from inside the loader.
     """
     if not directory.is_dir():
         return None
     if spec.marker is None:
-        return directory if any(directory.iterdir()) else None
-    if (directory / spec.marker).is_file():
-        return directory
-    if spec.subfolder is not None and (directory / spec.subfolder / spec.marker).is_file():
-        return directory / spec.subfolder
-    return None
+        root = directory if any(directory.iterdir()) else None
+    elif (directory / spec.marker).is_file():
+        root = directory
+    elif spec.subfolder is not None and (directory / spec.subfolder / spec.marker).is_file():
+        root = directory / spec.subfolder
+    else:
+        root = None
+    if root is None or missing_shards(root):
+        return None
+    return root
 
 
 def resolve(spec: WeightSpec, settings: Settings) -> WeightSource:
@@ -323,5 +373,6 @@ __all__ = [
     "filesystem_has_room",
     "human_bytes",
     "missing_requirements",
+    "missing_shards",
     "resolve",
 ]

@@ -50,28 +50,9 @@ def _csv(name: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in _str(name).split(",") if part.strip())
 
 
-#: `DECIS_MODEL_PATH_<ENGINE_ID>` points one engine at a directory of your own,
-#: e.g. DECIS_MODEL_PATH_LAYA_MULTILINGUAL=/srv/finetunes/acme-triage
-_MODEL_PATH_PREFIX = "DECIS_MODEL_PATH_"
-
-
-def _model_paths() -> dict[str, Path]:
-    """Per-engine weight overrides, keyed by engine id.
-
-    Underscores become hyphens so that the variable name is a plain uppercase
-    transformation of the engine id: `laya-multilingual` ->
-    `DECIS_MODEL_PATH_LAYA_MULTILINGUAL`.
-    """
-    found: dict[str, Path] = {}
-    for name, value in os.environ.items():
-        if not name.startswith(_MODEL_PATH_PREFIX) or not value.strip():
-            continue
-        engine_id = name[len(_MODEL_PATH_PREFIX) :].lower().replace("_", "-")
-        if engine_id:
-            found[engine_id] = Path(value.strip())
-    return found
-
-
+#: `DECIS_MODEL_DIR` holds a tree of `<engine id>/` directories. There is deliberately
+#: no per-engine environment variable: see `Settings.model_paths` for why the id lives
+#: in a value (`--model-path`) rather than in a variable name.
 def is_loopback(host: str) -> bool:
     """Whether binding to `host` keeps the server off the network."""
     if host in {"localhost", ""}:
@@ -202,7 +183,13 @@ class Settings:
     port: int = 8000
     default_engine: str = "laya-multilingual"
     model_dir: Path | None = None
-    #: Per-engine overrides from DECIS_MODEL_PATH_*. Beats `model_dir`.
+    #: Per-engine directory overrides: engine id -> directory. Beats `model_dir`.
+    #: Filled by the `--model-path ENGINE=PATH` command-line option, **not** by the
+    #: environment: an engine id may contain a dot, and no environment variable *name*
+    #: can, so encoding the id in the variable name (the old
+    #: `DECIS_MODEL_PATH_<ENGINE_ID>`) silently failed for `kev-0.8b` and would have
+    #: failed for every Jeff checkpoint. Putting the id in the *value* removes the
+    #: restriction entirely. `decis doctor` prints what was resolved.
     model_paths: dict[str, Path] = field(default_factory=dict)
     max_request_bytes: int = 2 * 1024 * 1024
     request_timeout_ms: int = 8000
@@ -280,7 +267,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         port=_int("DECIS_PORT", 8000),
         default_engine=_str("DECIS_DEFAULT_ENGINE", "laya-multilingual"),
         model_dir=Path(model_dir) if model_dir else None,
-        model_paths=_model_paths(),
         max_request_bytes=_int("DECIS_MAX_REQUEST_BYTES", 2 * 1024 * 1024),
         request_timeout_ms=_int("DECIS_REQUEST_TIMEOUT_MS", 8000),
         shutdown_grace_ms=_int("DECIS_SHUTDOWN_GRACE_MS", 20000),

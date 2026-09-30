@@ -26,9 +26,9 @@ Which engine that is comes from `GET /readyz`, tried against a list of
 candidates, first one that answers wins:
 
 1. `DECIS_PLAYGROUND_UPSTREAM`, if it is set (an explicit answer, still probed);
-2. otherwise `DECIS_PLAYGROUND_CANDIDATES`, whose default names both published
-   engine services by their Compose service name plus `host.docker.internal` so
-   a `decis serve` running on the host is found too.
+2. otherwise `DECIS_PLAYGROUND_CANDIDATES`, whose default names every published
+   engine service by its Compose service name -- four of them -- followed by
+   `host.docker.internal` so a `decis serve` running on the host is found too.
 
 A container that is not running does not resolve its Compose service name, so
 "which engine is up" is answered by trying, not by reading `.env`. Nothing here
@@ -64,9 +64,17 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 #: names come first so that the documented `docker compose up` path never waits on
 #: a DNS timeout for `host.docker.internal`; the loopback and host entries make the
 #: same image useful when the engine runs outside Compose.
+#:
+#: Every engine service in `docker-compose.yml` is here, in the order they are declared
+#: there -- a name missing from this list is an engine the playground cannot find when the
+#: documented `--profile <engine>` command is what started it. `tests/test_compose.py`
+#: reads the service names out of the Compose file and asserts exactly that, so the two
+#: lists cannot drift.
 DEFAULT_CANDIDATES = (
     "http://laya-multilingual:8000",
     "http://kev-0.8b:8000",
+    "http://jeff-qwen3.5-0.8b:8000",
+    "http://jeff-gemma4-e2b:8000",
     "http://host.docker.internal:8000",
     "http://127.0.0.1:8000",
 )

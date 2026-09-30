@@ -49,15 +49,20 @@ candidates, in order, and connects to the first that answers:
 
 1. `http://laya-multilingual:8000`
 2. `http://kev-0.8b:8000`
-3. `http://host.docker.internal:8000`
-4. `http://127.0.0.1:8000`
+3. `http://jeff-qwen3.5-0.8b:8000`
+4. `http://jeff-gemma4-e2b:8000`
+5. `http://host.docker.internal:8000`
+6. `http://127.0.0.1:8000`
 
-Under Compose the candidate list is set explicitly to the first three (`docker-compose.yml`),
-so `127.0.0.1` is only tried when the playground runs on the host — which is what makes the
-same service work under `--profile kev-0.8b` and next to a `decis serve`. While the engine is
-still loading, the playground reports `searching` and the games say so instead of failing. Set
-`DECIS_PLAYGROUND_UPSTREAM` to name the engine and skip the search, or
-`DECIS_PLAYGROUND_CANDIDATES` to replace the list.
+The first four are the Compose service names, one per engine in `docker-compose.yml`. Under
+Compose the candidate list is set explicitly to the first five (`docker-compose.yml`), so
+`127.0.0.1` is only tried when the playground runs on the host — which is what makes the same
+service work under `--profile jeff-gemma4-e2b` and next to a `decis serve`. The canonical list is
+`playground/server.py: DEFAULT_CANDIDATES`; `tests/test_compose.py` derives the engine names from
+the Compose file and asserts the list covers all of them, so a new engine cannot be reachable by
+`--profile` but invisible to the playground. While the engine is still loading, the playground
+reports `searching` and the games say so instead of failing. Set `DECIS_PLAYGROUND_UPSTREAM` to
+name the engine and skip the search, or `DECIS_PLAYGROUND_CANDIDATES` to replace the list.
 
 It does not `depends_on` an engine: a Compose profile that is not active does not resolve
 the service name at all, so a dependency on a stopped engine would fail to start.

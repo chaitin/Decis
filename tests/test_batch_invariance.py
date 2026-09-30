@@ -94,7 +94,7 @@ class _FixtureEngine(DecisionEngine):
             release_date="2026-09-22",
         )
 
-    def load(self) -> None:
+    def load(self, settings: object | None = None) -> None:
         self._loaded = True
 
     def predict(self, items: list[WorkItem]) -> Prediction:

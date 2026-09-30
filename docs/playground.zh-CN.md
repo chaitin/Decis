@@ -44,14 +44,19 @@ playground 找引擎不需要任何配置：它按候选清单依次打 `/readyz
 
 1. `http://laya-multilingual:8000`
 2. `http://kev-0.8b:8000`
-3. `http://host.docker.internal:8000`
-4. `http://127.0.0.1:8000`
+3. `http://jeff-qwen3.5-0.8b:8000`
+4. `http://jeff-gemma4-e2b:8000`
+5. `http://host.docker.internal:8000`
+6. `http://127.0.0.1:8000`
 
-在 Compose 下这份清单被显式设成前三个（`docker-compose.yml`），所以 `127.0.0.1` 只在 playground
-直接跑在宿主机上时才会被试到——这就是同一份服务在 `--profile kev-0.8b` 下、以及在宿主机上跑
-`decis serve` 时都能用的原因。引擎还在加载时，playground 报 `searching`，游戏也会如实显示而不是
-直接报错。设 `DECIS_PLAYGROUND_UPSTREAM` 可以直接指定引擎、跳过搜索，设
-`DECIS_PLAYGROUND_CANDIDATES` 可以替换整个候选清单。
+前四个是 Compose 服务名，`docker-compose.yml` 里每个引擎一个。在 Compose 下这份清单被显式设成
+前五个（`docker-compose.yml`），所以 `127.0.0.1` 只在 playground 直接跑在宿主机上时才会被试到——
+这就是同一份服务在 `--profile jeff-gemma4-e2b` 下、以及在宿主机上跑 `decis serve` 时都能用的原因。
+清单的出处是 `playground/server.py: DEFAULT_CANDIDATES`；`tests/test_compose.py` 从 Compose 文件里
+读出引擎服务名并断言这份清单一一覆盖，所以不会出现"某个引擎能用 `--profile` 起、playground 却找不到"
+的情况。引擎还在加载时，playground 报 `searching`，游戏也会如实显示而不是直接报错。设
+`DECIS_PLAYGROUND_UPSTREAM` 可以直接指定引擎、跳过搜索，设 `DECIS_PLAYGROUND_CANDIDATES` 可以替换
+整个候选清单。
 
 它不 `depends_on` 任何引擎：没启用的 Compose profile 其服务名根本不解析，所以依赖一个没在跑的
 引擎会直接起不来。

@@ -17,6 +17,14 @@ All engines share one Docker Hub repository; the engine is the tag:
 |---|---|---|
 | `chaitin/decis:laya-multilingual` (= `:latest`) | The default engine and its 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
 | `chaitin/decis:kev-0.8b` | The kev adapter and its Qwen3.5 base, baked in | 6.0 GB / 6.2 GB |
+| `chaitin/decis:jeff-qwen3.5-0.8b` | The Qwen3.5-0.8B Jeff fine-tune, baked in (1.61 GiB of weights) | not measured |
+| `chaitin/decis:jeff-gemma4-e2b` | The Gemma 4 E2B Jeff fine-tune, baked in (8.65 GiB of weights) | not measured |
+
+The two Jeff rows are the size the **weights** take, which is measured; the compressed image
+size is not, because these tags have not been built or pulled yet — expect the Gemma one to be
+by far the largest image here, since it bakes 8.65 GiB of weights on top of the same base. Both
+also publish the weightless `jeff-*-runtime` variant described below, and the weightless path
+is the one to use if you would rather mount a volume.
 
 `chaitin/decis:playground` is the third image in the same repository, built and pushed by the
 same workflow: three browser games and the proxy that fronts them, with no model weights and
@@ -38,10 +46,10 @@ chaitin/decis` gives you the default engine. Every tag is a multi-arch manifest 
 have no image; run those from a source checkout.
 
 A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
-`laya-multilingual-v<version>` and `kev-0.8b-v<version>` — `laya-multilingual-v0.3.2` for the
-current release — plus the weightless `-runtime-v<version>` variants described below, and the
-GitHub Release for that tag. The engine-named tags are the opposite — they keep moving with
-every push to `master`, so a versioned tag is the one to pin.
+`<engine>-v<version>` for every engine in the matrix — `laya-multilingual-v0.3.2` and
+`kev-0.8b-v0.3.2` for the current release — plus the weightless `-runtime-v<version>`
+variants described below, and the GitHub Release for that tag. The engine-named tags are the
+opposite — they keep moving with every push to `master`, so a versioned tag is the one to pin.
 
 ### Bringing your own weights
 

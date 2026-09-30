@@ -34,6 +34,44 @@ evaluation and dataset modules are not used either. See VENDOR.md for the ration
 and for the two os.environ reads that exist in the vendored copy.
 
 --------------------------------------------------------------------------------
+jeff  (vendored subset)
+--------------------------------------------------------------------------------
+Source:  https://github.com/firelex/jeff
+Tag:     v1.1 = f0397f3785d93f73a01411d785d2ed026f53181d  (2026-09-29)
+License: MIT License
+Authors: Mathias Strasser (Jeff)
+         Denis Yarats (AutoJev, on which Jeff's training code is based)
+
+Vendored into src/decis/engines/_jeff_vendor/:
+
+  model.py    -> Content, describe(), options(), decision_messages(),
+                 DecisionModel (the Qwen3.5 path)
+  decoder.py  -> GenericDecoderDecisionModel (any causal decoder; the Gemma path)
+  types.py    -> the decision record TypedDicts
+  LICENSE     -> the MIT text, with both copyright notices, as the licence requires
+
+Unlike the kev copy, these are NOT byte-identical to upstream: jeff imports itself
+absolutely (`from jeff.types import ...`) and the files have to work as a subpackage
+of `decis`. The only difference is that mechanical import rewrite -- `from jeff.X
+import` to `from .X import` -- and tests/test_jeff_vendor.py asserts it in both
+directions, recomputing the sha256 of every file (the vendored hash *and* the
+upstream one are recorded in VENDOR.md).
+
+Deliberately NOT vendored: jeff/server.py (Decis owns the wire contract in
+src/decis/schema.py + src/decis/answers.py, so vendoring it would put a second
+implementation of the answer format and the confidence formulas in the tree; it
+also hardcodes host="127.0.0.1", which breaks container use), and jeff's training,
+evaluation, dataset and panel modules. jeff/mlx_backend.py is an Apple-silicon
+backend Decis does not use -- every engine serves through torch so that one
+DECIS_DEVICE story covers all of them. See VENDOR.md for the full list.
+
+Provenance note: both Jeff checkpoints record the commit
+a095c98f3fd2782bba033b378f7375ecc33c35fa in their decision_config.json, which is not
+reachable in the public history of the repository. The closest reproducible
+revision is the tag above, and only types.py matches both. VENDOR.md records the
+discrepancy rather than papering over it.
+
+--------------------------------------------------------------------------------
 Laya  (runtime dependency, not vendored)
 --------------------------------------------------------------------------------
 Source:  https://github.com/NandhaKishorM/laya
@@ -94,6 +132,19 @@ responsible for complying with each model's license:
 
   jaredpalmer/kev-*                     Apache-2.0
   Qwen/Qwen3.5-*-Base                   Apache-2.0
+
+  mstrasser/Jeff-Qwen3.5-0.8B           Apache-2.0
+      A full fine-tune of Qwen/Qwen3.5-0.8B (Apache-2.0) with its own readout head.
+      `jeff`, `jeff-qwen` and `jeff-qwen3.5` resolve to this checkpoint.
+
+  mstrasser/Jeff-Gemma4-E2B             Apache-2.0, plus Google's Gemma 4 terms
+      A full fine-tune of google/gemma-4-E2B-it, which is the reason for the second
+      half: the Hub card declares `license: apache-2.0` and links
+      https://ai.google.dev/gemma/docs/gemma_4_license for the base model's own
+      terms. Read both before redistributing this checkpoint.
+
+  Note that the code and the weights of the jeff project are licensed separately:
+  the source vendored above is MIT, while both checkpoints are Apache-2.0.
 
 --------------------------------------------------------------------------------
 Engineering references (no code copied)

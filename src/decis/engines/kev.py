@@ -32,7 +32,7 @@ to 0.00e+00 (`tests/test_kev_inference.py`).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError, InvalidRequestError
@@ -40,6 +40,9 @@ from ..paths import BaseModel, WeightSpec, resolve
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
 from .devices import best_device, requested_device
 from .registry import default_dtype, degraded_reason
+
+if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
+    from ..config import Settings
 
 _logger = logging.getLogger(__name__)
 
@@ -178,7 +181,7 @@ class KevEngine(DecisionEngine):
 
     # --- lifecycle -----------------------------------------------------------
 
-    def load(self) -> None:
+    def load(self, settings: Settings | None = None) -> None:
         """Load the adapter, its base and the pointer head, then warm up.
 
         Warmup matters more here than for Laya: a pass through a hybrid (Gated DeltaNet)
@@ -205,14 +208,13 @@ class KevEngine(DecisionEngine):
         from ..config import load_settings
         from ._kev_vendor import Checkpoint
 
-        settings = load_settings()
+        settings = settings if settings is not None else load_settings()
         source = resolve(self.weights(), settings)
         if source.kind == "none":
             raise EngineUnavailableError(
                 f"No weights found for {self._id}, and this engine has no repository to fetch "
-                f"them from. Set DECIS_MODEL_DIR or DECIS_MODEL_PATH_"
-                f"{self._id.upper().replace('-', '_')} to a directory containing "
-                f"{self.weights().marker}."
+                f"them from. Point DECIS_MODEL_DIR at a tree containing {self._id}/, or pass "
+                f"--model-path {self._id}=<dir> for a directory containing {self.weights().marker}."
             )
 
         if settings.torch_threads:

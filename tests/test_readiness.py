@@ -62,7 +62,7 @@ class FakeScheduler:
         with self._lock:
             return LoadStatus(phase=self._phase, engine_id=self._info.id, error=self._error)
 
-    def load(self) -> None:
+    def load(self, settings: object | None = None) -> None:
         self.load_calls += 1
         self._set(LoadPhase.LOADING)
         if self._gate is not None:
@@ -342,7 +342,7 @@ def test_shutdown_waits_for_a_load_that_finishes_within_the_grace_period(setting
     gate = threading.Event()
 
     class Racing(FakeScheduler):
-        def load(self) -> None:
+        def load(self, settings: object | None = None) -> None:
             threading.Timer(0.05, gate.set).start()
             super().load()
 
@@ -399,7 +399,7 @@ def test_a_real_failed_load_records_the_error_and_reraises() -> None:
     keep raising while also recording the phase for the refusal path."""
 
     class Broken(StubEngine):
-        def load(self) -> None:
+        def load(self, settings: object | None = None) -> None:
             raise RuntimeError("weights are corrupt")
 
     from decis.scheduler import InProcessScheduler
@@ -428,7 +428,7 @@ def test_the_error_text_is_bounded() -> None:
     long enough to hold a filesystem path must not have it relayed verbatim."""
 
     class Verbose(StubEngine):
-        def load(self) -> None:
+        def load(self, settings: object | None = None) -> None:
             raise RuntimeError("x" * 5000)
 
     from decis.scheduler import InProcessScheduler

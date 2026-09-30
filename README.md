@@ -104,12 +104,12 @@ install one engine only, name its extra: `uv sync --extra dev --extra kev`. The 
 
 ## Engines
 
-Four engines ship. `laya-multilingual` (the default, about 100 languages) and `kev-0.8b`
-have published multi-arch images; `laya` and `laya-typed-decisions` run from a source
-checkout. One image per engine, the engine is the tag, and the weight files are inside it —
-no network, no volume and no download step at startup. The server requires a bearer token,
-compares it in constant time, and refuses to start on a public address with no token
-configured.
+Six engines ship. `laya-multilingual` (the default, about 100 languages), `kev-0.8b`,
+`jeff-qwen3.5-0.8b` and `jeff-gemma4-e2b` have published multi-arch images; `laya` and
+`laya-typed-decisions` run from a source checkout. One image per engine, the engine is the
+tag, and the weight files are inside it — no network, no volume and no download step at
+startup. The server requires a bearer token, compares it in constant time, and refuses to
+start on a public address with no token configured.
 
 Backbones, weight sizes and per-engine limits are in [Engines](docs/engines.md). Pull sizes,
 the weightless runtime variant, Kubernetes probes and building behind a proxy are in

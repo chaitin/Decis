@@ -48,7 +48,7 @@ class StubEngine(DecisionEngine):
             aliases=("decis-stub", "stub-engine"),
         )
 
-    def load(self) -> None:
+    def load(self, settings: object | None = None) -> None:
         self._loaded = True
 
     def predict(self, items: list[WorkItem]) -> Prediction:
