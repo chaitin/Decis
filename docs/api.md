@@ -171,7 +171,8 @@ All three can be mixed in one request and are evaluated against the same `state`
 The `@0.3.6` in the samples above is the upstream `laya` build they were captured with, not a
 Decis version: `engine_version` is `importlib.metadata.version("laya")`
 (`src/decis/engines/laya.py`), so it follows whichever release the image or the local extra
-installed (`laya<0.4`).
+installed (`laya<0.4`). This repository's `uv.lock` pins `laya` 0.3.5, so a checkout-built
+install reports `decis/laya-multilingual@0.3.5`.
 
 The JSON Schema is
 [`docs/schema/systemone-response.schema.json`](schema/systemone-response.schema.json).
@@ -203,7 +204,7 @@ contract field.
 | `device` | `cpu`, `cuda`, `mps`, `xpu` or `npu`. |
 | `dtype` | `float32`, `float16` or `bfloat16`. |
 | `latency_ms` | Server-side inference time for this request. |
-| `batch_size` | How many questions were run in one forward pass. `1` means no batching happened. |
+| `batch_size` | How many questions this request submitted together — `src/decis/service.py` sets it to `len(items)`. It is not a forward-pass count: the Jeff engines then run their own fixed chunks of 8 internally (`_BATCH_SIZE` in `src/decis/engines/jeff.py`). `1` means the request carried one question. |
 | `requested_model` | Set only when you named a model the server does not have — typically `jev-latest` — and it answered with the engine it runs. The substitution is never silent. |
 | `native_confidence` | The engine's own confidence per question, when it has a calibrated one. The contract-level `confidence` is Decis's own formula and is comparable across engines; this preserves the engine's, which is not. |
 
@@ -250,9 +251,12 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
   `src/decis/engines/laya.py`) — which is what an engine that has not loaded reports. Once it
   has loaded, the entry is replaced with the limits its checkpoint declares, so read this row
   after `/readyz` turns green.
-- `languages` is the language coverage the checkpoint declares. `aliases` is part of the
-  payload, but the engines that ship today report an empty list; the names a server actually
-  answers to are the ones `uv run decis models` prints.
+- `languages` is a hard-coded string in each engine, not something the checkpoint declares
+  (`src/decis/engines/laya.py`, `kev.py`, `jeff.py`). `aliases` is part of the payload, and the
+  two Jeff engines populate it — `jeff`, `jeff-qwen` and `jeff-qwen3.5` for
+  `jeff-qwen3.5-0.8b`, `jeff-gemma` and `jeff-gemma4` for `jeff-gemma4-e2b` — while the three
+  `laya*` engines and `kev-0.8b` report an empty list. The names a server actually answers to
+  are the ones `uv run decis models` prints.
 - Extra fields are allowed in the `decis` namespace only, which is why the capacities are
   there and not at the top level.
 - `max_state_tokens: 0` means the sequence limit is the only one. `kev-0.8b` sets it (384),
@@ -264,7 +268,7 @@ Neither requires authentication.
 
 ```jsonc
 // GET /healthz -> 200 as soon as the process is up, even mid-load
-{"status": "ok", "version": "0.3.2"}
+{"status": "ok", "version": "0.4.0"}
 
 // GET /readyz -> 200 once the engine can answer
 {"status": "ready", "engine": "laya-multilingual"}
@@ -311,7 +315,7 @@ Three body shapes exist, and clients must handle all three.
 | **403** | `authentication_error` | No credential, or a scheme other than `Bearer`. |
 | **404** | — (`detail` is a string) | Unknown path, answered by the router. |
 | **405** | — (`detail` is a string) | Known path, wrong method, answered by the router. |
-| **413** | `request_too_large` | Body over `DECIS_MAX_REQUEST_BYTES` (2 MiB by default). |
+| **413** | `request_too_large` | A declared `Content-Length` over `DECIS_MAX_REQUEST_BYTES` (2 MiB by default). The limit is only checked when the client sends a numeric `Content-Length` (`src/decis/app.py`, before the body is read), so a chunked body is not measured against it. |
 | **422** | — (`detail` is a list) | Bad JSON shape, or a request Decis cannot honour: too many options, an over-long question, `state` over the engine's budget, an empty `criteria`, an unknown `model`. |
 | **429** | `rate_limit_error` | Waiting for the engine exceeded `DECIS_REQUEST_TIMEOUT_MS`. Carries `retry-after-ms`. A forward pass that has already started cannot be interrupted, so this covers queueing only — there is no separate 504. |
 | **500** | `engine_error` | The engine raised. The message names the engine and the exception; the request id is in the header and the log. |

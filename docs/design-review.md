@@ -1,8 +1,14 @@
 # 设计审查：这份设计够科学、够尊重标准吗？
 
 **日期**：2026-09-22
-**审查对象**：`docs/` 下的三份设计文档，以及它们所依据的实测与证据。
+**最后一次逐条复核**：2026-09-30（31 个设计缺陷 + 6 个方法论问题，逐条对着当时的代码与测试核过一遍）
+**审查对象**：`docs/` 下的设计文档，以及它们所依据的实测与证据。
 **审查方式**：不是"再读一遍确认它说得对"，而是主动去找**它在什么情况下会错**——补做线上观测、用一手标准核对断言、重新推演性能论证的每一步。
+
+> **这份文档怎么读。** 已经修好、并且有测试守卫的问题，在 §2.2 里压缩成一小段（症状 / 怎么修的 /
+> 谁在守着它）；**现在仍然成立**的问题放在 §2.1 的最前面；方法论问题在 §4；还没修的清单在 §5。
+> 每条都有一个稳定的编号（`D1`…`D31`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
+> 所以编号不会重排。逐条的事故复盘在 git 历史里（`git log -p docs/design-review.md`），这里不再重述。
 
 ---
 
@@ -15,13 +21,13 @@
 | 维度 | 判定 | 说明 |
 |---|---|---|
 | **核心抽象是否站得住** | ✅ **扎实** | 两个架构完全不同的模型（BERT 系 vs 自回归 LM 系）各自独立收敛到同一中间表示。这不是类比，是两条独立实现路径的实证 |
-| **契约对齐** | ✅ **现在扎实，初版不扎实** | 初版只看服务端的 schema 声明；补做线上观测后**发现了一处真错误**（§2.2） |
-| **性能论证** | ✅ **已测，结论为否定** | 最核心的断言（跨请求批处理带来吞吐）由 M5 实测否定：CPU 上真实流量形状下不提升吞吐。已测的部分方法上有序效应（M2） |
-| **标准符合性** | ⚠️ **多数尊重，少数有意偏离且已记录** | 见 §3。最关键的一点：**契约兼容与标准符合在这一个点上冲突，我们选了兼容，并把它写下来** |
+| **契约对齐** | ✅ **现在扎实，初版不扎实** | 初版只看服务端的 schema 声明；补做线上观测后**发现了一处真错误**（401 与 403 的分工写反了） |
+| **性能论证** | ✅ **已测，结论为否定** | 最核心的断言（跨请求批处理带来吞吐）由 M5 实测否定：CPU 上真实流量形状下不提升吞吐。已测的部分方法上有顺序效应（M2） |
+| **标准符合性** | ⚠️ **多数尊重，少数有意偏离且已记录** | 见 §3。最关键的一点：**契约兼容与标准符合在一个点上冲突，我们选了兼容，并把它写下来** |
 | **安全** | ❌ **初版有硬缺口，已补** | 初版**完全没有鉴权设计**，而镜像监听 `0.0.0.0` |
-| **可运维性** | ❌ **初版有硬缺口，已补** | 缺少优雅下线、启动顺序；而冷启动是 75 秒 |
+| **可运维性** | ❌ **初版有硬缺口，已补** | 缺少优雅下线、启动顺序；而冷启动要 75 秒左右 |
 
-下面把"发现的问题"和"已经改了什么"逐条写清楚。**没改的也列出来，不假装都解决了。**
+下面把"发现的问题"和"已经改了什么"写清楚。**没改的也列出来，不假装都解决了。**
 
 ---
 
@@ -29,338 +35,45 @@
 
 审查不是只挑毛病。以下几点经得起推敲，且不是靠"看起来合理"成立的：
 
-1. **抽象被两个独立实现验证。** kev 的 `api.py` 与 Laya 的 `common.py:QTYPES` 是两个团队、两种架构、各自独立写出的同一套三段式（`noul`/`choice`/`score`）到概率的映射。这比"我们设计了一个优雅的接口"强得多——它是**收敛证据**。新增引擎只需一个模块加一行注册，这个断言有先例支撑。
+1. **抽象被两个独立实现验证。** kev 的 `api.py` 与 Laya 的 `common.py:QTYPES` 是两个团队、两种架构、各自独立写出的同一套三段式（`noul`/`choice`/`score`）到概率的映射。这比"我们设计了一个优雅的接口"强得多——它是**收敛证据**。新增引擎只需一个模块加一行注册，这个判断后来又被两个 Jeff checkpoint 验证了一次（第三种架构，同样没有改契约层）。
 
 2. **契约现在有可 diff、可测的权威来源。** `https://api.typesafe.ai/openapi.json` 是公开的（HTTP 200），OpenAPI 3.1.0，`info.version = 0.2.0`。已收进 `docs/contract/`。这意味着契约不再依赖"某个 SDK 版本的生成物可能滞后"，而是有了一份可以写同源测试（L0）的基准文件。
 
-3. **批处理是复用官方原语，不是 hack。** Laya 的 `collate_items` 实现是 `[it for group in batch for it in group]`——**展平多组问题**是它的原生语义。这说明"跨请求组批"是上游设计者预期内的用法。
+3. **批处理是复用官方原语，不是 hack。** Laya 的 `collate_items` 实现是 `[it for group in batch for it in group]`——**展平多组问题**是它的原生语义。这说明"跨请求组批"是上游设计者预期内的用法。（收益问题另说，见 M5。）
 
-4. **性能纪律是可执行的，不是口号。** `AGENTS.md §8` 要求任何性能数字必须来自 checked-in 原始 JSON，且报告前断言输入 sha256 一致。这条规则已经**自我执行过一次**：本次调查的原始数据进了 `benchmarks/results/`，README 的表格由它支撑。
+4. **性能纪律是可执行的，不是口号。** `AGENTS.md §8` 要求任何性能数字必须来自 checked-in 原始 JSON，且报告前断言输入 sha256 一致。这条规则已经**自我执行过一次**：本次调查的原始数据进了 `benchmarks/results/`，文档里的表由它生成。
 
 ---
 
 ## 2. 发现的设计缺陷
 
-### D1（严重）`predict` 的签名会让批处理永远不发生 — 已修正
+### 2.1 仍然成立的
 
-**初版**：
-
-```python
-def predict(self, batch: Sequence[Sequence[PreparedQuestion]], state_text: str) -> list[list[ProbDist]]
-```
-
-整批共享一个 `state_text`，并规定"攒批器按 state 分组"。
-
-**为什么这是缺陷**：真实流量里**每个请求的 state 都不同**——不同的工单、不同的邮件、不同的对话。按 state 分组意味着每组的批大小约等于 1（同一 state 的重复请求是罕见情况，不是常态）。于是**跨请求批处理——整个吞吐论点的基石——在真实流量下永远不会触发**。设计文档花了一整节论证批处理是高 QPS 的来源，而协议本身把它排除掉了。
-
-更糟的是，这个问题不会以"报错"的形式暴露：它会表现为"用了 Decis 但 QPS 没有提升"，而不是"启动失败"。**沉默的设计缺陷比会崩的缺陷危险。**
-
-**修正**：改成扁平工作项，每项自带 state：
-
-```python
-@dataclass(frozen=True)
-class WorkItem:
-    request_id: str
-    state_text: str
-    question: PreparedQuestion
-
-
-def predict(self, items: Sequence[WorkItem]) -> list[ProbDist]: ...
-```
-
-这个签名**严格更一般**：能跨 state 批的引擎（Laya、kev `rows`）直接全量喂；不能的（kev `prefix`）在引擎内部自行按 state 分组再拼回。**"能不能跨 state 批"从协议约束降级为实现细节**，职责放到了正确的地方。
-
-同时删掉了"攒批器按 state 分组"的规定——它现在是纯粹的错误约束。
-
-> 顺带发现的一个推论：这个修正让 `prefix` 模式的适用面变窄了。既然攒批器不再按 state 分组，`prefix` 只在该批内恰好有重复 state 时才有用——也就是"固定文档 + 多变问题"这类场景，而不是通用路径。初版把 `prefix` 当成主路径来对比 `rows`，是建立在错误前提上的。
-
-### D2（严重）完全缺少鉴权 — 已补
-
-初版设计了 401/429 的**响应形状**，却没有任何**认证机制**。而 Dockerfile 里是：
-
-```dockerfile
-CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-**监听所有网卡，无鉴权。** 任何能访问该端口的人都可以白用你的 GPU。
-
-这不是理论风险：kev 上游把 `host` 硬编码成 `127.0.0.1`，正说明作者清楚这个接口默认不该暴露；而 Decis 的整个卖点是"部署出去给别人用"。
-
-**修正**（`design.md §3.1`）：
-
-- `DECIS_API_KEY` / `DECIS_API_KEYS`，用 `hmac.compare_digest` 常数时间比较。
-- **先认证、再校验请求体**——线上实测确认真 jev 就是这个顺序（无 key + 非法 body → 403 而非 422）。反过来的实现会向未认证调用方泄露校验细节。
-- **默认安全**：未配 key 且 `--host` 非回环地址时**拒绝启动**，需 `DECIS_ALLOW_NO_AUTH=1` 显式承担风险。从 kev 学到的教训是：**不安全的默认值会被原样部署到生产**。
-- 同时补了请求体上限（`DECIS_MAX_REQUEST_BYTES`，在读取 body 前用 `Content-Length` 拒绝）与 **CORS 默认关闭**（它是 API，不是给浏览器直接调的；开 `*` 会让任意网页用用户浏览器里的 key 打你的服务）。**限流没有实现**：`DECIS_RATE_LIMIT_RPM` / `DECIS_RATE_LIMIT_TOKENS_PER_S` 没有任何代码读（见 `design.md §6.4` 的未实现清单）；过载时唯一能做的是取锁预算返回 429（`AGENTS.md §3-17`）。
-
-### D3（中）没处理"批处理会改变数值结果" — 已补
-
-初版的判断是：批处理会改变浮点归约顺序、GEMM tiling，Laya 的 option 预算还按批内最长项截断（**这最后一条后来被实测否定，见下**）。所以**同一个 `(state, question)` 在 `batch=1` 与 `batch=32` 下可能得到不同概率**，极端情况下 argmax 会翻转。
-
-这与契约直接冲突：官方 SDK **会自动重试 POST**，所以"重发同一请求拿到不同答案"是可观测行为，会被当成 bug 报上来。初版对此**完全沉默**。
-
-**修正**（`design.md §6.6`）：不是忽略，而是明确面对——
-
-1. 文档写明：承诺"相同输入 + 相同批组成"下确定，**不承诺跨批组成逐位一致**。这是所有批处理推理服务的共同性质。
-2. 加 `tests/test_batch_invariance.py`：`batch=1/8/32` 比较概率向量，断言最大偏差 < 阈值，且 **argmax 必须不变**。argmax 翻转视为测试失败——那是用户能感知的错误。
-3. 逃生门是**一次前向只放一个 item**（`predict([item])`），不需要任何新旋钮：`WorkItem` 每项自带 `state_text`，所以“一项一算”永远是合法的调用。原稿在这里写的 `DECIS_BATCH_MAX_SIZE=1` **不存在**——`config.py` 不读它，见 `design.md §6.4` 的未实现清单。
-4. 列入 Stage 3 的**前置**验证，不是优化项的附属品。
-
-**Stage 1 的实测（部分完成，比预期乐观）。** 原判断有两处过度悲观，一处仍然成立：
-
-- ✅ **padding 不会污染结果**。`build_sequence` / `collate_items` 把不同长度的 state 补齐到同一宽度，
-  实测"每题单独算"与"混在不同 state 的 batch 里算"**最大绝对偏差 8.345e-07，argmax 翻转 0 次**
-  （16 条 different state × 三种原语 × batch=2/4/8/16，原始记录 `docs/contract/stage1-batch-invariance.json`；
-  `tests/test_laya_inference.py` 的 `test_batching_across_different_states_is_invariant` 与
-  `test_a_long_and_a_short_state_padded_together_stay_correct` 以 1e-5 为界把它钉住）。
-  偏差量级说明原因是 attention mask 被正确遵守——这值得测，但不需要为它牺牲批处理。
-- ✅ **Laya 的 option 预算不是按批内最长项截断的**。原判断说"Laya 的 option 预算还按批内最长项截断"，
-  实测不成立：`build_sequence` 是**逐项**算 head 预算的，`collate_items` 只做 padding。
-  所以批组成不会改变某一项的 option 预算，也就不会改变它的文本。
-- ✅ **跨请求批处理的收益已测（M5），结论是否定的**。上面两条只说明"批处理不会算错"；
-  收益在 `benchmarks/batch_gain.py` 里单独测了：短序列有 1.92x，真实长度下没有，长度倾斜时慢 3–5 倍。
-  见 §4-M5。
-- ⬜ **覆盖面**：只测了同一进程内、同一引擎实例、batch ≤ 16。多进程/多 worker 之间的一致性
-  （Stage 3 的进程池）没有覆盖——不同进程的浮点归约顺序可能不同，但每个回答本身是可复现的。
-
-### D4（中）`confidence` 的决策被讲成了没有代价的改进 — 已改写
-
-初版说"Decis 统一定义 confidence，各引擎不各算各的"，把它当成纯粹的正确选择。
-
-**这不诚实。** 事实是：
-
-- kev 的 `(p_max − 1/K)/(1 − 1/K)` 是 `p_max` 的单调重标定，**没做过标定**；
-- Laya 的 `1 − H(p)/log k` 背后**有温度标定**（出厂 ECE 0.466，包内按 (question type, option count) 重新拟合并 clamp）。
-
-统一到 Decis 公式，等于**用可比性换掉了 Laya 已经做过的标定**。这是一个取舍，不是免费的改进。
-
-**修正**（`api-compatibility.md §7`）：保留统一口径作为线格式（契约的可预测性需要它），但——
-
-- **始终**把引擎原生置信度放进响应的 `decis.native_confidence`。对 `noul` 尤其重要：契约规定 `noul` answer **没有** confidence 字段，所以扩展字段是用户唯一能拿到 noul 不确定性的地方；
-- 文档明确写出：**用于风险决策时请在自己的标注集上重新标定，不要跨引擎复用阈值**。
-
-实现时进一步发现两个原语的公式口径必须一致（**0 = 无倾向，1 = 确定**）。kev 的 score 公式 `1 − E|level − mode|/(L−1)` 加上众数约束后在 `L=3` 的均匀分布上得 `0.5`，可达区间并非 `[0,1]`；于是 `score` 改用归一化熵 `1 − H(p)/ln(L)`，与 `choice` 口径一致。这是对 kev 的**有意偏离**，记录在 `api-compatibility.md §7`。原计划在 `/v1/models` 里声明 `confidence_formula` 一条已取消：公式不因引擎而异，声明它反而暗示它会变。
-
-### D5（中）缺少启动顺序与优雅下线的设计 — 已补
-
-实测冷启动 **73–76 秒**，而初版只写了"`/healthz` 与 `/readyz` 分开"一句话。缺的是：
-
-- **监听与加载的顺序**。初版要求"**先加载、后监听**"（理由是先 bind 会让编排器看到端口通了就送流量）。
-  实现之后代价才显现：冷启动的 80 秒里**服务完全不响应**，`/healthz` 也挂起，编排器无法区分"还在加载"
-  和"崩了"。**现行契约是"先监听、后台加载"**：端口立刻可服务、`/healthz` 立即 200，加载状态由
-  `/readyz` 的三态（`loading`/`ready`/`failed`）报告——见 **D7** 与 `design.md §10.2`。
-
-### D6（轻）单请求超时预算与官方 SDK 不匹配 — 已修正
-
-初版写"超时返回 529"。但官方 SDK 的 `DEFAULT_TIMEOUT` 是 **10.0 s / 次 HTTP 操作**，且**连接错误与超时也在默认重试集合里**。所以：
-
-- 服务端算 30 s 才返回 → 客户端 10 s 就放弃并**重发** → 客户端还在算的时候服务端又多了一份活 → 负载被放大 2–3 倍；
-- 529 不在 SDK 的"已知状态码"表里（表里只有 400/401/403/404/422/429），会落到 `TypeSafeInternalServerError` 并被重试。
-
-已改为：`DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量）给**取锁**设上限，取不到就返回 **429 + `retry-after-ms`**——**不是 504**：504 不带退避指令，会按 §3-16 退化成指数退避，把已经饱和的服务打得更狠，而 429 能告诉 SDK 等多久。**队列等待计入这个预算**；已经开始的前向无法中断，这是 §3-17 明确写出来做不到的部分。`design.md §6.5`。
-
-### D7（中）冷启动期间服务完全不响应，且文档说的是反的 — 已修正（方案 B）
-
-接 Laya 之后第一次真的用真实权重起服务时实测到的：
-
-```
-18:14:04  loading engine laya-multilingual; /readyz reports 503 until this finishes
-18:14:06  loading laya-multilingual from convaiinnovations/laya/multilingual@1c5edc17...
-18:15:23  loaded laya-multilingual (device=cpu dtype=float32 max_len=1024 head_max_len=256)
-18:15:23  {"method":"GET","path":"/healthz","status":200, ...}   ← 第一条 HTTP 响应
-```
-
-**冷启动 79.7 秒内，服务不返回任何 HTTP 响应。** 原因是结构性的：`app.py` 的 lifespan 里
-`service.load()` 是同步阻塞的，而 uvicorn 要等 lifespan 跑完才进入协议循环——socket 已 bind，
-所以探针是**挂起**而不是拿到连接错误。
-
-两个后果：
-
-1. **文档与实现相反。** README 原文写"`/healthz` 立刻可用，而 `/readyz` 在权重进内存之前报未就绪"。
-   已改成实测到的事实，并补上"必须给足 start-period"这条操作性警告——本仓库的镜像用 180 秒，
-   但按默认探针配置部署到 k8s 的人会遇到重启循环，而原文档不会告诉他。
-2. **"未就绪"是一个生产上到不了的状态。** `/readyz` 的 503、`/v1/systemone` 的 503、
-   以及 `tests/test_readiness.py` 里那几个断言，都只能靠 `load_engine=False`（测试专用开关）触达。
-   也就是说 `AGENTS.md §9` 要求的"用 `/readyz` 明确报告未就绪"这条路当前是死代码。
-
-**为什么还没改**：这是 Stage 0 的一个**有意选择**（见 D5 第一条）——`test_an_engine_that_fails_to_load_stops_startup`
-断言"加载失败必须让启动失败"，理由是启动一个永远 503 的服务比直接退出更难察觉。
-这个理由成立，所以不能顺手把它反过来。两条路都要付代价：
-
-| 方案 | 好处 | 代价 |
-|---|---|---|
-| A. 维持同步加载 | 加载失败立刻让进程退出，最不容易被忽略 | 冷启动窗口内无任何响应；探针必须调好，否则重启循环；"未就绪"路径在生产上是死代码 |
-| B. 后台线程加载，失败时 `/readyz` 报 `failed` 并返回非 200 | 冷启动期间 `/healthz` 200、`/readyz` 503 且能说明原因；未就绪路径在生产上可达；探针可区分"还在加载"和"崩了" | 加载失败不再让进程退出，需要靠 `/readyz` 的 `failed` + 日志告警；要改掉那个 Stage 0 测试 |
-
-**决定：采用方案 B。** 理由是方案 A 的"快速失败"其实并不更快——容器照样要退出、照样要重启，
-而 503 至少让已经在轮询的探针能说出原因。B 保留了 A 真正想要的东西（绝不服务答不了的流量：
-`/v1/systemone` 在 loading 和 failed 两种状态下都是 503），同时把"为什么"变成一个可观测的状态。
-
-**已实现**：引擎在 lifespan 起的后台线程里加载；`LoadPhase` 有 `idle/loading/ready/failed` 四态，
-`failed` 是终态且**不带 `retry-after`**（官方 SDK 会重试 5xx，告诉它"退避"等于让它永远 hammer 一个
-不会恢复的服务）；加载失败记录错误文本（截断到 300 字符）并写完整 traceback 到日志，进程不再退出。
-
-**实测（真实 Laya 权重，CPU，80 秒冷启动）**：
-
-```
-1. liveness and readiness DURING the cold start
-  ok  /healthz answers during the cold start  -- 0.50s after the request, 0.6s in
-  ok  /readyz answers during the cold start   -- 0.01s
-  ok  /readyz says loading, not failed        -- {'status': 'loading', ...}
-  ok  inference mid-load is 503               -- 503 in 0.0s
-2. cold start: 74.9s total
-3. the official typesafe-sdk over a real socket  -- 全部通过
-```
-
-对照修正前的同一次测量：**第一条 HTTP 响应在 79.7 秒**。现在 `/healthz` 在冷启动开始后
-0.5 秒内就答，`/readyz` 明确说 `loading`。
-
-**代价（明确接受）**：加载失败不再让进程退出，所以"容器没起来"这个信号变成了"`/readyz` 持续
-`failed`"。这需要监控 `/readyz` 或在日志上加告警；只监控进程存活的人会漏掉它。
-`test_an_engine_that_fails_to_load_stops_startup` 因此被改写为
-`test_a_failed_load_is_reported_as_failed_and_does_not_stop_the_server`。
-
-**顺带修掉的两处**：
-1. `service.answer` 现在**先检查就绪再 `measure()`**。容量校验需要已加载的 tokenizer，
-   而后台加载意味着请求真的可能落在"引擎还没好"的窗口里——原先这个顺序会从测量路径里抛 500，
-   而不是干净的 503。
-2. `load_status` 与 `ready` 归一。引擎自己才是"能不能服务"的权威，所以当引擎已加载而调度器
-   没驱动加载时（`create_app` 明确支持传入已加载的引擎），`phase` 不再是 `idle` 而是 `ready`。
-
-### D8（严重）`/v1/systemone` 是 `async def` 却调用阻塞函数，一次推理会堵死整个事件循环 — 已修正
-
-写请求预算的测试时发现的，不是设计推演出来的：`routes.py` 里 `/v1/systemone` 写成 `async def`，
-而 `service.answer` 是同步阻塞函数，于是 FastAPI 直接在**事件循环线程**上跑它。后果是
-
-- 一次推理（几百毫秒，长 state 到秒级）期间，服务器**不响应任何其他请求**；
-- `/healthz` 与 `/readyz` 也在其中，所以**探针会在推理期间挂起**，编排器可能杀掉一个完全正常的容器；
-- 并发度实际为 0，`InProcessScheduler` 的锁根本没机会起作用——序列化发生在事件循环上，而不是引擎上。
-
-这个 bug 之前测不出来，因为 `.venv` 里无权重的测试替身推理是微秒级，而真实 Laya 的 300 毫秒没有被
-任何并发测试覆盖过。发现它的测试是 `test_healthz_and_readyz_answer_while_inference_is_running`：
-把一个假引擎卡在 `predict` 里，然后在推理进行中探 `/healthz`。
-
-**修正**：把路由从 `async def` 改成 `def`，Starlette 便会在它的工作线程池里执行它，事件循环空出来，
-序列化交回给调度器的锁——那本来就是它存在的理由。`/v1/models` 同样改了（它要 import 引擎类）。
-`/healthz`、`/readyz` 保持 `async def`：它们只读内存里的状态，不阻塞。
-
-这个 bug 与 D7 属于同一族——**"服务在忙时不回答探针"**——但成因和修法完全不同，所以分开记录。
-
-### D9（严重，会静默降质）引擎的"选项文本"不能由 Decis 统一决定 — kev 揭示的抽象缺口
-
-接 kev 时发现的，属于 Stage 2 存在的意义。`render.py` 是"任意 JSON → 可读文本"的唯一所在，但**选项在序列里长什么样是引擎自己的格式**。Stage 1 的 Laya 没有暴露这个区别，因为 Laya 恰好也用 `"name: description"`（choice）和 `"level N: "`（score）；kev 用的是另一套：
-
-| primitive | Decis `PreparedQuestion`（`render.py`） | kev 训练与服务的文本（`api.py:102`） |
-|---|---|---|
-| choice | `Option(name=criteria 键, description=渲染值)` | `f"{name}: {description}"`（无描述则裸 `name`）— **与 Decis 一致** |
-| noul | `Option("false", …)`、`Option("true", …)` | `"no"`、`"yes"`（`option_text("no", …)`）— **不同** |
-| score | `Option("0".."n-1", description=层级文本)` | **只有层级文本**，不带 `"0: "` 前缀 — **不同** |
-
-若 kev 引擎直接照搬 Decis 的 `Option.name`，模型会收到它训练时从未见过的文本（`"false: …"`、`"0: Can wait"`），**准确率下降而没有任何报错**——正是本项目最不能接受的那类 bug。
-
-**证据（不是推断）**：kev 的 `data.py:395 materialize()` 明确写着 "Labelled request -> internal record **via the serving path (api.to_record)**"——训练数据与线上服务走的是同一个函数。所以 `api.py` 的渲染约定**就是**模型学到的约定。
-
-**结论：抽象是对的，不需要改 `render.py` 或 `answers.py`。** 需要的是承认"选项文本"属于引擎的序列格式（`AGENTS.md §2` 已按 Stage 1 的结论这么规定），因此 kev 引擎自己把 `PreparedQuestion` 映射成 kev 的文本。已实测验证：用 Decis 的 `PreparedRequest` 构造出的 record 与 kev 自己的 `api.to_record` **逐字段相等**，`encode` 出来的 `ids/seg/pos/opt/decide_idx/opt_idx` 全等，概率与上游 `model.probs()` **差 0.00e+00**（kev-0.8b，CPU fp32）。这两条现在是 `tests/test_kev_inference.py` 的 `test_the_record_matches_upstreams_serving_path` 与 `test_probabilities_match_upstreams_own_path`（`-m weights` 跑）。
-
-顺带得到两条独立佐证（与 Laya 的一样，属"未计划的一致性"）：kev 的 `question_keys`（`api.py:94`）与 Decis 的 `answers.py: question_keys` **逐字相同**；kev 的 `choice_confidence`（`api.py:120`）与 Decis 的 choice confidence **公式相同**。kev 的 `score_confidence`（`api.py:125`，"距离众数层级"）与 Decis 的归一化熵**不同**，且它自称是"未公开公式的近似"——这正好是 `decis.native_confidence` 存在的理由；但它在 `noul` 上没有定义，而 `native_confidences` 是按 item 对齐的列表，混合请求里没有连贯的值可报，所以 kev 引擎不填这个字段（`answers.py` 的 `confidence` 三个 primitive 都覆盖）。
-
-另外记录一处**已知偏差，未实测影响**：Decis 的 `render_value` 对 dict **按键排序**（`render.py:46`），kev 的 `render` 保留插入顺序（`api.py:55`）。state 的渲染归 `render.py`（`AGENTS.md §2`），且 Laya 已按现行行为发布并测试，所以不改；但 kev 的 state 文本因此可能与它训练时见过的字段顺序不同。影响未测。
-
-### D10（中）容量接口没有"state 单独上限"的位置，而 kev 有一个 — 已修正
-
-kev 的 `encode(strict=True)` 同时施加两条**不同**的限制（`model.py:44,54`）：
-
-1. `len(state) + 1 <= MAX_STATE`（384）
-2. 每个问题 `len(state) + len(branch) <= MAX_BRANCH`（1024）
-
-而 `validate_capacity` 只有两个比较位：`sequence_tokens <= max_sequence_tokens` 和每个问题 `head_tokens[qid] <= max_question_tokens`（`schema.py:241,279`）。`MeasuredTokens.state_tokens` **只被报告、从不校验**。
-
-于是 (2) 可以落在 `sequence_tokens` 上，而 (1) 无处安放：state 500 token、问题 10 token 的请求 `sequence_tokens = 510 <= 1024` 会通过校验，然后被 `encode` 截断（`strict=False` 时它静默 `state_tokens[:max_state-1]`，并在 `state_truncated` 里留一个没人看的标记）。
-
-Laya 没有这个问题：它只有一个约束（`max_len`），state 按剩余空间截断，所以一个比较位就够。**这属于 `EngineCapacity`/`validate_capacity` 的接口缺口，不是 kev 的怪癖**——任何有独立 state 窗口的引擎都会撞上。
-
-**已修正**：`EngineInfo` 增加 `max_state_tokens`（默认 `0` = "没有独立上限"，Laya 行为不变），
-`EngineCapacity` 协议同步，`validate_capacity` 在做序列比较之前先查 `measured.state_tokens`，
-错误定位到 `body.state` 并说明是"内容本身"超限。kev 的 `info()` 声明 384。
-
-实现这条时又踩到一个自己挖的坑，值得记下来：初版 `measure()` 从 `encode` 的输出反推 state 长度
-（`len(ids) - branch`），而 `encode` 会**把它截断到 384**，于是量出来的 state 永远等于 384，
-新加的上限检查**永远不会触发**——一个"实现了但从不生效"的检查。现在直接量原始 token 数
-（`1 + len(tokenizer(state))`），branch 用一个空 state 的 record 单独量，两边都不经过截断。
-
-**同时修掉一处会误拒的设计**：`max_question_tokens` 最初写成 `MAX_BRANCH - MAX_STATE`（640），
-这会把"100 token 的 state + 700 token 的问题"拒掉，而 kev 实际处理得了（800 ≤ 1024）。
-现在报告的是最宽松的**可靠**上界 `MAX_BRANCH`，真正生效的是序列比较；`measure` 仍然报每个问题
-自己的开销，所以 422 还是能指出是哪个问题。
-
-**顺带确认 Stage 2 的抽象结论**：接 kev 全程**没有改** `render.py`、`answers.py` 或路由层。
-需要改的只有 `paths.py`（`BaseModel`：适配器 + 基座是两个仓库）与 `schema.py`/`base.py`
-（state 上限）。这两处都不是"抽象错了"，而是原来的接口少了一个维度——正是 Stage 2 要发现的东西。
-
-### D11（中）kev 挂载"外部基座"无效：基座只能按 repo id 去 Hub 找 — 未修正，已记录
+#### D11（中）kev 挂载"外部基座"无效：基座只能按 repo id 去 Hub 找 — **未修正，已记录**
 
 需求里有一条是"支持挂载外部模型"。适配器这一半成立：`paths.resolve` 找到的本地目录会作为
-`Checkpoint(<目录>)` 传进去，`_resolve_run`（`_kev_vendor/checkpoint.py:30-36`）见到本地路径就
-直接用它，不发网络请求。
+`Checkpoint(<目录>)` 传进去，`_kev_vendor/checkpoint.py:29` 的 `resolve_run` 见到本地路径就直接用，不发网络请求。
 
-**基座那一半不成立。** 基座是 checkpoint 元数据里的一个**字符串** `meta.base`（形如
-`Qwen/Qwen3.5-0.8B-Base`），vendored 加载器把它原样交给 `load_tokenizer(meta.base, ...)` 与
-`DecisionModel(meta.base, ...)`（`checkpoint.py:127-128`），于是无论适配器从哪来，基座都只会
-按 repo id 去 Hub 找（缓存命中或联网）。
+**基座那一半不成立。** 基座是 checkpoint 元数据里的一个**字符串** `meta.base`（形如 `Qwen/Qwen3.5-0.8B-Base`），
+vendored 加载器把它原样交给 `load_tokenizer(meta.base, ...)` 与 `DecisionModel(meta.base, ...)`
+（`checkpoint.py:127-128`），于是无论适配器从哪来，基座都只会按 repo id 去 Hub 找（缓存命中或联网）。
+实测后果：用户把基座单独下到本地目录、用 `--model-path kev-0.8b=<目录>` 指过去，**基座那份配置不会生效**。
+离线机器上只要 Hub 缓存里有基座就没问题（`decis download` 正是把它放进缓存的），所以这不是"离线不可用"，
+而是"**挂载基座不生效**"。
 
-实测后果：用户若把基座单独下到本地目录、用 `--model-path kev-0.8b=<目录>` 指过去（写这条缺陷
-时那个覆盖还是环境变量 `DECIS_MODEL_PATH_KEV_0_8B`，它后来被 D27 删掉了），**基座那份配置不会
-生效**——引擎仍然去 Hub 要 `Qwen/Qwen3.5-0.8B-Base`。离线机器上只要缓存里有基座就没问题
-（`decis download` 正是把它放进缓存的，`paths.BaseModel` 那条路径刻意不带 `local_dir`），所以
-这不是"离线不可用"，而是"**挂载基座不生效**"。
+**为什么现在不修**：修它要动 vendored 的 `checkpoint.py`，而那份文件是逐字节复制、有 sha256 守卫、
+刻意不做本地修改的（`VENDOR.md`）。两条可行路径都留到真要支持"挂载自定义基座"时再做：
+① 在 `load()` 里把 `meta.base` 映射成本地目录再交给一个不改 vendored 代码的加载路径——但 vendored 的
+`DecisionModel.__init__` 只接受 repo id，这条路实际要复制它的加载逻辑，等于在 Decis 里维护第二份；
+② 向上游提 PR 让 `meta.base` 支持本地路径，然后整体 re-vendor——**这条更干净**，它把"基座可以是目录"
+留在唯一事实来源里。
 
-**为什么现在不修**：修它要动 vendored 的 `checkpoint.py`，而那份文件是逐字节复制、有 sha256
-守卫、且刻意不做本地修改的（`VENDOR.md`）。可行的修法有两条，都留到真要支持"挂载自定义基座"
-时再做：
-1. 在 `load()` 里先把 `meta.base` 映射成 `paths.resolve` 找到的本地目录（若存在），再传给一个
-   **不改 vendored 代码** 的加载路径——但 vendored 的 `DecisionModel.__init__` 只接受 repo id，
-   所以这条路实际要复制它的加载逻辑，等于在 Decis 里维护第二份；
-2. 向上游提一个 PR 让 `meta.base` 支持本地路径，然后整体 re-vendor。**这是更干净的选项**，
-   因为它把"基座可以是目录"这件事留在唯一事实来源里。
+在此之前，README 与 `AGENTS.md` 不许把"挂载目录"说成对基座也成立——只对适配器成立。
+**这条没有任何测试守卫**，只有文档层的约束。
 
-在此之前，README 与 `AGENTS.md` 不许把"挂载目录"说成对基座也成立——只能说的是适配器。
+#### D13（中）`noul.criteria` 写错键名会被**静默忽略**，答案照常返回 200 — **待决策**
 
-### D12（低，但正是 §8 要防的）README 性能表把两个线程数混进了同一行 — 已修正，且改成了自动生成
-
-`AGENTS.md §8` 说"文档里的任何性能数字都必须由 `benchmarks/report.py` 从 checked-in 原始 JSON
-生成"。这条规则在被执行之前，先抓到了它要防的东西。
-
-原来的 README 表格：
-
-| 引擎 | 冷启动 | 峰值 RSS | 1 问 | 10 问 |
-|---|---|---|---|---|
-| `laya-multilingual` | 73 s | 4.84 GB | 201 ms | 987 ms |
-| `laya`（英文） | 76 s | 2.80 GB | 432 ms | 3222 ms |
-
-对着 `benchmarks/results/laya-*-sweep.json` 逐格核对：
-
-- `201 ms` 是**线程数 16** 的 `laya-multilingual` 1 问；同一行的 `987 ms` 是**线程数 24** 的 10 问。
-- `432 ms` 是**线程数 16** 的英文 1 问；同一行的 `3222 ms` 是**线程数 24** 的 10 问。
-
-**四格里三格取自不同的配置。** 每个数字单独看都对，整行没有意义——而"没有意义"这件事在
-表格里看不出来，因为原表根本没写线程数（这同时违反 §8 里"必须同时给出引擎、设备、dtype、
-线程数/进程数、批大小、state 长度、问题数"那一句）。
-
-**修法不是把数字改对，而是让这类错误不可能再被写出来**：`report.py` 生成表格时，一行的所有列
-都从**同一个配置**里取，并把线程数写进表格本身；`--check` 在 CI 里跑，手改一个数字就会失败。
-`tests/test_benchmark_report.py` 里有这一条的负向对照（把一个数字改掉，断言检查器能发现），
-按 §12 的要求"证明它真的被触发"。
-
-顺带一个同源的问题：`kev-0.8b-cpu-dtype.json` 的对比轴是 **dtype**，不是线程数。生成器第一版
-把它当线程扫描渲染，于是 fp32 与 bf16 两行因为 `(threads, questions)` 相同而被**静默合并成一行**
-——这是生成器自己犯的同类错误，改成先探测变化轴再选表格形状。这条也被一个测试钉住了。
-
-**教训**：把"数字必须来自原始数据"写成规则，价值不在数字本身，而在于**它逼你把表格的每个维度
-也想清楚**。手写表格时，"这一行的线程数是多少"是一个没人问的问题。
-
-### D13（中，待决策）`noul.criteria` 写错键名会被**静默忽略**，答案照常返回 200 — 写 examples 时发现的
-
-`noul` 的 `criteria` 只有两个键：`"true"` 和 `"false"`（`src/decis/schema.py:44-48`）。
+`noul` 的 `criteria` 只有 `"true"` 和 `"false"` 两个键（`src/decis/schema.py:44-48`），
 但写 `noul` 问题时最自然的手感是 `"yes"` / `"no"`。实测：
 
 | 请求里的 criteria 键 | HTTP | `noul` | `input_tokens` |
@@ -369,739 +82,426 @@ Laya 没有这个问题：它只有一个约束（`max_len`），state 按剩余
 | `{"yes": …, "no": …}` | 200 | **0.3694** | 47 |
 
 两个都是 200。第二行里那段评分标准**根本没被渲染进提示**（token 数从 65 掉到 47），
-但调用方拿到的是一个看起来完全正常的概率值。**用户不会知道自己的 rubric 被丢了。**
+调用方拿到的却是一个看起来完全正常的概率值。**用户不会知道自己的 rubric 被丢了。**
 
-这违反本项目已经承认的一条原则：§9 写"❌ 让引擎在超预算时静默截断输入（上游这么干，
-Decis 不能跟着干）"。机制不同（未知字段 vs 超预算），失效模式相同：**调用方以为模型看到了
-一段它其实没看到的信息，而返回的概率看起来仍然合理。**
+这违反本项目已经承认的一条原则（§9 禁止"让引擎在超预算时静默截断输入"）。机制不同（未知字段 vs 超预算），
+失效模式相同：**调用方以为模型看到了一段它其实没看到的信息，而返回的概率看起来仍然合理。**
 
-**但它不是一个契约违规。** 查了官方快照：`docs/contract/typesafe-openapi-0.2.0.json` 里
-`NoulCriteria`（以及其余所有对象）**都没有 `additionalProperties: false`**
-（`components.schemas.NoulCriteria.properties = ["true","false"]`，`additionalProperties` 缺失）。
-JSON Schema 中缺失即允许额外属性，所以**接受额外键是符合契约的**，Decis 没有偏离。
+**但它不是一个契约违规。** 官方快照 `docs/contract/typesafe-openapi-0.2.0.json` 里 `NoulCriteria`
+（以及其余所有对象）**都没有 `additionalProperties: false`**，JSON Schema 中缺失即允许额外属性。
+顺带一个更微妙的不一致：官方 SDK 的 `NoulCriteria` 是封闭的（`closed=True`），走 SDK 的用户会拿到
+`ValidationError`，走裸 JSON 的用户拿到的是一个悄悄降级的结果——同一个错误，两条路径的表现不一样。
 
-顺带一个更微妙的不一致：**官方 SDK 对这一条的严格程度和裸 JSON 不同**。
-`typesafe_sdk` 的 `NoulCriteria` 是 `TypedDict(total=False, closed=True)`，
-所以走 SDK 的用户会拿到一个响亮的 `ValidationError`；走裸 JSON 的用户拿到静默降级。
-同一个错误，两条路径的响亮度不一样。
+**为什么留给你决策**：没有线上 key，无法观测真 jev 对未知键是忽略还是 422，任何"和 jev 一致"的说法
+现在都是猜的。两种合理选择：**保持宽松**（向前兼容最好，代价是上面那个问题）或在 `noul.criteria`
+这一层收紧（只对这一处报 422，代价是比契约更严格）。**折中方案**：接受，但在日志里 warning，
+并在响应的 `decis` 命名空间回一个 `ignored_fields` 列表——不改变契约行为（仍 200），只把"静默"去掉，
+且 `decis.*` 是扩展字段，官方 SDK 会忽略，零兼容风险。
 
-**为什么留给你决策**（`AGENTS.md §12` 要求改契约行为前先跑线上差分，而这里连差分都做不了）：
+**倾向**：折中方案。**但它需要先确认一件事**：真 jev 是否在 `decis` 之外的路径上也返回额外字段——
+如果它严格拒绝，那我们选择宽松就等于让一批在真 jev 上会失败的请求在我们这里"成功"。
 
-1. **参考行为未知**。没有线上 key，无法观测真 jev 对未知键是忽略还是 422。任何"和 jev 一致"
-   的说法现在都是猜的。
-2. **两种合理选择，代价不同**：
-   - **保持宽松**：向前兼容性最好（jev 将来加字段不会把我们打死），代价是上面那个静默降级的坑。
-   - **在 `noul.criteria` 这一层收紧**（只对这一处、只有两个已知名字，报 422）：
-     坑填掉了，且因为顶层仍 `ignore`，不影响"jev 将来加对象字段"的兼容性。
-     代价是比契约更严格——一个合法（虽然大概不是本意）的请求会被我们拒掉。
-3. **折中第三条**：接受但在日志里 `warning`，并在 `/v1/systemone` 响应的 `decis` 命名空间下
-   回一个 `ignored_fields` 列表。不破坏兼容，但把静默变成可见。
-
-**倾向**：第 3 条。它不改变契约行为（仍 200、仍是 Ignore），却把"静默"这个真正的缺点去掉；
-而且 `decis.ignored_fields` 是 `decis` 命名空间内的增量字段，官方 SDK 会忽略，零兼容风险。
-**但它需要先确认一件事**：真 jev 是否也在 `decis` 之外的路径上返回额外字段——如果它严格拒绝，
-那我们选择宽松就等于让一批在真 jev 上会失败的请求在我们这里"成功"，那是更坏的兼容性问题。
-
-**当前状态：未修。** 交付物 `examples/curl.md` 已用正确的 `"true"`/`"false"`，
-并在该处标注了这个坑与本节编号，避免示例把人带进坑里。
+**当前状态：未修**，也**没有测试守卫**（没有任何测试固定"宽松行为"或"应该有 warning"）。
+交付物 `examples/curl.md` 已用正确的 `"true"`/`"false"`，并在该处标注了这个问题与本节编号。
 
 ---
 
-> **历史记录（D14–D16，2026-09-23）**：这三条记的是当时那个**无权重的假引擎镜像**（tag 就叫
-> `mock`），它发布在本仓库迁到 `chaitin` 命名空间之前的 Docker Hub 上（下面把它写成
-> `<namespace>`）。假引擎和它的镜像 tag
-> 后来已从代码、工作流和文档中移除，所以下面 `docker pull <namespace>/decis:mock` 这类命令今天
-> 不再可用；**缺陷的形状与教训与具体引擎无关，仍然有效**，`AGENTS.md §9` 也仍然引用了 D14/D15。
-> 每条命令里的 `<namespace>/decis:...` 都不是今天能拉的镜像名——当前发布的镜像见
-> `docs/deployment.md`。
-
-### D14（中，已修正）`mock` 镜像装了 Laya 和 torch：3.2 GB 里 3.1 GB 是它不需要的
-
-**发现方式**：镜像第一次真正推到 Docker Hub 之后，用 registry API 逐层列体积。
-`mock-latest` 是 **3203 MB**，和 `laya-multilingual-latest` **一模一样**——
-
-```
-layer                size  history
-...（python:3.13-slim + uv，约 66 MB）
-41887076501f        3137MB  RUN |3 DECIS_EXTRAS=laya DECIS_ENGINE=mock DECIS_PREDOWNLOAD= ...
-TOTAL               3203MB
-```
-
-`DECIS_EXTRAS=laya`，而 `DECIS_ENGINE=mock`。**`mock` 镜像里装了 torch、transformers、peft。**
-一个"什么都不需要、起来就有"的引擎，镜像比 python 基础镜像大 60 倍。
-
-**根因是一行 YAML 里的三元表达式惯用法**：
-
-```yaml
-DECIS_EXTRAS=${{ matrix.engine == 'mock' && '' || (matrix.engine == 'kev-0.8b' && 'kev' || 'laya') }}
-```
-
-GitHub Actions 的表达式里没有真正的三元运算符，社区惯用 `A && B || C`。这个惯用法
-**在 `B` 为假值时是错的**：`'mock' == 'mock'` 为真 → `''`，然后 `'' || …` 因为**空字符串是假值**
-而继续求值右边 → `'laya'`。于是"没有 extra"这个分支永远不可能被选中。
-`kev-0.8b` 和 `laya-multilingual` 恰好都落在默认值上，所以**只有 `mock` 是错的**，
-而它偏偏是每个用户第一次 `docker pull` 的那个（也是 CI 里"镜像能起来并服务"那条腿用的那个）。
-
-**为什么原来的测试没抓到**：`test_the_extra_mapping_matches_the_registry` 里写着一份
-**手抄的** `expected = {"mock": "", …}`，然后拿它和 registry 比——它比的是两份硬编码常量，
-从来没有读过 YAML 里的那个表达式。这正是 §2"抄写就是第二处实现"的又一个实例：
-第一处实现（表达式）错了，第二处实现（测试里的常量）是对的，于是测试恒绿。
-现在的测试改成读**执行 plan 脚本后产出的矩阵**：表达式已经不存在了，
-映射搬进了 plan 脚本（`extra_for()`），而那个脚本的测试是真跑的。
-
-**修法**：把 `引擎 → pip extra` 的映射从 YAML 表达式搬进 `plan` 步骤，
-矩阵里直接带 `extra` 字段，构建步骤只做 `DECIS_EXTRAS=${{ matrix.extra }}`。
-顺带得到两个好处：(1) 该映射只剩一处，且与 `registry.SPECS[...].extra` 有测试比对；
-(2) 出现一个没有映射的引擎时 `plan` **直接失败**，而不是静默落进 `laya` 默认值。
-
-**教训（可以推广的）**：`A && B || C` 不能用来表达"可能为空的三元"。空字符串、`0`、
-空数组在 GitHub 表达式里都是假值，所以这个惯用法只在所有分支都为真值时才等价于三元。
-凡是"选一个可以合法为空的值"，都不要用它。
-
-### D15（低，但同一类）README 写的 tag 根本不存在：文档说 `:laya-multilingual`，镜像叫 `:laya-multilingual-latest`
-
-推完之后按文档去拉，第一步就失败：
-
-```
-$ docker pull <namespace>/decis:mock
-Error response from daemon: manifest for <namespace>/decis:mock not found
-```
-
-工作流给 master 推送打的 tag 是 `${engine}-${MOVING_TAG}`，也就是 `mock-latest`。
-用户（以及本仓库 README 和 AGENTS.md）预期的名字是 `<namespace>/decis:mock` ——
-**一个引擎一个仓库时才是那个名字，改成"引擎进 tag"之后 `-latest` 就纯属多余**：
-`:laya-multilingual` 本身就是"当前的 Laya 镜像"，正如 `:latest` 是单用途仓库的当前镜像。
-
-更值得记的是它为什么能溜过去：**没有任何测试拿 tag 和文档对照过**，
-而 D14 刚刚证明"文档/测试里的名字与工作流真正产出的名字不一致"这类缺陷是真实存在的。
-和 D12（手抄的性能表）是同一个形状：**同一个事实存在两份，只有一份被执行**。
-
-**修法**：tag 方案整个搬进 `plan` 步骤，矩阵里带 `image_tag`，构建与合并步骤只做插值，
-测试从**执行 plan 后产出的矩阵**里读 tag（master 推送 → 引擎名；release tag → 引擎名 + 版本；
-offline → 引擎名 + `-offline`，那个名字后来被 `-runtime` 取代，见 §2-D20）。顺带把"两个步骤各自拼一遍 tag"这个第二处实现也消掉了。
-已按新方案删掉 Docker Hub 上 21 个旧 tag，避免留下再也不会更新、但看起来仍然有效的 `-latest` 别名。
-
-### D16（严重，已修正）三个引擎把 per-arch 中间 tag 互相覆盖，于是三个 tag 发出的是同一个 manifest
-
-修完 D15（tag 改名）之后照例用 registry API 核对，发现**三个 tag 指向同一个 amd64 manifest**：
-
-```
-mock               amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
-laya-multilingual  amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
-kev-0.8b           amd64 child=('sha256:35786f81c1cebb6ed663a800096425d2dbe26152ebb5eec0b3e29169cf569f61', 3206 MB)
-```
-
-**`docker pull <namespace>/decis:mock` 会拿到一个 3.2 GB 的、`DECIS_DEFAULT_ENGINE` 是别的引擎的镜像。**
-
-根因：合并步骤要从 per-arch 镜像拼多架构 manifest，而 per-arch 的中间 tag 当时叫
-`sha-<commit>-<arch>`。**所有引擎共用同一个仓库**，于是六个构建腿同时往
-`sha-a0f2ee5c16b1-amd64` 这一个名字上推。后推的覆盖先推的；等三个 merge job 跑起来时
-（merge 必然在全部 build 之后），它们读到的是**最后完成的那个引擎**的镜像，
-于是三个 tag 都被合成了同一份 manifest。
-
-这正是 D14/D15 的同一个形状第三次出现：**一个名字被两份东西写，只有一份是"对的"**。
-D14 是"表达式 vs 抄本"，D15 是"文档 vs 工作流"，这里是"腿 A vs 腿 B"。
-一次真正的端到端核对（照着文档 `docker pull` + 比对 digest）才能发现它——
-所有 30 个 workflow 测试当时都是绿的，因为它们都在检查**一个**腿产出的字符串对不对，
-没有检查**两个腿会不会撞车**。
-
-**修法**：per-arch tag 里加上 artifact 名 —— `${IMAGE_TAG}-sha-${short}-${ARCH}`，
-即 `laya-multilingual-sha-a0f2ee5c16b1-amd64`。
-**并加了一条"不许撞车"的测试**：把所有 (引擎, variant, arch) 组合的构建腿都跑一遍，
-断言任意两个腿写出的 tag 集合两两不相交。这条测试在旧方案下会失败（已实测），
-所以它不是空文——它列出的正是上面那张表里的 20 组冲突。
-
-**教训**：在一个**共享仓库**里，任何由多个矩阵腿写入的 tag 都必须把腿的身份放进名字里。
-只检查"我这条腿的 tag 对不对"是不够的，必须检查"两条腿的 tag 会不会相同"。
-
-**同一批发现里更值得记住的一点**：这个缺陷是**镜像体积**这种维度暴露的，
-而它此前躲过了全部 422 个测试。体积不是被断言出来的，是推上去之后用 registry API 量出来的——
-`AGENTS.md §8` 那条"数字必须来自实测"在这里救了一次场。
-
-### D17（高，已修正）`decis download` 把权重写到 `resolve` 永远不看的目录，于是每次都失败
-
-**发现方式**：为 compose 设计"一次性 init 容器把权重预取进卷"时，用一个会写出**真实布局**的
-`snapshot_download` stub 跑 `decis download`，三种 `--dest` 全部退出码 1：
-
-```
-dest='models'                     exit=1  written=multilingual/rl_agent_config.json
-dest='models/laya-multilingual'   exit=1  written=multilingual/rl_agent_config.json
-error: download finished but ... still has no usable checkpoint
-```
-
-**根因**：`snapshot_download(local_dir=X)` 复制的是**仓库自己的布局**，所以 `laya-multilingual`
-落在 `X/multilingual/…`；而 `cli._download` 把 `X` 当作 `DECIS_MODEL_DIR` 交给 `paths.resolve`，
-后者只找 `X/<engine id>/`。两边各自的"唯一事实来源"（`download_arguments` 的 allow_patterns 与
-`candidate_directories`）都没错，错在下载器选了个两边都不认的落盘位置。
-
-**影响面远不止一条命令**：
-- `decis download` 从来没能成功过一次，而 README 与 `AGENTS.md §7` 都把它写成用户的第一步；
-- `docker/Dockerfile` 的 `DECIS_PREDOWNLOAD` 在 `RUN decis download` 处**直接构建失败**——
-  所以"带权重的离线镜像"不是"未验证"，是从来没构建成功过（AGENTS 里那条"未验证"也要跟着改）；
-- 任何"先把权重预取进卷、再起服务"的编排（compose、K8s initContainer）都不成立。
-
-**为什么测试没抓到**：`test_download_accepts_an_alias` 把 `snapshot_download` stub 成"什么都不写"，
-只断言传进去的 `allow_patterns` 与 `revision`——它验证的是**我们请求了什么**，不是**下完之后
-loader 能不能找到**。D14 是"表达式 vs 抄本"，这里是"请求参数 vs 真实落盘"：同一形状第四次。
-
-**修法**：
-1. 有模型目录时落盘到 `<dir>/<engine id>/`——`Dockerfile` 的注释、`.env.example` 与
-   `paths.resolve` 三处一直就是这么写的，缺的只是让下载器照做；
-2. 没有模型目录时（`DECIS_MODEL_DIR` 未设、也没有 `--dest`）写 **Hub 缓存**，那才是 `serve`
-   在零配置时会读的地方，于是 README 的"下载一次、然后 serve"真的只下载一次；
-3. 两条路都在下载之后**用 `paths.resolve` 自己验证**才报成功（缓存那条用 `checkpoint_root` 验）；
-4. 回归测试让 stub 写出**真实下载器的布局**，并断言 `resolve` 找得到——只断言参数的测试
-   在这类缺陷面前是恒绿的。
-
-**教训**：凡是"写到某处、之后从某处读"的两个模块，必须有一条测试把**真实的写**接上
-**真实的读**；把写 stub 掉再断言参数，等于把这条链子中间剪断还宣称它连着。
-
-**验证（2026-09-23）**：修好后的下载器在真容器里跑通——`PYTHONPATH` 挂载修好的源码、
-`DECIS_MODEL_DIR=/tmp/models-check`，`decis download --engine laya-multilingual` 打印
-`ready at /tmp/models-check/laya-multilingual/multilingual`、exit 0，
-`find` 得到 `<dir>/<engine id>/multilingual/rl_agent_config.json`。
-随后 commit `e8b6bd2` 构建的镜像在**空卷**上完整跑通：`docker compose up -d --wait` 里那个一次性
-预取把 646.8 MiB 下进卷、exit 0，服务端起容器后 `/v1/systemone` 正常作答（74 s 内 `--wait` 返回，
-引擎 101.0 s 后就绪）。**注意**：这次验证用的是**当时那版 compose**——它有一个一次性预取容器，把权重下进命名卷。
-现行的 `docker-compose.yml` 没有预取容器、也没有卷：权重烤在镜像里，`--wait` 等的是 `/readyz`。
-上面这段记录的是**下载器**的行为，那个预取容器已经不存在了。
-
-### D18（中，已修正）compose 的 `command:` 覆盖了镜像的 `CMD`，容器去找一个叫 `download` 的程序
-
-**发现方式**：第一次真的用发布镜像跑 `docker compose up -d --wait`（D17 修好之后的端到端验证），
-`weights-laya-multilingual` 立刻失败：
-
-```
-OCI runtime create failed: exec: "download": executable file not found in $PATH
-```
-
-**根因**：`docker/Dockerfile` 只有 `CMD ["decis", "serve"]`，**没有 `ENTRYPOINT`**。
-compose 的 `command:` 是**替换** CMD，不是追加，所以 `["download", ...]` 让内核去 exec 一个
-叫 `download` 的程序。YAML 层的测试测不出来——更糟的是，`tests/test_compose.py` 当时断言的
-正是 `command == ["download", "--engine", X]`：**它把错误的期望抄了一遍**（D14 的同一形状，
-只是这次的"抄本"是编排文件本身的写法）。
-
-**修法**：所有 `command` 都以 `decis` 开头；测试改成**从 Dockerfile 读出有没有 `ENTRYPOINT`**
-再决定该断言什么，而不是把当前写法当常量。
-
-**教训**：镜像的入口点（`ENTRYPOINT`/`CMD`）与编排层的 `command:` 是两个东西，它们的组合语义
-只有真起一次容器才会暴露。凡是"编排文件该怎么写"的判断，至少要有一条测试把它和镜像定义对起来，
-并且**真的跑一次**——这里从 `up` 到报错只用了 1 秒。
-
-### D19（中，已修正）为权重下载配的代理把镜像自己的 liveness 探针打成了 502
-
-**发现方式**：真实 `docker compose up -d --wait` 的下一次尝试。引擎**已经加载成功**——
-日志里明明白白 `engine laya-multilingual ready after 86.1s`——但容器一直是 `unhealthy`：
-
-```
-urllib.error.HTTPError: HTTP Error 502: Bad Gateway
-```
-
-**根因**：这台机器没有直连出口（`sysctl` 之外还有网络策略），容器要么走代理、要么什么都下不来，
-于是 `.env` 里有 `HTTP_PROXY=…`，`env_file` 把它传进容器。而 `docker/Dockerfile` 的 HEALTHCHECK 是
-
-```
-python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', …) …)"
-```
-
-**`urllib` 会读 `HTTP_PROXY`**：探针于是去问代理要 `http://127.0.0.1:8000/healthz`，
-代理当然给不出这个地址，返回 502。服务是健康的，**探针不是**。
-
-**为什么危险**：这不是"启动慢"，是"探针永久失败"。同一组合在 Kubernetes 里会让一个完全健康的
-Pod 反复重启——每轮都要重付 86 秒冷启动，而日志里全是 `ready`。§2-D7 论证了 liveness 与
-readiness 的分工，却没料到 liveness **自身**会被环境变量劫持。
-
-**修法**：
-1. `HEALTHCHECK` 的命令前加 `env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy
-   -u ALL_PROXY -u all_proxy`——**只作用于探针**，引擎自己的下载照旧走代理；
-2. `.env.example` 的代理段落一并给出 `NO_PROXY=127.0.0.1,localhost,::1`，
-   给"镜像早于这个修复"的场景一条出路（本次验证就是这么过的）；
-3. `tests/test_compose.py` 加守卫：从 Dockerfile 的 HEALTHCHECK 块里断言它确实 `-u` 掉了代理变量。
-
-**教训**：探针是"从容器内部发出的一个请求"，因此它继承该容器的一切环境（代理、`SSL_CERT_FILE`、
-DNS、`NO_PROXY`）。把它写成"用通用 HTTP 客户端访问 loopback"就等于假设这些环境是干净的——
-而在"需要代理才能下载权重"这个**恰恰是本项目镜像最常见部署前提**的场景里，假设不成立。
-
----
-
-### D20（高，已修正）默认发布的镜像不带权重，于是"拿到就能用"是句空话
-
-**发现方式**：用户读完 CI 绿灯的报告后问："我们不是把模型打进镜像了吗？"——**没有**。
-默认 tag（`laya-multilingual`、`kev-0.8b`、裸 `latest`）只装依赖，权重烤在另一个变体里，
-而那个变体（当时叫 `-offline`）**只在 release tag 时构建，且从未成功过**（§2-D17）。
-
-**为什么这是缺陷而不是取舍**：一个按引擎命名的镜像只有一件事要做，就是让
-`docker pull` + `docker run` 不需要别的条件。当时的文档甚至同时说了两件矛盾的事——
-README 有一句 `Images ship with the model so docker run works offline`，
-而镜像表格下面写着"默认镜像不含权重：容器首次启动时下载"，并且第一条 `docker run` 示例
-真的会去联网。用户预期与实际行为不一致，而**唯一发现它的方式是把镜像拉下来跑一遍**：
-六条构建腿全绿、SBOM 和 provenance 都在，没有一条测试说过"这个 tag 里有权重"。
-
-**修法**：
-1. 翻转变体：`baked`（烤权重）成为**默认**，引擎名那个 tag 就是它；不带权重的变体带后缀
-   `-runtime`，只在 release tag 或手动 dispatch 时构建；
-2. `-offline` 这个名字**删掉**：默认已经烤权重时它就是同一个东西的第二个名字（§2、§9）；
-3. 两条守卫：`tests/test_docker_workflow.py` 断言默认 tag 的 `bake` 等于引擎名、
-   且**不存在"要烤权重却没装对应 extra"的腿**；`tests/test_compose.py` 断言 compose 用的
-   image tag 正是那个烤权重的变体。
-
-**验证**：一个发布镜像（arm64 digest `sha256:3d96587c…`）从 Docker Hub 拉下来后单独跑，容器日志里
-**0 条下载**、`ready after 122.3s`、`/readyz` 131 s 变 200、常驻 2.87 GiB，`noul` 与本地自建的
-同版镜像**逐位相同**；registry 逐层求和：默认 tag **4401 MB**（amd64）/ **4543 MB**（arm64），
-不带权重的 `-runtime` 变体 3203 / 3346 MB。这次验证用的是迁移前的命名空间里发布的镜像，
-而体积与"有没有下载"由引擎和 checkpoint 决定，所以这些数字对当前工作流发布的镜像同样成立。
-
-**代价（写下来，不藏）**：权重的 `RUN` 层在 `COPY src` 之后（下载器要读引擎的权重声明，那是代码），
-所以**每次源码改动这条腿都要重新下载**。laya 是 647 MiB，kev 是 1.7 GiB adapter + 1.65 GiB 基座，
-乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里让 `COPY --from` 命中缓存
-（`docs/design.md §12.2` 记了这条路，没有实现）。
-
----
-
-### D21（高，已修正）挂在 `DECIS_MODEL_DIR` 上的卷会把烤进镜像的权重盖掉
-
-**发现方式**：设计 compose 时按"上一版是预取进命名卷"的习惯继续写着 `volumes: [models:/models]`，
-而这一次镜像里**已经有** `/models/laya-multilingual/`。
-
-**根因**：Docker 对命名卷的处理是"首次创建时用镜像里同路径的内容初始化"，之后卷就是权威；
-bind mount 更直接——**整个目录被替换**。两种情况下容器里的 `/models` 都不再是镜像里那份，
-而 `paths.resolve` 找不到权重时不会报错，它会**去联网下载**（这正是 §2-D8 之前特意保护的路径：
-"本地有权重"应当赢过网络，但它必须先看得见）。
-
-**为什么危险**：得到一个"离线镜像"，它在有网时工作得完全正常，在**断网时失败**——
-而这个失效模式只在真正无出口的环境里出现。加上它不报错、不影响任何现有测试，
-这是一种典型的"部署到客户现场才发现"的缺陷。
-
-**修法**：`docker-compose.yml` 不挂任何卷，并把 `DECIS_MODEL_DIR` 钉在 `/models`；
-`tests/test_compose.py` 的守卫**从 Dockerfile 的 `ENV` 读出那个路径**再断言没有服务挂它，
-同时没有任何服务把 `DECIS_MODEL_DIR` 指到别处。需要"权重放卷"的部署改用 `-runtime` 镜像，
-先 `decis download` 填一次卷（README 有这个例子）。
-
----
-
-### D22（中，已修正）compose 的 `--wait` 等的是 liveness，于是"ready"来得太早
-
-**发现方式**：第一次真实 `docker compose up -d --wait` 在 **74 秒**就返回了，而引擎还要再等
-**27 秒**才 `ready`（D19 那次实测 101.0 s）。命令的语义是"等到服务可用"，实际是"等到进程活着"。
-
-**根因**：`--wait` 等的是健康检查，而镜像的 `HEALTHCHECK` 按 §2-D7 刻意打 `/healthz`——
-这是**给编排器用的 liveness 探针**，不能因为引擎还在加载就判失败。compose 继承了它，
-于是继承了"活着 ≠ 能作答"。
-
-**修法**：compose 层覆盖探针，指向 `/readyz`，并保留 D19 要求的 `env -u` 代理变量清理。
-这个覆盖是**安全的**，因为 Docker Compose 不是编排器：探针失败**不会**重启容器，
-它只影响 `--wait`、`docker ps` 的状态和 `depends_on: condition: service_healthy`。
-镜像自带的 `HEALTHCHECK` 因此保持 `/healthz` 不动，两者分工在 `docker-compose.yml` 的注释里说明。
-`tests/test_compose.py` 现在同时断言两件事：镜像探针打 `/healthz` 且**不**打 `/readyz`，
-compose 探针打 `/readyz` 且启动宽限期长于实测的冷启动。
-
-**教训**：同一个"健康检查"概念在编排器与本地编排工具里语义不同，**因为失败后的动作不同**。
-把镜像的探针直接继承过来（或者反过来，把 compose 的探针抄进镜像）都会让其中一个场景错，
-而两者都"看起来在检查健康"。
-
----
-
-### D23（中，已修正）`.env` 里的代理只到达容器，到达不了构建步骤
-
-**发现方式**：在本机（无直连出口）做第一次真实的本地构建。依赖装完了，烤权重那一步失败：
-
-```
-laya-multilingual: downloading to /models/laya-multilingual (646.8 MiB) ...
-httpcore.ConnectError: [Errno 101] Network is unreachable
-```
-
-**根因**：`.env` 是通过 `env_file:` 交给**容器**的，而构建步骤不属于任何一个容器。
-Docker 也不会把 shell 里的 `HTTP_PROXY` 带进 `RUN`（实测：`RUN echo "[$HTTP_PROXY]"` 打印空，
-容器直连 PyPI 可用、直连 `huggingface.co` 不可用）。于是"依赖安装成功、权重下载失败"这个
-看起来自相矛盾的现象同时成立——**失败的那一步恰好是唯一真的需要出口的那一步**，
-而 `.env.example` 的代理段落当时写着"跑构建时也设这些"，等于承诺了一件 `env_file` 做不到的事。
-
-**修法**：文档（`.env.example`、两个 README）写明构建要用 `--build-arg` 显式传代理与 `NO_PROXY`：
-
-```bash
-docker compose build --build-arg HTTP_PROXY="$HTTP_PROXY" --build-arg HTTPS_PROXY="$HTTPS_PROXY" \
-  --build-arg NO_PROXY="$NO_PROXY"
-```
-
-CI 不需要这一步（GitHub runner 直连 Hub）。顺带实测到一个有用的性质：代理 build arg **不进**
-BuildKit 的缓存键——这次重建复用了上一次的依赖层，只重跑了烤权重那一步。
-
-**教训**：`env_file` 的作用域是"容器"，不是"这一次构建"。把变量放在同一个文件里，不等于它到达了
-每一处需要它的地方；而在这类缺陷里，**没坏的那一步会掩盖坏了的那一步**。
-
----
-
-### D24（高，已修正）kev 在 Apple 芯片上默认跑 CPU：设备回退写在了引擎里
-
-**发现方式**：在一台 M3 Pro 上用 playground 打 kev，每个请求都慢到看得见。查 `kev.py` 的
-`load()`：`device = settings.device or "cpu"`——**它从来不问机器有什么**。同一台机器上 `mps`
-是可用的，`DTYPE_DEFAULTS` 甚至已经有 `("kev-0.8b", "mps"): "fp32"` 这一行，只是永远走不到。
-
-**根因**：设备选择没有唯一事实来源。Laya 把"不设"交给上游 `Agent`（它自己按 CUDA→Metal→CPU 挑），
-kev 则各写各的 `or "cpu"`。于是文档里那句 "Unset picks the best available"
-（`configuration.md`、`config.py` 的注释）**对 kev 是假的**，而且没有任何测试对照它——
-无权重测试套在 CI 上根本没有加速器，所以"选错设备"的分支永远不会被走到。
-`DECIS_DEVICE=mps` 这个正当旋钮让手工验证也"看起来正常"，谁都不会去查默认值。
-
-**代价**：不是"慢一点"，是数量级。一次性本地探针（`kev-0.8b`，fp32，3 个问题，22 token 的 state，
-5 线程，同一进程外各跑一次）：`cpu` p50 3,299 ms，`mps` p50 215 ms；两边 argmax 相同，
-概率最大差 2e-6。**这两个数字来自一次性探针，没有进 `benchmarks/results/`，所以不进用户文档**
-（§8）；`decis bench` 目前也没有设备维度的报告项。
-
-**修法**：设备策略集中到 [`src/decis/engines/devices.py`](../src/decis/engines/devices.py)：
-`DEVICES`（`DECIS_DEVICE` 的合法取值）、`ACCELERATOR_ORDER`（cuda→xpu→npu→mps，`cpu` 是兜底）、
-`available_devices` / `best_device`（探测可注入，以便无加速器的测试套能测顺序）、
-`requested_device`（错拼拒绝并点名变量）。`kev.py` 的 `resolve_device` 只做
-"pin 优先，否则问机器"；Laya 继续让上游决定。预加载时 `device` 报 `unloaded` 而不是猜一个
-`cpu`（`api.md` 里那条"kev 加载前报 cpu"随之改掉）。守卫：
-`tests/test_conventions.py::test_device_choice_has_one_home`（helper 只有一处、
-引擎里不许再有 `or "cpu"`）+ `tests/test_devices.py`。
-
-**仍未验证**：`xpu` 与 `npu` 只实现了探测（本机没有这两种硬件，`benchmarks/results/` 里也没有
-对应的运行），它们落到 dtype 表的默认值 `fp32`；`torch_npu` 的存在性检查在真机上还没跑过。
-另外 MPS 的内核是按张量形状编译的，`SHAPE_BUCKET` 只把**序列长度**分桶，所以进程内第一次出现
-某个"问题数 × 桶长"的组合仍要付一次编译（实测：一次 `load()` 后的第一个 3 问请求比稳态多
-几百毫秒）。当前 `_warmup()` 只热一个 item，覆盖的是"1 个问题"那个形状。
-
-**顺带发现**：默认设备改成 MPS 之后，kev 那套真实权重测试第一次跑在 MPS 上，
-`test_probabilities_match_upstreams_own_path` 报 **1.6e-6**，超过那个按 CPU 标定的 `1e-6` 上限
-（CPU 上低于 1e-6，两侧 argmax 相同）。MPS 会重排归约，这是它的性质而不是缺陷；上限因此按测量
-改成 `1e-5`，与 `test_batch_invariance.py` 里真实权重那条一致——真正的掩码缺陷是数量级 1 的偏差
-（§2-D9），`1e-5` 照样会红。**教训与 D24 本身同源**：一个没被任何设备验证过的默认值，会连带
-让"哪个后端下测过"这段话失真。
-
----
-
-### D25（高，已修正）`NO_PROXY` 里的 `[::1]` 让每一次权重下载都失败，而报错看不出跟代理有关
-
-**发现方式**：在公司的 ARM 机器上按文档走第一步——`uv sync --all-extras`、
-`uv run decis serve --host 127.0.0.1`——模型起不来。`/readyz` 是：
-
-```json
-{"status":"failed","engine":"laya-multilingual","error":"InvalidURL: Invalid port: ':1]'"}
-```
-
-同一条路径上的 `decis download --engine laya-multilingual` 也失败，而且是在**发出任何请求之前**。
-macOS 上同样的命令正常。
-
-**根因**：本机的 `NO_PROXY` 里有一项是 `[::1]`（RFC 3986 的带方括号 IPv6 字面量写法）。httpx 的
-`get_environment_proxies()`（`httpx/_utils.py:47-70`）对每一项调
-`ipaddress.IPv6Address(entry)`——**带方括号的形式会抛 `ValueError`**，于是它退到"这是个域名"的
-分支，拼出 `all://*[::1]`，`Client()` 构造时 `urlparse` 把 `:1]` 当端口，`InvalidURL` 在客户端
-构造阶段就抛出来。`huggingface_hub` 就是 httpx 客户端，所以**下载器在联网之前就死了**；报错里
-没有代理、没有 `NO_PROXY`、没有文件名，看起来像是权重或磁盘的问题。
-
-macOS 能跑只是因为那台机器的 `NO_PROXY` 里恰巧没有这一项——**同一个列表放到 macOS 上会同样失败**，
-这不是平台差异。
-
-**为什么早没发现**：这条解析规则在仓库里有 **5 份手抄**——`tests/conftest.py`、
-`examples/python_sdk.py`、`benchmarks/run.py`、`benchmarks/batch_gain.py`、
-`benchmarks/probe/run_kev_dtype.sh`——每一份都在"已经被调试过"的路径上，而用户真正会走的那条
-（`decis serve` → `paths.resolve` → `huggingface_hub`）**一份都没有**。这正是 §2 说"第二处实现就是
-bug"的意思：手抄的那 5 份没坏，所以没人去看第 6 条路径。
-
-**修法**：规则收进 `src/decis/config.py`：
-
-* `normalize_proxy_environment(environ)`：把 `[::1]` 改写成 `::1`（能改的就改，不删——删掉等于
-  不再绕过代理），把 httpx 根本无法表达的 `[::1/64]` 这类**丢弃并记录**（`::1/64` 在 httpx 的拼法
-  里是端口号），域名、通配符、CIDR 一律原样保留；幂等。
-* `ensure_loopback_bypass(environ)`：保证 `127.0.0.1,localhost,::1` 在名单里（值为 `*` 时不追加）。
-* `load_settings()` 里调用它，并把改动记进 `Settings.proxy_rewrites`（`(变量, 改前, 改后)`，
-  `改后 == ""` 表示丢弃），`decis doctor` 逐条报出来——`[::1] -> ::1` 在 `NO_PROXY` 与 `no_proxy`
-  里各出现一次，不写变量名就分不清是哪一条。改过才打印，没改就不打印。
-* 5 份手抄全部改为调用这两个 helper。
-
-守卫：`tests/test_config.py`（改写 / 丢弃 / 不改动 / 幂等 / **用 httpx 自己当 oracle**：
-构造一次 `httpx.Client()`）/ `tests/test_conventions.py::test_the_proxy_bypass_rule_has_one_home`
-（任何提到这两个变量名的模块必须 import `decis.config`）+
-`test_the_shell_probe_exports_the_canonical_loopback_list`（shell 里的值从
-`config.LOOPBACK_BYPASS` 读出来比对，防止再抄一份）+
-`tests/test_cli_serve.py` 的两条（`decis doctor` 报出被改的那一条、没改就不报）。
-
-**仍未验证**：只在 macOS 与这台 aarch64 Kunpeng 上验过；`*` 通配与带 `/prefix` 的条目按上面的
-规则处理掉了，但"代理本身还能用"这件事没有实测（本机无直连出口，代理路径确实走通了下载）。
-
-**教训**：一个"能用"的环境会掩盖一个与平台无关的 bug——**差异不在平台，在两个环境变量的值**。
-另外，凡是"解析某个外部格式"的规则，只要它在仓库里出现第二次，就必然有一次没人守。
-
----
-
-### D26（中，已修正）端口开了不等于模型能答；顺手牵出"日志说 pin 了 commit，实际读的是 main"
-
-**发现方式**：同一个用户报告的后半段——"我看到 `Uvicorn running on http://127.0.0.1:8000`
-以后以为是可以工作了，但是实际上显示这个之后还在下载模型"。日志顺序是：
-
-```
-INFO  engine laya-multilingual is NOT ready: loading in the background ...
-INFO  Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-```
-
-**根因**（两条，都不在"哪一行日志"上）：
-
-1. **这是 D7 的代价，没有被说出来。** 引擎在后台线程里加载是**有意**的设计（否则冷启动期间连
-   `/healthz` 都不应答，编排器会把一个正常工作的服务判成死的，D22）。但设计文档说了、用户文档说了、
-   控制台**没说**：在 8000 端口打开的那一刻，操作者看到的唯一一句"状态"来自 uvicorn，而它描述的
-   只是 socket。**没有任何一行说"你现在还不能发请求"。**
-2. **把上游 `Agent` 当加载器用，丢掉了 revision。** `laya.Agent` 的签名里**没有** `revision`
-   （`laya/agent.py:378-385`），所以 hub 分支把 `repo_id` 交给它时，日志里承诺的是 `paths` 里 pin 的
-   commit，实际下载和加载的是 `main`。文件清单也是上游自己那份，而不是
-   `paths.download_arguments`。
-
-**代价**：第 1 条把"正在下载 647 MiB"读成"已经好了"，于是下一次判断（用户以为坏了）也跟着错；
-第 2 条更安静——**同一个模型 id 在不同时间会给出不同答案**，而日志声称它没变。这与 §10 里
-"Laya 通过 PyPI 依赖使用、不复制源码"并不冲突，恰恰相反：正因为不复制，才必须通过它公开的
-构造路径加载，而不是猜它接受什么参数。
-
-**修法**：
-
-* `cli.startup_banner()`：绑定之前打印引擎、**权重来源与冷启动体积**、绑定地址，以及一段说明——
-  `/readyz` 返回 503、`/v1/*` 被拒、要等日志里出现 `engine <id> ready`。`uvicorn` 的
-  "Uvicorn running on ..." 因此不再是第一句关于状态的话。
-* `decis serve --preload`：先取权重、先加载，**再**开端口。默认保持后台加载（探针必须能在冷启动
-  期间拿到应答），`--preload` 明确写出它换来的代价：加载期间连 `/healthz` 都不应答。
-* `app._load_engine()` 的第一句改成以 `NOT ready` 开头，并给出要等的那句话。
-* hub 分支改走 `paths.fetch_checkpoint(spec)`：在 `paths` 里（唯一事实来源）用
-  `download_arguments` 取权重（**带 revision**），再用 `checkpoint_root` 验证拿到的目录真的能被
-  加载器读到，然后把**目录**交给 `laya.Agent`。
-* `laya.load()` 在取权重之前先报"fetching ... from the Hub (646.8 MiB)"——tqdm 进度条是别人的
-  库打的，用户看到它之前应该已经知道我们在下载而不是在加载。
-
-守卫：`tests/test_cli_serve.py`（banner 文本、`--preload` 必须在 `uvicorn.run` 之前就绪、
-加载失败必须**不**绑定端口且退出码非 0、默认路径必须不在 CLI 里等加载）、
-`tests/test_paths.py::test_fetching_a_checkpoint_returns_a_directory_the_resolver_accepts`
-（stub 写出真实下载布局，用 `checkpoint_root` 当 oracle，并断言 revision 真的传下去了）、
-`tests/test_engines_laya.py::test_the_hub_branch_fetches_through_paths_and_hands_over_a_directory`
-（`Agent` 不许再收到 repo id 或 subfolder）。
-
-**未验证**：`--preload` 在容器里的实际体验（镜像自带的 `HEALTHCHECK` 打 `/healthz`，所以
-`--preload` **不适合**镜像的 `CMD`——这一点写进了 flag 的帮助文本与用户文档，但没有用真镜像跑过）。
-`fetch_checkpoint` 走的是"先下载再看"的路径，冷缓存时的第二次 HEAD 请求开销（有缓存时约几次
-HEAD，无下载）也没有单独测量。
-
-**教训**：探针能分辨的状态，人也要能看到。有一个设计决定（后台加载）在文档里写得很清楚，却在
-唯一会读到它的地方——控制台——缺席，那么它就会以"这是个 bug"的形式被报回来。而"顺手"发现的
-第 2 条提醒另一件事：**把参数交给上游库之前，先确认它真的有这个参数**——日志里的 pin、代码里的
-pin 和实际读到的权重是三件不同的事。
-
----
-
-### D27（中，已修正）单引擎权重覆盖写成环境变量，对任何带点号的引擎 id 都静默失效
-
-**发现方式**：接 Jeff 时准备注册 `jeff-qwen3.5-0.8b` / `jeff-gemma4-e2b`，`config.py` 的
-`DECIS_MODEL_PATH_<ENGINE_ID>` 读法要求把 id 规范化成环境变量名（大写 + 非字母数字换成 `_`）。
-`kev-0.8b` 已经在文档里被写成"可覆盖"，但它规范化后是 `KEV_0_8B`——**一个从未被读回的键**。
-
-**根因**：环境变量名是一套比引擎 id 更小的字母表。归一化是**双射失败**：id → 变量名是满射，
-反向不成立，而代码只做正向。`config._model_paths()` 遍历 `os.environ` 里的 `DECIS_MODEL_PATH_*`，
-把后缀小写化后拿去和 `SPECS` 比对：`kev-0-8b` 不在注册表里，于是**丢弃**。没有警告，没有日志，
-覆盖不生效，用户看到的是"我明明指了目录还是去联网下载"。
-
-**代价**：与 D11 叠加时最难查——用户按文档把基座下到本地、用那个变量指过去，覆盖被丢弃，引擎
-去 Hub 要基座；如果缓存里恰好有，一切看起来正常，于是"文档说的功能"在用户侧从没生效过。
-
-**修法**：**删除这套变量，改成命令行参数 `--model-path ENGINE=PATH`**（可重复，
-`serve` / `models` / `doctor` 都有）。id 放进**值**里，于是点号只是 id 的一部分，不需要编码；
-别名在 `cli._parse_model_paths` 里规范化（`jeff` 与 `jeff-qwen3.5-0.8b` 等价），未知 id
-直接是 `ConfigError` 而不是空操作。`Settings.model_paths` 因此成了**只由 CLI 填充**的字段，
-`config.py` 不再从环境变量里猜。
-
-**代价与边界**：命令行参数进不了 `.env`/compose 的 `environment:`——这正是要点：那套变量形式
-"看起来能配"，实际不能；宁可让"没有这个开关"一眼可见（compose 用户走挂载目录 + 引擎 id 子目录，
-那条路一直是好的）。`--model-path` 也**不**作用于基座（见 D11）：它只定位一个引擎自己的目录。
-
-守卫：`tests/test_paths.py::test_the_environment_cannot_carry_a_per_engine_override`（真的把三个
-`DECIS_MODEL_PATH_*` 塞进 `monkeypatch.setenv` 再断言它们**不被采纳**）、
-`tests/test_docs.py::test_the_documented_per_engine_override_is_a_flag_whose_engine_exists`
-（任何面向读者的页面都不许再出现 `DECIS_MODEL_PATH_*`，且每个 `--model-path` 示例里的引擎
-都能解析）、`tests/test_engines_jeff.py`（别名规范化走到 `cli._parse_model_paths`）。
-
-**教训**：把用户数据编码进**标识符**时，"翻译不过去"必须报错，不能丢。这里的两侧（id 与变量名）
-都是我们自己造的，中间那层编码却没有任何守卫，于是它错了一整轮都没人发现——因为错的形态是
-"什么也没发生"。
-
----
-
-### D28（中，已修正）"纯文本所以不需要 torchvision"：一个从未被加载过的 extra 写下的断言
-
-**发现方式**：Jeff 的权重套测试第一次真的加载 Qwen checkpoint，`AutoProcessor.from_pretrained`
-在读到任何张量之前抛 `ImportError: Qwen3VLVideoProcessor requires the Torchvision library`。
-
-**根因**：Qwen 那个 checkpoint 的 processor 是 `Qwen3VLProcessor`（继承自 Qwen3-VL），它的
-`processor_config.json` 里列着 `video_processor_type: Qwen3VLVideoProcessor`，而
-`AutoProcessor.from_pretrained` 会**急切地构造配置里列出的每一个子 processor**。那个类在
-**被 import 时**就要求 torchvision。于是"这是一条纯文本路径"这个判断在模块导入层面就不成立：
-torchvision 与是否发送图片无关，只与"配置文件里提到了一个视频 processor"有关。
-
-**代价**：`pyproject.toml` 的 `jeff` extra 少一个依赖，而**没有任何快速测试会碰它**——快速套
-刻意不 import vendored 包（`.venv` 里没有 torch/PIL）。这个错误在 CI 上表现为全绿，
-在用户那里表现为"按文档装好 extra，模型加载不起来"。
-
-**修法**：`jeff` extra 加 `torchvision>=0.20`，`_REQUIRES` 加 `torchvision`，
-`EngineUnavailableError` 的文案跟上；`docs/design.md §7.2`、`docs/engines{,.zh-CN}.md` 里
-"torchvision 故意不装"的说法全部改成实测结论。
-
-守卫：`tests/test_engines_jeff.py::test_the_extra_declares_every_required_module`——
-从 `pyproject.toml` **读出** `jeff` extra 的依赖名，逐条对照 `WeightSpec.requires`
-（模块名→发行名的映射是一个关于 PyPI 的事实，不是配置的副本）。这条守卫的价值在于它跑在
-**无权重**环境里：它检查的是"两份清单是否一致"，不需要 torchvision 真的存在。
-`tests/test_jeff_inference.py` 是第二道：真的加载一次。
-
-**教训**："这个依赖我们用不到"是一个可以由**代码阅读**得出的结论，但结论的正确性取决于上游
-愿意在 import 期做多少事。凡是"没有实测过就没有发言权"的依赖判断，都要有一个**能在 CI 里跑**
-的对照——这里就是"两份清单必须一致"这条不需要权重也能跑的断言。
-
----
-
-### D29（中，已修正）分片权重"下到一半"被判成 ready：marker 在，分片不在
-
-**发现方式**：本机下载 8.65 GiB 的 `jeff-gemma4-e2b` 期间，顺手用刚下到的那份目录做加载探针，
-得到 `FileNotFoundError: .../model-00001-of-00002.safetensors`。此时目录里
-`decision_config.json`、`readout.safetensors`、`model.safetensors.index.json` 都在，
-**只有分片在陆续到达**。
-
-**根因**：`paths.checkpoint_root` 的"这是个 checkpoint 吗"只问一件事——`WeightSpec.marker`
-在不在。对**单文件** checkpoint 这够了（Laya 的 `rl_agent_config.json`、kev adapter 的三个文件），
-但分片 checkpoint 是**先到清单、后到分片**：`*.safetensors.index.json` 里 `weight_map` 已经
-写着两个分片，而第二个还不存在。于是 `resolve` 报 `local`、`decis models` 报 **ready**，
-真加载时异常从 `transformers` 深处抛出来，指着一个没人被告知过要等的文件。触发条件不少：
-下载中途断网/按了 Ctrl-C、`cp` 到一半磁盘满、卷同步到一半、`--dest` 的目录还没拷完。
-
-**代价**：与 D26 第一条同源——"端口开了不等于能答"的权重版本。`decis models` 是运维和启动脚本
-用来决定"要不要把流量发过来"的命令，它说 ready 而加载器崩溃，比说 `needs weights` 糟得多。
-更糟的是它会**盖住网络那条路**：本地永远优先于是安全性质（离线镜像靠它），但一份半拷贝的目录
-让这个性质变成"一份坏的本地副本赢过一份好的远端副本"。
-
-**修法**：`paths.missing_shards(root)` —— 读 checkpoint 自己的 `*.safetensors.index.json`，
-`weight_map` 点到的文件挨个查在不在（清单本身读不出来也算不合格，因为一份读不懂的清单无法为
-这个目录背书）。`checkpoint_root` 现在要**两条**都过。不检查 `expected_bytes` 是因为那是每个
-checkpoint 手写的数字、会漂移，而 index 是**加载器真正会去打开的那份清单**，不可能和它不一致。
-`decis download` 失败时的文案分成两种（`cli._why_unusable`）：缺 marker 说"期待找到 X"，
-缺分片说"清单里有 N 个文件不在，重新下载"——后者才是那个用户需要知道的事。
-
-**实测确认**（就在那台机器上、那份真的下到一半的目录上）：`resolve` 从 `local` 变成
-`hub mstrasser/Jeff-Gemma4-E2B@e3de3e99…`，`missing_shards` 报出
-`['model-00002-of-00002.safetensors']`。也就是说这份目录现在会**回退到网络取完整的那份**，
-而不是被当成可用权重。
-
-守卫：`tests/test_paths.py` 五条——缺分片不算 checkpoint、分片齐全算、清单读不出来不算、
-单文件 checkpoint 不受影响、以及半拷贝的挂载目录必须回退到 `hub`。
-
-**教训**：`marker` 这种"一个文件代表整体"的判据，在**分片**存在时就不成立了，而它的失效形态
-恰好是"更晚、更远、更难懂的那个错误"。判断"这份权重完整吗"时，要问的是**加载器接下来会打开
-哪些文件**，而不是"最能代表这个 checkpoint 的那个文件在不在"。
-
----
-
-### D30（中，已修正）测试自己重建提示词，于是第二个 checkpoint 上守卫的是**另一条**渲染路径
-
-**发现方式**：给 Gemma 那个 checkpoint 跑 weights 套（`DECIS_TEST_JEFF_GEMMA=1`，
-`-k jeff-gemma4-e2b`），**14 项通过、4 项失败**，失败全部在"提示词里是什么"这一类断言上：
-
-```
-AttributeError: 'GenericDecoderDecisionModel' object has no attribute 'processor'
-```
-
-**根因**：两个上游 loader 渲染提示词的方式**不一样**，而测试里的 `prompt_of()` 只写了其中一种：
-
-| | Qwen（`_jeff_vendor/model.py`） | Gemma（`_jeff_vendor/decoder.py`） |
-|---|---|---|
-| 文本从哪来 | `self.processor.apply_chat_template(messages, …, enable_thinking=False)`（`:213`） | `self.chat_text(messages)` → `self.tokenizer.apply_chat_template(…)`（`:105`） |
-| user 轮 | 原样的多模态 content | **被改写**成只剩最后一个 part 的 `text`（`:118-120`） |
-| 分词 | `self.processor(text=…, images=…)` | `self.tokenizer(…, add_special_tokens=False)`（`:121`） |
-| 属性 | 有 `.processor` | **只有 `.tokenizer`**（`:53`） |
-
-于是 `prompt_of()` 对 Gemma 直接 `AttributeError`。**这不是"测试少写一个分支"那么简单**：那个
-helper 存在的理由是"钉住引擎真正喂给模型的那串文本"，而它钉的是**Qwen 那条路**。更值得记的是，
-我为它配的那条守卫——`test_the_engine_tokenises_the_prompt_this_suite_asserts_on`——**自己也走的
-`decision_messages` + `processor.apply_chat_template` 这份镜像**，所以它在 Qwen 上永远是绿的，
-在 Gemma 上直接崩。守卫与被守卫的东西共用同一个错误假设时，它守不住任何东西。
-
-**代价**：Gemma 是第二个 Jeff checkpoint，接它的意义之一就是"证明 `render.py` 之外的那层兼容层
-不是为一个模型写死的"。这个 helper 让 weights 套在第二个模型上红成一片，而**红的理由是测试自己
-写错了**——比绿得可疑更糟：它把"引擎能不能跑"和"测试写得对不对"混在同一个信号里，第一反应会是
-"Gemma 不支持"，而实际上 14 项（含真实推理、批不变性、超长拒绝、readout 接线）都是过的。
-
-**修法**：不再在测试里**重建**提示词，而是从引擎**自己 token 化出来的 `input_ids`** 读回来
-（`tokenizer.decode(prepare([row]).inputs["input_ids"][0])`）。镜像被删掉，两个 loader 的模板差异
-就再也无法让测试断言的文本与实际发送的文本分叉——这正是那条守卫原本想达到的效果，现在它是
-结构性的而不是断言性的。守卫 `test_the_engine_tokenises_the_prompt_this_suite_asserts_on` 保留，
-但断言改成"从 ids 里读回来的文本含有 `describe(state)`、不含 `state_text`"，也就是**对两个引擎
-都成立的那件事**。
-
-**教训**：测试里"自己拼一份被测系统会拼的东西"就是 §2 说的第二处实现，**在提示词这种多模型
-格式上尤其危险**：两个真实 checkpoint 的模板路径不同，第一个模型上用这份镜像写下的断言会全绿，
-第二个模型上暴露出来的却是一个测试 bug。凡是"引擎实际发出去的字节"这类断言，都要从**引擎自己
-的产物**（token id、请求体、日志）读回来，而不是重算一遍。
-
----
-
-### D31（高，已修正）在项目自己声明的 Python 3.11 上，两个 Jeff 引擎连 import 都做不到
-
-**发现方式**：推送后 CI 红了，而且**只红一条腿**：
-
-```
-lint + tests (ubuntu-latest, py3.11): FAILED tests/test_conventions.py::test_engines_never_import_the_http_layer
-  File ".../src/decis/engines/_jeff_vendor/types.py", line 8
-    type JSONValue = str | int | float | bool | None | list[JSONValue] | dict[str, JSONValue]
-  SyntaxError: invalid syntax
-```
-
-3.12 / 3.13 / macOS 三条腿全绿。本地两个环境（`.venv`、`.scratch/venv`）都是 **3.14**，两套测试
-都没碰过这条路径——§7 的"两个环境"说的是**依赖**这一维，这里是**解释器版本**那一维。
-
-**根因**：`pyproject.toml` 声明 `requires-python = ">=3.11"`，而 `_jeff_vendor/types.py` 用了 7 处
-PEP 695 的 `type X = ...`（`types.py:8-12` 与 `Question`/`Answer`），那是 3.12 才有的语法。3.11 上
-这个文件**编译不过**，于是整个 `_jeff_vendor` 包无法 import：不是"少个功能"，是这个引擎根本起不来。
-CI 之所以只有 conventions 那条测试发现，是因为它用 `ast.parse` 扫引擎目录——所有**真正加载**引擎
-的测试都挂在 `-m weights` 后面，在无权重环境里是 skip。
-
-复现（两种都记下来，因为第二种不需要装 3.11）：
-
-```
-$ uv run --python 3.11 python -c "compile(open('src/decis/engines/_jeff_vendor/types.py').read(), 'types.py', 'exec')"
-3.11 cannot compile it: invalid syntax (line 8)
-
-$ python3.14 -c "import ast; ast.parse(open('.../types.py').read(), feature_version=(3, 11))"
-SyntaxError: Type statement is only supported in Python 3.12 and greater (line 8)
-```
-
-**为什么不能像 import 那样机械改写**：这已经是唯一一份非逐字节复制的 vendored 代码（绝对自引用
-改相对引用，`tests/test_jeff_vendor.py` 双向钉住）。可惜同一套办法在这里不成立：那些别名是**递归**的
-（`JSONValue` 的定义里含 `list[JSONValue]`），PEP 695 的别名**惰性求值**才能自引用；换成
-`JSONValue: TypeAlias = ... | list[JSONValue]` 会在模块执行时 `NameError`，改成字符串前向引用就不再是
-机械改写，那条逐字节守卫也就废了。**结论：floor 是上游代码的事实，不能靠改写消掉，只能声明。**
-
-**修法**：把 floor 放在能回答"这台机器能不能跑"的那个模块（§2 的唯一事实来源），并让三条路径都说
-同一件事：
-
-| 位置 | 作用 |
-|---|---|
-| `registry.EngineSpec.python_min = (3, 12)` | `status()` 在**依赖检查之前**报 `needs Python 3.12+` / `this interpreter is 3.11.16   (the vendored serving code uses PEP 695 type aliases)` |
-| `jeff.MIN_PYTHON` | `load()` 在 import vendored 之前抛 `EngineUnavailableError`，而不是三帧之下冒出 `invalid syntax (types.py, line 8)` |
-| `pyproject.toml` 的 `python_version >= '3.12'` marker | 3.11 上**根本不装**那套几个 GB 的依赖（实测：`uv pip install ".[jeff]"` 在 3.11 上只装 decis 自己） |
-
-修前的 3.11 实测（`decis models`）：两个 Jeff 行报 `deps missing   uv sync --extra jeff   (no torch, …)`。
-两处都错：原因是 Python，而补救命令在 3.11 上装不到任何东西。现在两行报的是 floor 与解释器版本。
-
-**守卫**（三条，方向不同）：
-
-- `test_the_declared_python_floor_has_one_number`：`registry` 与 `jeff.py` 的两个数字一致；
-- `pyproject.toml` 的 marker 由已有的 `test_the_extra_declares_every_required_module` 顺带读出来
-  （它按 `[<>=!\[;]` 切分依赖字符串，marker 不会迷惑它）；
-- `test_the_python_floor_is_why_this_needs_312`：**从 vendored 源码本身**把 floor 推出来——低一个
-  小版本的语法必须解析失败、floor 的语法必须成功。这条在 3.14 的腿上也有效，所以 floor 被悄悄删掉
-  或上游加了 3.13 语法，都会在**每一条腿**上红，而不是等某条腿的 `SyntaxError`。
-
-顺带修掉的一处：`test_engines_never_import_the_http_layer` 原来绕过 `_modules()` 自己去
-`rglob("*.py")`，把 vendored 树也解析了。文件头已经写明 vendored 树豁免（字节都改不了，命中也不可
-行动），现在这条测试也照办，理由写在注释里。
-
-**代价与教训**：**"两个环境都跑过"必须带上解释器版本这一维。** 本地两个环境都是 3.14，而 CI 有
-3.11/3.12/3.13 三条腿，于是这个缺陷是**推送后**才发现的——如果 CI 只跑最新解释器（很常见），它会
-直接进 release。修后实测：3.11 `794 passed / 69 skipped`、3.14 两个环境各 `818 passed / 64 skipped`
-（`.venv` 无 extra、`.scratch/venv` 带真实 torch/transformers/torchvision）。顺带一条经验：
-`ast.parse(..., feature_version=(3, 11))` 让"某个文件需要更新的语法"这件事**在任何解释器上都能断言**，
-比"等那条老腿自己撞上"要可靠得多。
+### 2.2 已修正的（按编号，每条：症状 → 怎么修的 → 谁在守着它）
+
+#### D1（严重）`predict` 的签名会让批处理永远不发生 — 已修正
+
+初版签名让整批共享一个 `state_text`，并要求攒批器按 state 分组。真实流量里每个请求的 state 都不同，
+按 state 分组等于批大小恒为 1：设计文档花一整节论证的"批处理是高 QPS 的来源"，在真实流量下永远不会触发，
+而且**不报错**，只是没有提升。这比会崩的缺陷更难发现。
+
+修法：改成扁平工作项 `WorkItem(request_id, state_text, question, raw_state)`，
+`predict(items: list[WorkItem]) -> Prediction`。"能不能跨 state 批"从协议约束降级为实现细节
+（kev 的 `prefix` 路径至今没有实现，见 `AGENTS.md` 顶部的未实现清单）。
+
+守卫：`tests/test_laya_inference.py::test_one_predict_call_handles_every_state_in_one_forward_pass`
+（weights 套：不同 state 一次前向）、`tests/test_batch_invariance.py::test_batch_composition_does_not_change_the_answer`
+（无权重套：混合 state 平铺）。"真的批起来"这一半**只在 weights 套里有守卫**，无权重套只测形状。
+
+#### D2（严重）完全缺少鉴权 — 已补
+
+初版设计了 401/429 的响应形状，却没有任何认证机制，而镜像是
+`CMD ["decis", "serve", "--host", "0.0.0.0", "--port", "8000"]`——任何能访问端口的人都能白用你的 GPU。
+kev 上游把 `host` 硬编码成 `127.0.0.1`，正说明作者清楚这个接口默认不该暴露；而 Decis 的卖点是"部署出去给别人用"。
+
+修法：`DECIS_API_KEY` / `DECIS_API_KEYS` 用 `hmac.compare_digest` 常数时间比较；**先认证、再校验请求体**
+（线上实测真 jev 就是这个顺序：无 key + 非法 body → 403 而不是 422）；**默认安全**——未配 key 且监听
+非回环地址时**拒绝启动**，要 `DECIS_ALLOW_NO_AUTH=1` 显式承担风险；补了请求体大小上限
+`DECIS_MAX_REQUEST_BYTES`；CORS 默认关闭。**限流没有实现**：`DECIS_RATE_LIMIT_*` 没有任何代码读，
+过载时唯一能做的是取锁预算返回 429（D6）。
+
+守卫：`tests/test_contract_errors.py`（403/401 分工、认证先于 body 校验与大小限制）、
+`tests/test_config.py`（非回环无 key 拒绝启动、回环允许、显式 opt-in）。
+
+#### D3（中）没处理"批处理会改变数值结果" — 已补
+
+批处理会改变浮点归约顺序与 GEMM tiling，所以同一个 `(state, question)` 在不同批组成下可能得到不同概率，
+极端情况下 argmax 会翻转；而官方 SDK 会自动重试 POST，"重发同一请求拿到不同答案"是可观测行为。
+初版对此完全沉默。
+
+修法：写明承诺"相同输入 + 相同批组成"下确定，**不承诺跨批组成逐位一致**；加
+`tests/test_batch_invariance.py`（`batch=1/8/32` 比较概率向量，最大偏差要小、**argmax 必须不变**）；
+替代路径是一次前向只放一个 item（`predict([item])` 永远合法，不需要新旋钮）。实测比原判断乐观：
+padding **不会**污染结果（最大绝对偏差 8.345e-07、argmax 翻转 0 次），Laya 的 option 预算也是逐项算的、
+不按批内最长项截断。**覆盖面**：只测了同一进程内、同一引擎实例；多进程之间的一致性没有覆盖。
+
+`docs/design.md §6.6` 里写的阈值"初值 0.02"与代码不符——`tests/test_batch_invariance.py:55` 的
+`TOLERANCE` 是 `1e-3`，以代码为准。
+
+#### D4（中）`confidence` 的决策被讲成了没有代价的改进 — 已改写
+
+初版把"Decis 统一定义 confidence"当成纯粹的正确选择。**这不诚实**：kev 的公式是 `p_max` 的单调重标定，
+**没做过标定**；Laya 的公式背后**有温度标定**（出厂 ECE 0.466，包内按 question type / option count 重新拟合）。
+统一到 Decis 公式，等于用可比性换掉了 Laya 已经做过的标定，这是取舍，不是免费的改进。
+
+修法：保留统一口径作为线格式，但**引擎提供原生置信度时就放进响应的 `decis.native_confidence`**
+（对 `noul` 尤其重要：契约规定 `noul` answer 没有 confidence 字段，扩展字段是用户唯一能拿到不确定性的地方）。
+目前**只有 Laya 提供**；kev 与两个 Jeff 的 `native_confidences` 是 `None`，响应里该字段为 `null`。
+文档同时写明：用于风险决策时请在自己的标注集上重新标定，不要跨引擎复用阈值。
+实现时还统一了两个原语的公式口径（0 = 无倾向，1 = 确定）：kev 的 score 公式在均匀分布上只能到 0.5，
+于是 `score` 改用归一化熵 `1 − H(p)/ln(L)`，与 `choice` 一致——这是对 kev 的**有意偏离**，
+记录在 `api-compatibility.md §7`。原本打算在 `/v1/models` 里声明 `confidence_formula` 一条已取消。
+
+#### D5（中）缺少启动顺序与优雅下线的设计 — 已补
+
+实测冷启动 73–76 秒，而初版只写了"`/healthz` 与 `/readyz` 分开"一句话。缺的是监听与加载的顺序
+（初版要求"先加载、后监听"，代价见 D7）以及**优雅下线**。
+
+现行契约：端口先开、引擎在后台加载（D7），关闭时按 `DECIS_SHUTDOWN_GRACE_MS`（默认 20000）等在途加载。
+守卫：`tests/test_readiness.py` 的三条关闭行为测试、`tests/test_cli_serve.py` 的 banner 与 `--preload` 测试。
+
+#### D6（轻）单请求超时预算与官方 SDK 不匹配 — 已修正
+
+初版写"超时返回 529"。官方 SDK 的单次 HTTP 超时是 **10.0 s**，且超时与连接错误都在默认重试集合里，
+529 也不在 SDK 的已知状态码表内。于是服务端算 30 s、客户端 10 s 就放弃并重发，负载被放大 2–3 倍。
+
+修法：`DECIS_REQUEST_TIMEOUT_MS` 默认 **8000**（给网络留余量）给**取锁**设上限，取不到返回
+**429 + `retry-after-ms`**——不是 504，因为 504 不带退避指令，会退化成指数退避，把已经饱和的服务打得更狠。
+**队列等待计入这个预算；已经开始的前向无法中断**，这一点在 `AGENTS.md §3-17` 明确写出。
+守卫：`tests/test_request_budget.py`（含"默认值必须小于 SDK 的 10 s"一条）。
+
+#### D7（中）冷启动期间服务完全不响应，且文档说的是反的 — 已修正（采用方案 B）
+
+第一次用真实权重起服务时实测到：**79.7 秒内不返回任何 HTTP 响应**。原因是结构性的——lifespan 里
+`service.load()` 同步阻塞，而 uvicorn 要等 lifespan 跑完才进入协议循环；socket 已经 bind，
+所以探针是**挂起**而不是拿到连接错误。两个后果：文档与实现相反；`/readyz` 的 503 在生产上到不了。
+
+两条路都要付代价：**方案 A**（维持同步加载）的好处是加载失败立刻让进程退出，代价是冷启动窗口内无响应、
+探针必须调好、未就绪路径是死代码；**方案 B**（后台线程加载，失败时 `/readyz` 报 `failed`）的好处是
+冷启动期间 `/healthz` 200、`/readyz` 503 且能说明原因，代价是加载失败不再让进程退出、需要监控 `/readyz`。
+
+**决定：方案 B。** 理由是 A 的"快速失败"并不更快——容器照样要退出、照样要重启，而 503 至少让已经在轮询的
+探针能说出原因。B 保留了 A 真正想要的东西：`/v1/systemone` 在 loading 与 failed 两种状态下都是 503。
+
+实现：`LoadPhase` 四态（`idle/loading/ready/failed`），`failed` 是终态且**不带 `retry-after`**
+（官方 SDK 会重试 5xx，告诉它退避等于让它一直打一个不会恢复的服务）；加载失败记录错误文本并写完整
+traceback 到日志。实测：`/healthz` 在冷启动开始后 0.50 s 内应答，`/readyz` 明确报 `loading`。
+顺带修掉两处：`service.answer` 现在**先检查就绪再 `measure()`**（否则会从测量路径里抛 500 而不是干净的 503）；
+`load_status` 与引擎自己的 `loaded` 归一。守卫：`tests/test_readiness.py` 四条。
+
+#### D8（严重）`/v1/systemone` 是 `async def` 却调用阻塞函数，一次推理会堵死整个事件循环 — 已修正
+
+写请求预算的测试时发现的：FastAPI 会在**事件循环线程**上执行那个同步阻塞函数，后果是一次推理期间
+服务器不响应任何其他请求，`/healthz` 与 `/readyz` 也在其中，并发度实际为 0——序列化发生在事件循环上，
+调度器的锁根本没机会起作用。这个 bug 之前测不出来，因为无权重测试替身的推理是微秒级。
+
+修法：路由从 `async def` 改成 `def`，Starlette 会在工作线程池里执行它，序列化交回调度器的锁；
+`/v1/models` 同样改了。`/healthz`、`/readyz` 保持 `async def`（只读内存状态，不阻塞）。
+守卫：`tests/test_request_budget.py::test_healthz_and_readyz_answer_while_inference_is_running`
+（把一个测试替身卡在 `predict` 里，期间探针必须 200）。
+
+#### D9（严重，会无提示地降低答案质量）引擎的"选项文本"不能由 Decis 统一决定 — 已修正
+
+`render.py` 是"任意 JSON → 可读文本"的唯一所在，但**选项在序列里长什么样是引擎自己的格式**。
+Laya 恰好也用 Decis 的写法，kev 不是：choice 一致，但 noul 是 `no`/`yes`（不是 `false`/`true`），
+score 只发裸层级文本（不带 `"0: "` 前缀）。若 kev 引擎照搬 `Option.name`，模型会收到训练时从未见过的文本，
+**准确率下降而没有任何报错**。
+
+证据（不是推断）：kev 的 `data.py:395 materialize()` 写明训练数据与线上服务走同一个函数
+`api.to_record`，所以 `api.py` 的渲染约定**就是**模型学到的约定。**结论：抽象是对的，不需要改
+`render.py` 或 `answers.py`**，需要的是承认"选项文本"属于引擎的序列格式，由 kev 引擎自己映射。
+
+守卫：无权重套 `tests/test_engines_kev.py`（选项文本、noul 的 `no`/`yes`）；weights 套
+`tests/test_kev_inference.py::test_the_record_matches_upstreams_serving_path` 与
+`test_probabilities_match_upstreams_own_path`（用 Decis 的 `PreparedRequest` 构造出的 record 与
+kev 自己的 `api.to_record` 逐字段相等，概率差 0.00e+00）。**已知偏差、未实测影响**：`render_value`
+对 dict 按键排序，而 kev 保留插入顺序，所以 state 文本的字段顺序可能与训练时不同。
+
+#### D10（中）容量接口没有"state 单独上限"的位置，而 kev 有一个 — 已修正
+
+kev 的 `encode(strict=True)` 同时施加两条不同的限制：`len(state) + 1 <= 384` 与
+每个问题 `len(state) + len(branch) <= 1024`。而 `validate_capacity` 只有两个比较位（序列、问题），
+`MeasuredTokens.state_tokens` **只被报告、从不校验**。于是 state 500 + 问题 10 的请求会通过校验，
+然后被 `encode` 静默截断。这属于接口缺口，不是 kev 的怪癖。
+
+修法：`EngineInfo` 增加 `max_state_tokens`（默认 `0` = 没有独立上限，Laya 行为不变），
+`validate_capacity` 在序列比较之前先查 state，错误定位到 `body.state`；kev 声明 384。
+实现时又遇到一个自己造成的问题：初版 `measure()` 从 `encode` 的输出反推 state 长度，而 `encode` 会把它
+截断到 384，于是量出来的 state 永远等于上限，新加的检查**永远不会触发**——现在直接量原始 token 数
+（`self._tok(..., add_special_tokens=False)`），branch 用一个空 state 的 record 单独量。
+同时修掉一处会误拒的设计：`max_question_tokens` 原写成 `MAX_BRANCH - MAX_STATE`（640），
+会把"100 token state + 700 token 问题"拒掉，而 kev 实际处理得了；现在报最宽松的**可靠**上界 `MAX_BRANCH`。
+
+守卫：`tests/test_engines_kev.py` 五条（两条窗口、没有 state 上限的引擎行为不变、超限被拒而不是被截断）
+与 `tests/test_kev_inference.py` 三条（weights）。
+
+#### D12（低，但正是 §8 要防的）README 性能表把两个线程数混进了同一行 — 已修正，且改成了自动生成
+
+原表四格里三格取自不同配置：`201 ms` 是线程数 16 的 1 问，同一行的 `987 ms` 是线程数 24 的 10 问。
+每个数字单独看都对，整行没有意义——而表格里根本没写线程数（同时违反 §8 里"必须给出线程数"那一句）。
+
+修法不是把数字改对，而是让这类错误不可能再被写出来：`benchmarks/report.py` 生成表格时，
+一行的所有列从**同一个配置**取，并把线程数写进表格本身；`--check` 在 CI 里跑，手改一个数字就失败。
+同源的一个问题：`kev-0.8b-cpu-dtype.json` 的对比轴是 **dtype** 不是线程数，生成器第一版把它当线程扫描渲染，
+于是两行因为 `(threads, questions)` 相同被静默合并——改成先探测变化轴再选表格形状。
+
+守卫：`tests/test_benchmark_report.py`（一行一个线程数、手改数字必须被发现、checked-in 文档与原始 JSON 同步、
+README 不许出现性能数字）。注意 dtype 那条轴没有直接的单测，钉住它的是 checked-in 生成块加同步检查。
+
+#### D14（中）`mock` 镜像装了 Laya 和 torch：3.2 GB 里 3.1 GB 是它不需要的 — 已修正
+
+> **历史说明（D14–D16，2026-09-23）**：这三条记的是当时那个**无权重的测试替身镜像**（tag 就叫 `mock`），
+> 它发布在本仓库迁到 `chaitin` 命名空间之前。测试替身与那个 tag 已从代码、工作流和文档中移除，
+> 所以下面 `docker pull <namespace>/decis:mock` 这类命令今天不再可用；**缺陷的形状与教训与具体引擎无关**。
+> 今天发布的镜像见 `docs/deployment.md`。
+
+发现方式：镜像推到 Docker Hub 之后用 registry API 逐层列体积，`mock-latest` 是 **3203 MB**，
+和 `laya-multilingual-latest` 一模一样——`DECIS_EXTRAS=laya` 而 `DECIS_ENGINE=mock`。
+根因是一行 YAML 里的 `A && B || C` 惯用法：GitHub 表达式里没有三元运算符，而这个惯用法**在 `B` 为假值时是错的**
+（空字符串是假值，于是 `'' || …` 继续求值右边），"没有 extra"这个分支永远选不中。
+测试没抓到是因为它拿一份**手抄的**常量与 registry 比——第一处实现（表达式）错了，第二处（抄本）是对的，于是恒绿。
+
+修法：把"引擎 → pip extra"的映射从 YAML 表达式搬进 `plan` 步骤（`extra_for()`），矩阵里直接带 `extra` 字段，
+构建步骤只做 `DECIS_EXTRAS=${{ matrix.extra }}`；出现没有映射的引擎时 `plan` **直接失败**，而不是静默落进默认值。
+守卫：测试从 YAML 里**抽出并执行** plan 脚本，再与 `registry.SPECS[...].extra` 比对。
+
+#### D15（低）README 写的 tag 根本不存在 — 已修正
+
+工作流给 master 推送打的 tag 是 `${engine}-latest`（例如 `laya-multilingual-latest`），而 README 与
+`AGENTS.md` 写的是 `decis:laya-multilingual`：照着文档拉，第一步就失败。它能溜过去是因为
+**没有任何测试拿 tag 和文档对照过**（和 D12 同一个形状：同一个事实存在两份，只有一份被执行）。
+
+修法：tag 方案整个搬进 `plan` 步骤，矩阵里带 `image_tag`，构建与合并步骤只做插值，测试从**执行 plan 后
+产出的矩阵**里读 tag；文档里出现的 tag 由 `test_the_documented_image_tags_are_tags_the_workflow_creates`
+从同一份产出里比对。**范围说明**：这次集中化覆盖**发布 tag**；per-arch 的 `-sha-<short>-<arch>` 后缀
+仍在构建步骤与合并步骤各拼一遍，两处被测试钉在同一个字面量上，不算完全单一来源。
+
+#### D16（严重）三个引擎把 per-arch 中间 tag 互相覆盖，于是三个 tag 发出的是同一个 manifest — 已修正
+
+修完 D15 后用 registry API 核对，发现三个 tag 指向同一个 amd64 manifest。根因：per-arch 中间 tag 当时叫
+`sha-<commit>-<arch>`，而**所有引擎共用同一个仓库**，六个构建任务同时往同一个名字上推，后推的覆盖先推的；
+merge 必然在所有 build 之后，于是读到的是最后完成的那个引擎。
+
+修法：per-arch tag 里加上 artifact 名——`<image_tag>-sha-<short>-<arch>`。**并加了一条"不许撞车"的测试**：
+把所有 (引擎, variant, arch) 组合的构建任务都跑一遍，断言任意两个写出的 tag 集合两两不相交
+（旧方案下会失败，列出的正是那 20 组冲突）。教训：共享仓库里由多个任务写同一个 tag，必须把任务身份放进名字；
+只检查"我这个 tag 对不对"是不够的，要检查"两个 tag 会不会相同"。
+
+#### D17（高）`decis download` 把权重写到 `resolve` 永远不看的目录，于是每次都失败 — 已修正
+
+发现方式：用一个会写出**真实布局**的 `snapshot_download` stub 跑 `decis download`，三种 `--dest` 全部退出码 1。
+根因：`snapshot_download(local_dir=X)` 复制的是**仓库自己的布局**（`laya-multilingual` 落在 `X/multilingual/`），
+而 `cli._download` 把 `X` 当作 `DECIS_MODEL_DIR` 交给 `paths.resolve`，后者只找 `X/<engine id>/`。
+影响面远不止一条命令：README 与 `AGENTS.md §7` 都把它写成用户的第一步；`DECIS_PREDOWNLOAD` 在
+`RUN decis download` 处**直接构建失败**，所以"带权重的离线镜像"不是"未验证"，而是从来没构建成功过。
+
+修法：有模型目录时落盘到 `<dir>/<engine id>/`；没有时写 **Hub 缓存**（那才是零配置时 `serve` 会读的地方）；
+两条路都在下载之后**用 `paths.resolve` / `checkpoint_root` 自己验证**才报成功。
+守卫：`tests/test_status.py::test_the_downloader_writes_where_the_loader_looks`（stub 写出真实下载布局，
+再断言 `resolve` 找得到）与 `test_downloading_with_no_model_directory_warms_the_hub_cache`。
+教训：凡是"写到某处、之后从某处读"的两个模块，必须有一条测试把**真实的写**接上**真实的读**。
+
+#### D18（中）compose 的 `command:` 覆盖了镜像的 `CMD`，容器去找一个叫 `download` 的程序 — 已修正
+
+`docker/Dockerfile` 只有 `CMD ["decis", "serve"]`，没有 `ENTRYPOINT`；compose 的 `command:` 是**替换** CMD，
+所以 `["download", ...]` 让内核去 exec 一个叫 `download` 的程序。当时的 `tests/test_compose.py`
+断言的正是这个错误写法——**它把错误的期望抄了一遍**。
+
+修法：所有 `command` 都以 `decis` 开头；测试改成**从 Dockerfile 读出有没有 `ENTRYPOINT`** 再决定该断言什么，
+而不是把当前写法当常量。守卫：`tests/test_compose.py::test_every_command_names_the_console_script`。
+
+#### D19（中）为权重下载配的代理把镜像自己的 liveness 探针打成了 502 — 已修正
+
+引擎**已经加载成功**（日志里 `ready after 86.1s`），但容器一直 `unhealthy`：`urllib.error.HTTPError: 502`。
+根因：`urllib` 会读 `HTTP_PROXY`，而 `.env` 里的代理经 `env_file` 进了容器，于是探针去问代理要
+`http://127.0.0.1:8000/healthz`，代理当然给不出。同一组合在 Kubernetes 里会让一个完全健康的 Pod 反复重启，
+每轮都要重付 86 秒冷启动。修法：`HEALTHCHECK` 命令前 `env -u` 掉六个代理变量（**只作用于探针**，
+引擎自己的下载照旧走代理），并在 `.env.example` 的代理段落给出 `NO_PROXY` 的出路。
+守卫：`tests/test_compose.py::test_the_probe_cannot_be_hijacked_by_a_proxy_in_the_environment`（逐个变量、逐个探针）。
+
+#### D20（高）默认发布的镜像不带权重，于是"拿到就能用"是句空话 — 已修正
+
+默认 tag 只装依赖，权重打在另一个变体里，而那个变体（当时叫 `-offline`）只在 release 时构建且从未成功过（D17）。
+文档甚至同时说了两件矛盾的事：README 有一句 `Images ship with the model`，而镜像表格下面写着默认镜像不含权重、
+容器首次启动时下载。**唯一发现它的方式是把镜像拉下来跑一遍**：六条构建任务全绿、SBOM 和 provenance 都在，
+没有一条测试说过"这个 tag 里有权重"。
+
+修法：翻转变体——内置权重成为**默认**，引擎名那个 tag 就是它；不带权重的变体带后缀 `-runtime`，
+只在 release tag 或手动 dispatch 时构建；`-offline` 这个名字删掉（默认已经内置权重时它就是同一个东西的第二个名字）。
+守卫：`tests/test_docker_workflow.py`（默认 tag 的 `bake` 等于引擎名、不存在"要内置权重却没装对应 extra"的构建任务）、
+`tests/test_compose.py`（compose 用的 image tag 正是那个内置权重的变体）。
+**代价（写下来）**：权重的 `RUN` 层在 `COPY src` 之后，所以每次源码改动这条构建线都要重新下载——laya 是 647 MiB，
+kev 是约 13 MB 的 adapter 加 1.65 GiB 的基座，乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里
+让 `COPY --from` 命中缓存（`docs/design.md §12.2` 记了这条路，没有实现）。
+
+#### D21（高）挂在 `DECIS_MODEL_DIR` 上的卷会把镜像里内置的权重盖掉 — 已修正
+
+Docker 对命名卷的处理是"首次创建时用镜像里同路径的内容初始化"，之后卷就是权威；bind mount 更直接——
+整个目录被替换。两种情况下容器里的 `/models` 都不再是镜像里那份，而 `paths.resolve` 找不到权重时不会报错，
+它会**去联网下载**。于是一个"离线镜像"在有网时工作得完全正常，在断网时失败——典型的"部署到客户现场才发现"。
+
+修法：`docker-compose.yml` 不挂任何卷，并把 `DECIS_MODEL_DIR` 钉在 `/models`；守卫**从 Dockerfile 的 `ENV`
+读出那个路径**再断言没有服务挂它、也没有服务把它指到别处。需要"权重放卷"的部署改用 `-runtime` 镜像，
+先 `decis download` 填一次卷——例子在 `docs/deployment.md` 与 `docker-compose.yml` 的注释里，不在 README。
+守卫：`tests/test_compose.py::test_nothing_is_mounted_over_the_weights_baked_into_the_image`。
+
+#### D22（中）compose 的 `--wait` 等的是 liveness，于是"ready"来得太早 — 已修正
+
+第一次真实 `docker compose up -d --wait` 在 **74 秒**就返回了，而引擎还要再等 27 秒才 `ready`。
+根因：`--wait` 等的是健康检查，而镜像的 `HEALTHCHECK` 按 D7 刻意打 `/healthz`——那是给编排器用的 liveness 探针。
+修法：compose 层覆盖探针，指向 `/readyz`（`start_period: 300s`），并保留 D19 要求的代理变量清理。
+这个覆盖是**安全的**，因为 Docker Compose 不是编排器：探针失败不会重启容器，只影响 `--wait` 与 `docker ps` 的状态。
+守卫：`tests/test_compose.py::test_compose_probes_readiness_while_the_image_probes_liveness`
+（同时断言镜像探针打 `/healthz` 且不打 `/readyz`、每个引擎的 compose 探针相反）。
+
+#### D23（中）`.env` 里的代理只到达容器，到达不了构建步骤 — 已修正（文档修复）
+
+`.env` 是通过 `env_file:` 交给**容器**的，而构建步骤不属于任何一个容器；Docker 也不会把 shell 里的
+`HTTP_PROXY` 带进 `RUN`。于是"依赖安装成功、权重下载失败"这个看起来自相矛盾的现象同时成立——
+失败的那一步恰好是唯一真的需要出口的那一步，而 `.env.example` 当时写着"跑构建时也设这些"。
+修法：`.env.example` 与 `docs/deployment.md` 写明构建要用 `--build-arg` 显式传代理与 `NO_PROXY`
+（两个 README 没有这条命令，只有指向部署文档的链接）。
+**这条没有任何测试守卫**，是纯文档修复。
+
+#### D24（高）kev 在 Apple 芯片上默认跑 CPU：设备回退写在了引擎里 — 已修正
+
+`kev.py` 的 `load()` 里写着 `device = settings.device or "cpu"`——**它从来不问机器有什么**。
+同一台机器上 `mps` 可用，`DTYPE_DEFAULTS` 甚至已经有 `("kev-0.8b", "mps"): "fp32"` 这一行，只是永远走不到。
+代价不是"慢一点"而是数量级：一次性本地探针（`kev-0.8b`、fp32、3 个问题）显示 `cpu` p50 3299 ms
+对 `mps` p50 215 ms（这两个数字来自一次性探针，没有进 `benchmarks/results/`，所以不进用户文档）。
+
+修法：设备策略集中到 `src/decis/engines/devices.py`（`DEVICES`、`ACCELERATOR_ORDER`、
+`available_devices`、`best_device`、`requested_device`）；kev 与两个 Jeff 只做"pin 优先，否则问机器"，
+Laya 继续让上游决定；预加载时 `device` 报 `unloaded` 而不是猜一个 `cpu`。
+守卫：`tests/test_devices.py`、`tests/test_engines_kev.py`（四条）、
+`tests/test_conventions.py::test_device_choice_has_one_home`（helper 只有一处、引擎里不许再有 `or "cpu"`）。
+**仍未验证**：`xpu` 与 `npu` 只实现了探测（本机没有这两种硬件）。
+
+#### D25（高）`NO_PROXY` 里的 `[::1]` 让每一次权重下载都失败，而报错看不出跟代理有关 — 已修正
+
+在公司的 ARM 机器上按文档走第一步，模型起不来，`/readyz` 报 `InvalidURL: Invalid port: ':1]'`，
+而且是在**发出任何请求之前**。根因：httpx 的 `get_environment_proxies()` 对每一项调
+`ipaddress.IPv6Address(entry)`，带方括号的形式会抛 `ValueError`，于是它退到"这是个域名"的分支，
+拼出 `all://*[::1]`，`Client()` 构造时 `urlparse` 把 `:1]` 当端口。`huggingface_hub` 就是 httpx 客户端，
+所以**下载器在联网之前就死了**；报错里没有代理、没有 `NO_PROXY`，看起来像权重或磁盘的问题。
+这条解析规则在仓库里有 **5 份手抄**，而用户真正会走的那条路径一份都没有。
+
+修法：规则收进 `src/decis/config.py`（`normalize_proxy_environment` 把 `[::1]` 改写成 `::1`、
+丢弃 httpx 无法表达的 `[::1/64]` 并记录；`ensure_loopback_bypass` 保证回环在名单里），
+4 处 Python 手抄（`tests/conftest.py`、`examples/python_sdk.py`、`benchmarks/run.py`、
+`benchmarks/batch_gain.py`）改为调用它们；shell 探针那一处没法调用 Python helper，
+留一行常量，由 `test_the_shell_probe_exports_the_canonical_loopback_list` 从 `config.LOOPBACK_BYPASS`
+读回来比对。改动记进 `Settings.proxy_rewrites`，由 `decis doctor` 逐条报出。
+守卫：`tests/test_config.py`（改写 / 丢弃 / 不改动 / 幂等 / **用 httpx 自己当 oracle**）、
+`tests/test_conventions.py::test_the_proxy_bypass_rule_has_one_home` 与
+`test_the_shell_probe_exports_the_canonical_loopback_list`。
+
+#### D26（中）端口开了不等于模型能答；顺手牵出"日志说 pin 了 commit，实际读的是 main" — 已修正
+
+用户看到 `Uvicorn running on http://127.0.0.1:8000` 以为可以用了，实际上还在下载模型。两条根因：
+① 后台加载是**有意**的设计（D7），文档也写了，但**控制台没说**——绑定那一刻操作者唯一看到的状态来自 uvicorn，
+它描述的只是 socket；② `laya.Agent` 的签名里**没有** `revision`，所以 hub 分支把 `repo_id` 交给它时，
+日志里承诺的是 `paths` 里 pin 的 commit，实际下载和加载的是 `main`——**同一个模型 id 在不同时间会给出不同答案**。
+
+修法：`cli.startup_banner()` 在绑定之前打印引擎、权重来源与体积、绑定地址，并说明 `/readyz` 返回 503、
+要等日志里出现 `engine <id> ready`；新增 `decis serve --preload`（先加载再开端口，代价是加载期间连
+`/healthz` 都不应答，容器与编排器下不要用）；hub 分支改走 `paths.fetch_checkpoint`——用
+`download_arguments` 带 pin 取权重、用 `checkpoint_root` 验证目录，再把**目录**交给上游。
+守卫：`tests/test_cli_serve.py`（banner、`--preload`、加载失败不绑定端口）、
+`tests/test_paths.py::test_fetching_a_checkpoint_returns_a_directory_the_resolver_accepts`、
+`tests/test_engines_laya.py::test_the_hub_branch_fetches_through_paths_and_hands_over_a_directory`。
+
+#### D27（中）单引擎权重覆盖写成环境变量，对任何带点号的引擎 id 都静默失效 — 已修正
+
+`DECIS_MODEL_PATH_<ENGINE_ID>` 要求把引擎 id 规范化成环境变量名，而 `kev-0.8b` 规范化后是 `KEV_0_8B`——
+**一个从未被读回的键**：`config._model_paths()` 把后缀小写化后拿去和 `SPECS` 比对，找不到就**丢弃**，
+没有警告、没有日志。用户看到的是"我明明指了目录还是去联网下载"。
+
+修法：**删除这套变量，改成命令行参数 `--model-path ENGINE=PATH`**（可重复，`serve`/`models`/`doctor` 都有）。
+id 放进**值**里，点号只是 id 的一部分；别名在 `cli._parse_model_paths` 里规范化，未知 id 直接是 `ConfigError`
+而不是空操作。代价与边界：命令行参数进不了 `.env`/compose 的 `environment:`，这正是要点——那套变量形式
+"看起来能配"实际不能；`--model-path` 也**不**作用于基座（见 D11）。
+守卫：`tests/test_paths.py::test_the_environment_cannot_carry_a_per_engine_override`（真的把三个变量塞进环境
+再断言它们不被采纳）、`tests/test_docs.py`（任何面向读者的页面都不许再出现 `DECIS_MODEL_PATH_*`）。
+
+#### D28（中）"纯文本所以不需要 torchvision"：一个从未被加载过的 extra 写下的断言 — 已修正
+
+Jeff 的权重套第一次真的加载 Qwen checkpoint 时，`AutoProcessor.from_pretrained` 在读到任何张量之前抛
+`ImportError: Qwen3VLVideoProcessor requires the Torchvision library`。根因：那个 checkpoint 的 processor
+配置里列着 `video_processor_type`，而 `AutoProcessor.from_pretrained` 会**急切地构造配置里列出的每一个子
+processor**，那个类**被 import 时**就要求 torchvision。于是"这是一条纯文本路径"在模块导入层面就不成立。
+
+修法：`jeff` extra 加 `torchvision>=0.20`，`_REQUIRES` 跟上，文档里"torchvision 故意不装"的说法改成实测结论。
+守卫：**无权重**的 `test_the_extra_declares_every_required_module`（从 `pyproject.toml` 读出 extra 的依赖名，
+逐条对照 `WeightSpec.requires`）+ `tests/test_jeff_inference.py` 真的加载一次。
+教训：这个错误在 CI 上表现为全绿，在用户那里表现为"按文档装好 extra，模型加载不起来"。
+
+#### D29（中）分片权重"下到一半"被判成 ready：marker 在，分片不在 — 已修正
+
+下载 8.65 GiB 的 `jeff-gemma4-e2b` 期间，用刚下到的那份目录做加载探针，得到
+`FileNotFoundError: .../model-00001-of-00002.safetensors`；此时 `decision_config.json`、
+`readout.safetensors`、`model.safetensors.index.json` 都在，**只有分片在陆续到达**。
+根因：`paths.checkpoint_root` 只问 `WeightSpec.marker` 在不在，而分片 checkpoint 是**先到清单、后到分片**——
+`*.safetensors.index.json` 里 `weight_map` 已写着两个分片，第二个还不存在。于是 `resolve` 报 `local`、
+`decis models` 报 **ready**，真加载时异常从 `transformers` 深处抛出来。更糟的是它会**盖住网络那条路**：
+"本地优先"是离线镜像的安全性质，而一份半拷贝的目录让这个性质变成"一份坏的本地副本赢过一份好的远端副本"。
+
+修法：`paths.missing_shards(root)` 读 checkpoint 自己的 `*.safetensors.index.json`，`weight_map` 点到的文件
+挨个查在不在（清单本身读不出来也算不合格）；`checkpoint_root` 现在要**两条**都过。不检查 `expected_bytes`
+是因为那是手写的数字、会漂移，而 index 是**加载器真正会去打开的那份清单**。下载失败的文案分成两种
+（`cli._why_unusable`）：缺 marker 说"期待找到 X"，缺分片说"清单里有 N 个文件不在，重新下载"。
+守卫：`tests/test_paths.py` 五条（缺分片不算、分片齐全算、清单读不出来不算、单文件 checkpoint 不受影响、
+半拷贝的挂载目录必须回退到 `hub`）。
+
+#### D30（中）测试自己重建提示词，于是第二个 checkpoint 上守卫的是**另一条**渲染路径 — 已修正
+
+给 Gemma 那个 checkpoint 跑 weights 套时 14 项通过、4 项失败，全部是
+`AttributeError: 'GenericDecoderDecisionModel' object has no attribute 'processor'`。
+根因：两个上游 loader 渲染提示词的方式不一样——Qwen 走 `self.processor.apply_chat_template(...)`，
+Gemma 走 `self.chat_text()` → `self.tokenizer.apply_chat_template(...)`，user 轮被改写成只剩最后一个
+text part，分词还带 `add_special_tokens=False`，而且**根本没有 `.processor`**。测试里的 `prompt_of()`
+只写了 Qwen 那一种。更值得记的是：为它配的守卫用的也是同一份镜像，所以在 Qwen 上永远绿、在 Gemma 上直接崩——
+**守卫与被守卫的东西共用同一个错误假设时，它守不住任何东西**。
+
+修法：不再在测试里**重建**提示词，而是从引擎**自己 token 化出来的 `input_ids`** 读回来
+（`tokenizer.decode(prepare([row]).inputs["input_ids"][0])`）。镜像被删掉，两个 loader 的模板差异就再也
+无法让测试断言的文本与实际发送的文本分叉。守卫 `test_the_engine_tokenises_the_prompt_this_suite_asserts_on`
+保留，但断言改成对两个引擎都成立的那件事。
+
+#### D31（高）在项目自己声明的 Python 3.11 上，两个 Jeff 引擎连 import 都做不到 — 已修正
+
+推送后 CI 报错，而且**只有 3.11 那个测试任务**失败：`_jeff_vendor/types.py` 第 8 行的
+`type JSONValue = ...` 是 PEP 695 语法，3.12 才有。`pyproject.toml` 声明 `requires-python = ">=3.11"`，
+于是 3.11 上这个文件**编译不过**，整个 vendored 包 import 不了；`decis models` 当时报的是
+`deps missing   uv sync --extra jeff`——原因错，补救命令在 3.11 上还装不出任何东西。
+
+**为什么不能像 import 改写那样机械修掉**：那些别名是**递归**的（`JSONValue` 的定义里含 `list[JSONValue]`），
+换成 `JSONValue: TypeAlias = ...` 会在模块执行时 `NameError`；PEP 695 的惰性求值才能自引用。
+**floor 是上游代码的事实，只能声明，不能靠改写消掉。**
+
+修法：同一个数字放在三处——`registry.EngineSpec.python_min = (3, 12)`（`status()` 在依赖检查之前报
+`needs Python 3.12+`）、`jeff.MIN_PYTHON`（`load()` 在 import vendored 之前抛 `EngineUnavailableError`，
+而不是三帧之下冒出 `invalid syntax (types.py, line 8)`）、`pyproject.toml` 的 `python_version >= '3.12'`
+marker（3.11 上根本不装那几个 GB 的依赖）。
+守卫：`tests/test_engines_jeff.py` 把三处钉在一起，并用 `ast.parse(..., feature_version=(3, 11))`
+**从 vendored 源码本身**把 floor 推出来——低一个小版本的语法必须解析失败、floor 的语法必须成功，
+所以它在 3.14 上也能红，而不是等某个老解释器自己撞上。
+**教训**："两个环境都跑过"必须带上**解释器版本**这一维：本地两个环境都是 3.14，CI 有 3.11/3.12/3.13，
+于是这个缺陷是推送后才发现。如果 CI 只跑最新解释器，它会直接进 release。
 
 ---
 
@@ -1112,22 +512,24 @@ SyntaxError: Type statement is only supported in Python 3.12 and greater (line 8
 | 标准 / 规范 | 我们是否遵守 | 说明与依据 |
 |---|---|---|
 | **OpenAPI 3.1.0** | ✅ 遵守 | 契约基准就是官方 OpenAPI（`docs/contract/typesafe-openapi-0.2.0.json`）。**并且 Decis 自己也会暴露 `/openapi.json`**，让用户能生成客户端 |
-| **RFC 9110 §15.5.2**（401 必须带 `WWW-Authenticate`） | ⚠️ **上游违反，Decis 修正** | 一手核对：*"The server generating a 401 response **MUST** send a `WWW-Authenticate` header field"*（[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html)）。线上实测确认真 jev 的 401 **不带**该头。**Decis 补上**——这是纯增量、对 SDK 无影响，但让 Decis 通过标准 HTTP 客户端与网关的检查 |
-| **RFC 6750（Bearer 用法）** | ⚠️ 部分修正 | Bearer 方案的注册规范：[RFC 6750 §3](https://datatracker.ietf.org/doc/html/rfc6750) 要求 401 **MUST** 带 `WWW-Authenticate`，并定义 `error="invalid_token"`。所以 Decis 的 401 用 `WWW-Authenticate: Bearer error="invalid_token"`；缺凭证时用不带 error 参数的 `Bearer`。**注意**：RFC 6750 倾向用 401 表示"未提供凭证"，而 jev 用 403——Decis **跟随 jev**，因为客户端兼容是首要目标 |
+| **RFC 9110 §15.5.2**（401 必须带 `WWW-Authenticate`） | ⚠️ **上游违反，Decis 修正** | 一手核对：*"The server generating a 401 response **MUST** send a `WWW-Authenticate` header field"*（[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html)）。线上实测确认真 jev 的 401 **不带**该头。**Decis 补上**——纯增量、对 SDK 无影响，但让 Decis 通过标准 HTTP 客户端与网关的检查 |
+| **RFC 6750（Bearer 用法）** | ⚠️ 部分修正 | [RFC 6750 §3](https://datatracker.ietf.org/doc/html/rfc6750) 要求 401 **MUST** 带 `WWW-Authenticate`，并定义 `error="invalid_token"`。所以 Decis 的 401 用 `WWW-Authenticate: Bearer error="invalid_token"`，缺凭证时用不带 error 参数的 `Bearer`。**注意**：RFC 6750 倾向用 401 表示"未提供凭证"，而 jev 用 403——Decis **跟随 jev**，因为客户端兼容是首要目标 |
 | **RFC 9457（Problem Details，取代 RFC 7807）** | ❌ **有意不遵守** | 业界标准的 API 错误体是 `application/problem+json`。jev 用的是 `{"detail": …}` 且 `detail` 还是多态（对象/数组/字符串，见 `observations-2026-09-22.md §2.6`）。**这是"契约兼容 vs 标准符合"的真实冲突点**。我们选兼容——因为整个项目的存在理由是"换 base_url 就能跑"。已在 `api-compatibility.md §5` 记录为有意偏离 |
-| **RFC 9110 §9.2.2（POST 非幂等）** | ✅ 无冲突 | 虽然 POST 定义上非幂等，但 `/v1/systemone` 是纯函数；SDK 会重试，我们保证重复执行结果一致（除 D3 的批组成例外） |
+| **RFC 9110 §9.2.2（POST 非幂等）** | ✅ 无冲突 | 虽然 POST 定义上非幂等，但 `/v1/systemone` 是纯函数；SDK 会重试，我们保证重复执行结果一致（唯一的例外是批组成不同带来的数值差异，见 D3） |
 | **OCI Image Spec 注解** | ✅ 遵守（已补） | 补齐 `org.opencontainers.image.{title,description,source,url,licenses,version,revision,created,base.name}`。自有扩展用 `ai.decis.engine`，不占用 OCI 保留键 |
 | **容器安全基线**（非 root） | ✅ 遵守（已补） | `USER 10001:10001`。这也让镜像能通过 Kubernetes `restricted` 档 Pod Security |
 | **SemVer 2.0** | ✅ 遵守 | Python 包与镜像 tag 都用 SemVer（`<engine>-<semver>`） |
 | **PEP 621 / 440 / 517-518** | ✅ 遵守 | `pyproject.toml` 用 PEP 621 元数据，hatchling 作 PEP 517 后端，uv 生成 `uv.lock` |
 | **PEP 8 / 484 / 561** | ✅ 遵守 | ruff 强制；公开 API 全部类型标注 |
 | **12-Factor（配置来自环境）** | ✅ 遵守 | 所有配置集中在 `config.py`，`os.environ` 不得出现在其他模块（`AGENTS.md §2` 已列为唯一事实来源） |
-| **SPDX / Apache-2.0** | ✅ 遵守 | `LICENSE` + `NOTICE` 记录 kev vendoring 与 Laya 署名；不复制 laya-mlx 代码 |
-| **供应链：SBOM + provenance** | ✅ 已实现 | `docker-build.yml` 在**推送**的构建腿上打开 `sbom=true` 与 `provenance=mode=max`（只有 PR 那种 build-only 的腿关掉，因为对不推送的构建请求 attestation 会失败） |
-| **Prometheus 暴露格式** | ⬜ 未实现 | `/metrics` 不存在（`decis[metrics]` 这个 extra 只登记了依赖）。计划是用标准 exposition format、不从零发明指标名 |
+| **SPDX / Apache-2.0** | ✅ 遵守 | `LICENSE` + `NOTICE` 记录 kev 与 jeff 的 vendoring、Laya 的署名；不复制 laya-mlx 代码 |
+| **供应链：SBOM + provenance** | ✅ 已实现 | `docker-build.yml` 在**推送**的构建任务上打开 `sbom=true` 与 `provenance=mode=max`（只在 PR 的 build-only 任务里关掉，因为对不推送的构建请求 attestation 会失败） |
+| **Prometheus 暴露格式** | ⬜ 未实现 | `/metrics` 不存在。计划是用标准 exposition format、不从零发明指标名 |
 | **模型卡 / 可复现性规范** | ⚠️ 无正式标准 | 没有 IETF/ISO 级的规范。我们采用社区惯例：报告必须同时给出引擎、设备、dtype、线程/进程数、批大小、state 长度、问题数（`AGENTS.md §8`） |
 
-**这一节里最值得注意的一点**：RFC 9457 那一行。一个"尊重标准"的项目在这里**故意不遵守标准**——因为遵守它就会破坏与 jev 的线格式兼容，而那正是项目的全部价值。**正确的做法不是假装没有冲突，而是把冲突显式写下来并说明选择理由。** 这也是我把 §5 从"推断"改写成"实测 + 有意偏离记录"的原因。
+**这一节里最值得注意的一点**：RFC 9457 那一行。一个"尊重标准"的项目在这里**故意不遵守标准**——
+因为遵守它就会破坏与 jev 的线格式兼容，而那正是项目的全部价值。**正确的做法不是假装没有冲突，
+而是把冲突显式写下来并说明选择理由。**
 
 ---
 
@@ -1137,85 +539,74 @@ SyntaxError: Type statement is only supported in Python 3.12 and greater (line 8
 
 ### M1（严重，已修正）初版契约只有客户端视角
 
-初版全部结论建立在两件事上：读官方 OpenAPI **生成物**、读 SDK 源码。这有个结构性盲点：**它无法验证服务端是否真的按声明行事。**
+初版全部结论建立在两件事上：读官方 OpenAPI **生成物**、读 SDK 源码。这有个结构性盲点：
+**它无法验证服务端是否真的按声明行事。** 补做线上观测后立刻发现：认证错误码写错了
+（初版说 401，实际无凭证是 **403**、凭证无效才是 401）；"认证先于校验"这个顺序任何离线阅读都推不出来；
+错误响应也带 `x-typesafe-request-id`；request id 的格式是 `req_` + 32 位十六进制；
+401 缺 `WWW-Authenticate`，是一处 RFC MUST 违规。
 
-补做线上观测后，立刻发现：
+方法论修正：① 证据等级表新增 **L 级（线上观测）** 并置于最高优先级（`L > S > A > B > C > D`）；
+② 原始材料保留在 `docs/contract/observations-2026-09-22.md`，**保留命令与原始输出**，不只留结论；
+③ 新增验收层 **L3b（错误契约）** 进 CI；④ **L5 差分测试从"可选"提升为"改契约前必须跑"**——
+L0 只能保证"我们和自己的 OpenAPI 快照一致"，**没有任何离线测试能发现线上服务端偏离它自己的 OpenAPI**。
 
-- **认证错误码写错了**（初版说 401，实际无凭证是 **403**、凭证无效才是 401）；
-- **认证先于校验**这一顺序，任何离线阅读都推不出来；
-- **错误响应也带 `x-typesafe-request-id`**（初版只说了成功响应）；
-- **request id 的格式**是 `req_` + 32 位十六进制（可测的格式）；
-- **401 缺 `WWW-Authenticate`**，是一处 RFC MUST 违规。
+### M2（中，**未修正**）性能测量有顺序效应
 
-**方法论修正**：
+Laya 的线程扫描是 `for threads in [1,2,4,8,16,24]` **顺序执行**的，每个配置跑 6 次取中位数。
+这意味着**热漂移、内存碎片、其他负载的时间趋势与线程数是混淆的**——看起来像"线程数影响"，
+可能部分是"跑得越晚越慢/越快"。
 
-1. 证据等级表新增 **L 级（线上观测）** 并置于最高优先级，`L > S > A > B > C > D`。
-2. 原始材料保留在 `docs/contract/observations-2026-09-22.md`，**保留命令与原始输出**，不只留结论。
-3. 新增验收层 **L3b（错误契约）** 进 CI。
-4. **L5 差分测试从"可选"提升为"改契约前必须跑"**。理由：L0 只能保证"我们和自己的 OpenAPI 快照一致"，**没有任何离线测试能发现线上服务端偏离它自己的 OpenAPI**。这次发现的 401/403 问题就是手工跑了一次 L5 的直接产物。
-
-### M2（中，未修正）性能测量有顺序效应
-
-Laya 的线程扫描是 `for threads in [1,2,4,8,16,24]` **顺序执行**的，每个配置跑 6 次取中位数。这意味着**热漂移、内存碎片、其他负载的时间趋势与线程数是混淆的**——看起来像"线程数影响"，可能部分是"跑得越晚越慢/越快"。
-
-**未修正的原因**：这台机器当时还在并发跑 kev 的探测，测量环境本身不干净。**这一批数据的定位本就是"可行性证据"而非正式基准**（已在 `benchmarks/README.md` 写明）。正式基准属于 Stage 3，届时必须：
-
-- 随机化配置顺序，并**重复整轮**；
-- 报告**分布**而不只是中位数（至少 p50/p95 与样本数）；
-- 记录机器是否被其他任务占用。
-
-**我不打算事后粉饰这批数据**——它的价值是"量级正确、结论方向正确"，不足以支撑精细比较（比如"16 线程比 24 线程好 13%"这类结论）。
+**未修正的原因**：这台机器当时还在并发跑 kev 的探测，测量环境本身不干净；**这一批数据的定位本就是
+"可行性证据"而非正式基准**（已在 `benchmarks/README.md` 写明）。正式基准属于 Stage 3，届时必须：
+随机化配置顺序并**重复整轮**；报告**分布**而不只是中位数（至少 p50/p95 与样本数）；记录机器是否被其他任务占用。
+**我不打算事后粉饰这批数据**——它的价值是"量级正确、结论方向正确"，不足以支撑精细比较
+（比如"16 线程比 24 线程好 13%"这类结论）。
 
 ### M3（中，已修正措辞）kev 的 "83×" 精度过高
 
-bf16 vs fp32 的对比，**每个 dtype 只报了最后一次请求的 `latency_ms`**，本质上是**单次观测**。文档里写成"**83 倍**"给人一种精密测量的错觉。
-
-**事实**：137174 ms vs 1656 ms = 82.8×，但这背后各只有一次测量。正确的表述是"**约 80 倍，单次观测**"。
-
-**修正**：`benchmarks/results/kev-0.8b-cpu-dtype.json` 里已注明"single observation per dtype, recorded verbatim"；README 里保留"83×"作为**该次观测的比值**，但它不是统计量。**这个结论的方向（bf16 在 CPU 上病态地慢）是可靠的，因为它差了两个数量级——量级差异不需要精密的统计就能确认。** 这正是"显著性"与"效应大小"的区别。
+bf16 与 fp32 的对比**每个 dtype 只报了最后一次请求的 `latency_ms`**，本质上是**单次观测**，
+而文档里写成"**83 倍**"给人一种精密测量的错觉。事实是 137174 ms 比 1656 ms = 82.8×，各只有一次测量；
+正确的表述是"**约 80 倍，单次观测**"。`benchmarks/results/kev-0.8b-cpu-dtype.json` 里已注明
+"single observation per dtype, recorded verbatim"。**结论的方向（bf16 在 CPU 上病态地慢）是可靠的，
+因为它差了两个数量级**——这正是"统计显著性"与"效应大小"的区别。
 
 ### M4（轻，已修正）benchmark JSON 有个误导字段名
 
-Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算的是 `1000 / (p50_ms / n_questions)`——**这是"单个串行调用方的速率"，不是吞吐量**。它没有考虑并发，也没有考虑批处理。
-
-**修正**：字段改名为 `single_caller_questions_per_second`，并在 `benchmarks/README.md` 说明它的含义。**一个误导性的字段名比没有字段更糟**，因为它会被下游引用。
+Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算的是 `1000 / (p50_ms / n_questions)`——
+**这是"单个串行调用方的速率"，不是吞吐量**，它没有考虑并发，也没有考虑批处理。
+已改名为 `single_caller_questions_per_second`，并在 `benchmarks/README.md` 说明它的含义。
+**一个误导性的字段名比没有字段更糟**，因为它会被下游引用。
 
 ### M5（严重，**已测，结论为否定**）最核心的性能断言被测掉了
 
-`design.md §6` 的整个论证是：跨请求批处理把多个请求的问题合并成一个大 batch，从而把每问成本降下来，这是高 QPS 的来源。
-
-**已测**（2026-09-22，`benchmarks/batch_gain.py`，原始 JSON 见下表）：合成跨请求批处理——不同 state、不同问题长度、直接调用引擎、批大小 1/2/4/8/16。
+`design.md §6` 的整个论证是：跨请求批处理把多个请求的问题合并成一个大 batch，从而把每问成本降下来，
+这是高 QPS 的来源。**已测**（2026-09-22，`benchmarks/batch_gain.py`，原始 JSON 见下表）：
+合成跨请求批处理——不同 state、不同问题长度、直接调用引擎、批大小 1/2/4/8/16。
 
 结论是**否定**的，而且比"没测过"更糟：
 
 1. **短序列下批处理确实有收益。** 正对照（所有项完全相同、padding 恒为 1.00）在 115 token 时达到 1.92x。
-   这条正对照同时验证了测量本身：它复现了已发布的请求内结论（`laya-multilingual-sweep.json`：1 问 231 ms → 10 问 98.7 ms/问），
-   两组数据独立地给出同一个数字。**所以"没有收益"不是因为测不出来。**
+   这条正对照同时验证了测量本身：它复现了已发布的请求内结论（`laya-multilingual-sweep.json`：
+   1 问 231 ms → 10 问 98.7 ms/问）。**所以"没有收益"不是因为测不出来。**
 2. **收益随序列变长而消失。** 同样的正对照在 393 token 时只剩 1.10x。收益来自摊薄每次调用的固定开销，
    而固定开销相对几百 token 的前向计算很小，摊薄不出东西。
-3. **真实流量形状下是负收益。** 长度倾斜（140–821 token）时每个批大小都慢 3–5 倍，因为每行都补齐到批内最长，
-   padding 达到 2.47x，浪费的算力直接变成更慢的每项成本。
+3. **真实流量形状下是负收益。** 长度倾斜（140–821 token）时每个批大小都慢 3–5 倍，
+   因为每行都补齐到批内最长，padding 达到 2.47x，浪费的算力直接变成更慢的每项成本。
 4. **加进程也不增加吞吐。** 固定总线程预算（24）下，1/2/4 进程的吞吐差 1.18x，即**没有扩展性**：
    单个 Laya 前向已经用满 24 线程，把预算切开只是重新分配同一份算力。
 
 **因此**：`design.md §6` 把跨请求批处理当作主要吞吐手段是**错的**（在这台 CPU 机器上）。
 一个按原设计实现的攒批器在异构 state 下会是 3–5 倍的性能回归——比"没实现"差得多。
-`stage 3` 的攒批器**不应按原设计实现**；见 `design.md §6` 的修订与 §12 的待决策项。
+Stage 3 的攒批器**不应按原设计实现**。
 
-**残留的未知量**（写清楚，不用它来救结论）：
+**残留的未知量**（写清楚，不用它来救结论）：**只有 CPU 数据**（M6），GPU 上批处理通常是提升利用率的标准手段，
+本结论**不适用于 GPU**；**只测了 Laya**，kev 是 prefill-only 架构，特性可能不同；
+这是**上界**（合成批没有队列、没有等待、没有取消、没有部分失败，真实攒批器只会更差）；
+**不是并发负载测试**（没有 p99，也没有真实多客户端）。
 
-- **只有 CPU 数据（M6）**。GPU 上批处理通常是提升利用率的标准手段，本结论**不适用于 GPU**。
-  没有 GPU 数据之前不得反推 GPU 行为。
-- **只测了 Laya**。kev 是 prefill-only 架构，批处理特性可能不同，未测。
-- **是上界**：合成批没有队列、没有等待、没有取消、没有部分失败。真实攒批器只会更差。
-- **不是并发负载测试**：没有 p99，也没有真实多客户端。
-
-**方法论上的两处硬要求**（都是本设计以前踩过的坑）：
-
-- **交错轮次**：每个轮次按打乱的顺序访问所有批大小，而不是"一个大小测到底再测下一个"。
-  升序跑到底正是 M2 记录的序效应，会制造出"batch 4 比 batch 2 更慢"的假结论。
-- **正对照**：一个测不出收益的 harness 无法区分"机制没用"和"测量坏了"（D1 的教训）。
-  短序列正对照必须显示收益，否则整个文件拒绝生成——`report.py` 会检查这一点。
+**方法论上的两处硬要求**：**交错轮次**——每个轮次按打乱的顺序访问所有批大小，而不是"一个大小测到底"，
+升序跑到底正是 M2 记录的顺序效应；**正对照**——一个测不出收益的 harness 无法区分"机制没用"和"测量坏了"
+（D1 的教训），短序列正对照必须显示收益，否则 `report.py` 拒绝生成整个文件。
 
 <!-- BATCHING:START -->
 跨请求批处理的实测结果。原始 JSON 在 `benchmarks/results/`，本表由
@@ -1301,11 +692,12 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 
 <!-- BATCHING:END -->
 
-### M6（中，未修正）没有 GPU 数据，却已出现依赖 GPU 的设计决策
+### M6（中，**未修正**）没有 GPU 数据，却已出现依赖 GPU 的设计决策
 
-所有实测都在无 GPU 的 aarch64 机器上。但文档里已经出现了 GPU 相关的判断（kev 定位为 GPU 引擎、CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是推断，不是实测。**
-
-**未修正的原因**：没有 GPU 机器。已在 `feasibility.md §5` R1 明确标注为"需要 GPU 机器验证"，并且**没有把任何 GPU 性能数字写进 README**。这条纪律必须守住。
+所有实测都在无 GPU 的 aarch64 机器上。但文档里已经出现了 GPU 相关的判断（kev 定位为 GPU 引擎、
+CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是推断，不是实测。**
+**未修正的原因**：没有 GPU 机器。已在 `docs/feasibility.md §5` 的 R1 明确标注为"需要 GPU 机器验证"，
+并且**没有把任何 GPU 性能数字写进 README**。这条纪律必须守住。
 
 ---
 
@@ -1313,28 +705,35 @@ Laya 扫描的输出里有个字段叫 `questions_per_second`，但它实际算�
 
 | # | 问题 | 状态 |
 |---|---|---|
-| 1 | 跨请求批处理的收益 | **已测（M5），结论为否定**：CPU 上不提升吞吐，长度倾斜时慢 3–5 倍。§6 的收益预期已被推翻，见那里的更正框 |
+| 1 | 跨请求批处理的收益 | **已测（M5），结论为否定**：CPU 上不提升吞吐，长度倾斜时慢 3–5 倍。`design.md §6` 的收益预期已被推翻 |
 | 2 | GPU 上的真实延迟、CUDA 镜像能否装成 | **未测**，需 GPU 机器 |
 | 3 | 429 / `Retry-After` 的真实行为 | **未观测**（无 API key，无法触发限流） |
 | 4 | 真实 200 响应体的取值 | **未观测**（无 key）。形状由 OpenAPI + SDK + kev 三方交叉确认，但取值没有对照样本 |
 | 5 | 性能测量的顺序效应与样本量 | **Laya 线程扫描未重做**（它的定位本就是可行性证据，M2）；M5 的攒批 harness 已按**交错轮次**跑，并报分布而不只是中位数 |
 | 6 | 多进程 × 线程数的最优点 | **已测（M5）**：固定总线程预算（24）下 1/2/4 进程吞吐差 1.18x，加进程不增加吞吐 |
 | 7 | Qwen3 世代 kev 在 CPU 上是否可用 | **未测**。若可用，可能是 CPU 镜像更好的默认选择 |
-| 8 | SBOM / provenance | **已实现**：推送的构建腿带 `sbom=true` + `provenance=mode=max`（§3） |
+| 8 | SBOM / provenance | **已实现**：推送的构建任务带 `sbom=true` + `provenance=mode=max`（§3） |
 | 9 | `remote` 引擎转发真 jev 的合规性（用户自有 key） | **未评估**，需要时再确认 ToS |
-| 10 | `jeff-gemma4-e2b` 的真实加载与推理 | **两个都测了**（`tests/test_jeff_inference.py`，`-k <engine>` 各 18 项全过，2026-09-30，CPU 无 GPU）。Gemma 的加载实测 139 s、峰值 RSS **23.8 GiB**（`/usr/bin/time -v` 的 max RSS，24,915,744 KiB；`fp32` 权重本身 18.5 GiB，差值来自 bf16 → fp32 的转换），Qwen 的峰值 **5.3 GiB**；一次三问题的 `predict` 分别 4.4 s / 30.1 s，但**那两个数字是一次未入库的探针观测（而且 CPU 当时被并发的测试占着），不作为基准使用**（§8）。两个引擎的 weights 套**分两半跑**，因为同时常驻约 26 GiB，这台 31 GiB 的机器放不下；这一点本身也记在 `docs/engines.md` 的 Memory 一节 |
+| 10 | 两个 Jeff checkpoint 的真实加载与推理 | **都测了**（`tests/test_jeff_inference.py`，`-k <engine>` 各 18 项全过，2026-09-30，CPU 无 GPU）。Gemma 的加载实测 139 s、峰值 RSS **23.8 GiB**（`/usr/bin/time -v` 的 max RSS；`fp32` 权重本身 18.5 GiB，差值来自 bf16 → fp32 的转换），Qwen 的峰值 **5.3 GiB**。两个引擎的 weights 套**分两半跑**，因为同时常驻约 26 GiB，这台 31 GiB 的机器放不下 |
 | 11 | 两个 Jeff 引擎镜像的构建、体积与容器内冷启动 | **构建与体积已测**（2026-09-30 工作流首次构建并推送；体积取自已发布 tag 的 registry manifest：Qwen amd64 5.9054 GB / arm64 6.0471 GB，Gemma amd64 17.7453 GB / arm64 17.8870 GB，已记入 `docs/deployment.md`）。**容器内冷启动仍未测**：这两个 tag 从来没被拉下来起过容器 |
-| 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。Qwen 与 Gemma 各只有一次探针观测（4.4 s / 30.1 s，三问题一批，CPU 被并发测试占着），要报就得进 `benchmarks/results/` |
+| 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。两个引擎各只有一次探针观测（三问题一批，而且当时 CPU 被并发的测试占着），要报就得先进 `benchmarks/results/` |
+| 13 | 挂载自定义**基座**（D11）与 `noul.criteria` 未知键的策略（D13） | **两条都未修，而且都没有测试守卫**——它们只有文档层的约定，改动前请先看 §2.1 |
 
 ---
 
-## 6. 一句话总结
+## 6. 总结
 
-**初版的方向是对的，但有三个"不会崩、但会让产品失效"的缺陷**：协议让批处理永不触发（D1）、没有鉴权却监听全网卡（D2）、没处理批处理带来的数值不确定性（D3）。三个都已修。
+**初版的方向是对的，但有三个"不会崩、却会让产品失效"的缺陷**：协议让批处理永不触发（D1）、
+没有鉴权却监听全网卡（D2）、没处理批处理带来的数值不确定性（D3）。三个都已修，而且都有测试守着。
 
-**方法论上最大的改进是承认"读 schema 不等于验证实现"**——补做线上观测后立刻发现了一处真错误和四条只能靠观测得知的契约，并因此把差分测试从可选提升为改契约前的必跑项。
+**方法论上最大的改进是承认"读 schema 不等于验证实现"**——补做线上观测后立刻发现了一处真错误
+（401 与 403 的分工）和四条只能靠观测得知的契约，并因此把差分测试从可选提升为改契约前的必跑项（M1）。
 
-**M5 已经测掉，结论是否定的**：跨请求批处理在这台 CPU 机器上不增加吞吐，长度倾斜时因为 padding 反而慢 3–5 倍；
+**M5 的结论是否定的**：跨请求批处理在这台 CPU 机器上不增加吞吐，长度倾斜时因为 padding 反而慢 3–5 倍；
 加进程也不增加吞吐。**因此 `design.md §6` 的吞吐论证需要改写**，而不是继续等一个会兑现它的实现。
 "对外材料不许出现 QPS"这条纪律的**理由**消失了（数字已经有了），但**新的理由**接上了：
-现在能报的是一条明确的负结论和一个测得的单进程吞吐上界，不是"批处理带来的高 QPS"。
+现在能报的是一条明确的负结论和一个测得的单进程吞吐上界，**不是**"批处理带来的高 QPS"。
+
+**2026-09-30 复核的结论**：31 个设计缺陷里 29 个已修（各有守卫，少数只有文档修复），
+2 个仍未修（D11、D13）；6 个方法论问题里 4 个已修正，2 个仍未修正（M2、M6，都需要一台干净的机器或 GPU）。
+§5 是这些未验证项的完整清单——**它们是这份文档仍然有效的那一半**。

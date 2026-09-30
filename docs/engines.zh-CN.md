@@ -22,13 +22,14 @@
 | `laya-multilingual` | mmBERT-base | 322M | 647 MiB | `laya` | 100+ 种语言；默认引擎 |
 | `laya` | ModernBERT-large | 421M | 807 MiB | `laya` | 英文 checkpoint；没有签入的准确率基准 |
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | `laya` | 同仓库的 typed-decisions checkpoint |
-| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | `kev` | 只有 prefill，不生成文本；建议用 GPU |
+| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.66 GiB | `kev` | 只有 prefill，不生成文本；建议用 GPU |
 | `jeff-qwen3.5-0.8b` | Qwen3.5-0.8B 全权重微调 + readout head | 0.85B | 1.61 GiB | `jeff` | 只有 prefill；`jeff`、`jeff-qwen`、`jeff-qwen3.5` 是别名 |
 | `jeff-gemma4-e2b` | Gemma 4 E2B 全权重微调 + readout head | 4.63B | 8.65 GiB | `jeff` | 只有 prefill；按 26 个选项训练；本仓库最大的镜像 |
 
 两个 Jeff 的参数量都不是 checkpoint 名字里那个数：前者是 852,985,920，后者是
 4,628,569,379，都取自 Hub 自己的 `safetensors.parameters`，而不是 `0.8B` / `E2B`。体积取自 Hub
-的文件清单，只算引擎真正需要的那些文件。
+的文件清单，只算引擎真正需要的那些文件：`kev-0.8b` 是三个适配器文件（约 13 MB）加上它引用的
+Qwen3.5 基座（1.65 GiB），不是那个仓库完整的 43 MiB 清单。
 
 ```bash
 uv run decis models     # 本机注册了哪些引擎、每个是否真的能跑
@@ -57,18 +58,19 @@ marker，在 3.11 上什么都不装，`decis models` 报的是 `needs Python 3.
 ## 容量
 
 每个引擎上报自己的上限，而它们唯一发布的地方是 `GET /v1/models`（在 `decis` 命名空间下）。
-`decis models` 报告的是某个引擎在本机能不能跑，而不是它能吃下多少。
+`decis models` 报告的是某个引擎在本机能不能跑，而不是它的 token 上限和选项上限。
 
 | 引擎 | `max_options` | `max_question_tokens` | `max_sequence_tokens` | `max_state_tokens` |
 |---|---|---|---|---|
-| `laya*` | 255 | 取自 checkpoint 的 `head_max_len`（兜底 192） | 取自 checkpoint 的 `max_len`（兜底 512） | 无 |
+| `laya*` | 255 | 取自 checkpoint 的 `head_max_len`（默认 192） | 取自 checkpoint 的 `max_len`（默认 512） | 无 |
 | `kev-0.8b` | 255 | 1024 | 1024 | 384 |
 | `jeff-qwen3.5-0.8b` | 254 | 8192 | 8192 | 无 |
 | `jeff-gemma4-e2b` | 26 | 8192 | 8192 | 无 |
 
 Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加载的模型是对的，而不是一个常量。
-兜底值在权重还没到位时生效。两个 Jeff 的 `max_options` 是各自 `decision_config.json` 里记的训练上限，
-加载时会再读一次；两个 readout head 都是 255 行，所以选项**词表**从来不是那个卡住你的上限。
+这两个后备上限在权重还没到位时生效。两个 Jeff 的 `max_options` 是各自 `decision_config.json` 里记的训练
+上限，加载时会再读一次；两个 readout head 都是 255 行，所以一个引擎能收多少选项由它声明的
+`max_options` 决定，而不是 head 本身的限制。
 8192 是 vendored 服务代码自己的序列窗口，它对 `state + 一个问题` 整体生效。
 
 超出上限的请求会被拒绝，返回 **422**，消息里给出实测数字和那个上限。Decis 绝不会为了装下过长的
@@ -76,8 +78,9 @@ Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加
 
 ## 新增一个引擎
 
-工作量是一个模块加一行注册。如果一个引擎需要改 [`render.py`](../src/decis/render.py) 或
-[`answers.py`](../src/decis/answers.py)，那就是抽象错了——第二个引擎接进来就是为了通过这个检验。
+工作量是一个模块加一行注册。如果一个引擎要改 [`render.py`](../src/decis/render.py) 或
+[`answers.py`](../src/decis/answers.py) 才接得进来，说明引擎接口没有容纳它：接一个引擎不该意味着
+改归一化层。
 
 1. 在 `src/decis/engines/<name>.py` 里实现 `DecisionEngine`：`info()`、`load()`、
    `predict()`、`close()`，外加 `weights()` 和 `measure()`。
@@ -94,13 +97,12 @@ Laya 的上限来自 checkpoint 自己的 `config`，所以它们对你实际加
 
 ## dtype 与设备
 
-`DECIS_DEVICE` 选择 `cpu`、`cuda`、`mps`、`xpu` 或 `npu`；不设置时取 `torch` 报告可用的第一个
-加速器，顺序 `cuda`、`xpu`、`npu`、`mps`，都没有则 `cpu`（`src/decis/engines/devices.py`）。
-要这个选择的是 `kev-0.8b` 和两个 Jeff 引擎；不设置时 Laya 交给自己的 `Agent`，它的顺序是
-CUDA、Metal、CPU。
-`DECIS_DTYPE` 只为 **`kev-0.8b`** 强制指定精度——读取它的是那些查 `registry.DTYPE_DEFAULTS`
-的引擎，而 Laya 由它自己的 `Agent` 决定精度，两个 Jeff 加载器也在内部自己决定。在 Laya 或 Jeff
-引擎上设置它没有效果。它的用途是在你自己的硬件上重新测量。不设置时，dtype 由引擎和设备决定：
+`DECIS_DEVICE` 怎么解析、哪些引擎会读 `DECIS_DTYPE`，见[配置](configuration.zh-CN.md#计算)；
+选错 dtype 的实测代价见[性能](performance.zh-CN.md#每种引擎每种设备的-dtype)。下面只说每个引擎
+自己的情况。
+
+要设备解析结果的是 `kev-0.8b` 和两个 Jeff 引擎；不设置时 Laya 交给自己的 `Agent`，它的顺序是
+CUDA、Metal、CPU。不设置覆盖时，dtype 由引擎和设备决定：
 
 | 引擎 | cpu | cuda | mps |
 |---|---|---|---|
@@ -115,9 +117,6 @@ CUDA、Metal、CPU。
 Jeff 那两行是 vendored 加载器自己的规则（`cuda` 和 `mps` 上用 `bfloat16`，其余一律
 `float32`），所以 `xpu` 和 `npu` 落到 `fp32` 而不是某个 Decis 默认值。Qwen 那个加载器还会
 按上游的做法在整个进程里关掉 cuDNN 的 SDPA 后端；本服务的目标部署就是一个进程一个引擎。
-
-`kev-0.8b` 在 CPU 上用 `bf16` 比 `fp32` **慢 83 倍**。强制指定它只会记一条警告，而不是拒绝
-启动。测量见[性能](performance.zh-CN.md#每种引擎每种设备的-dtype)。
 
 ## 权重
 

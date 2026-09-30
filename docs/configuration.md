@@ -10,7 +10,7 @@ in the shell wins over `.env`**, so `DECIS_PORT=9000 decis serve` does what it l
 and which variables were set.
 
 Every server variable on this page is read in one module,
-[`src/decis/config.py`](../src/decis/config.py). Nothing else in the package touches the
+[`src/decis/config.py`](../src/decis/config.py). No other module in the package reads the
 environment. The playground is a separate process with variables of its own, and the Compose
 file has several more; both are listed at the end of this page.
 
@@ -139,10 +139,12 @@ accepted) so that they can be pinned explicitly, but no run in `benchmarks/resul
 them, and they fall back to `fp32` through the dtype table's default.
 
 dtype is chosen per engine **and** device, because the same choice can be an order of
-magnitude apart on different hardware. `kev-0.8b` on CPU in `bf16` is 83× slower than
-`fp32`; the measured table is in [Performance](performance.md#dtype-per-engine-and-device).
+magnitude apart on different hardware. `kev-0.8b` on CPU in `bf16` is orders of magnitude
+slower than `fp32`; the measured table is in
+[Performance](performance.md#dtype-per-engine-and-device) — one observation per dtype, so
+read the ratio as an order of magnitude, not as a statistic.
 `DECIS_DTYPE` exists mainly to re-measure on your own hardware, and only `kev-0.8b` reads it.
-Setting a combination known to be bad logs a warning rather than refusing to start.
+Setting a combination known to perform badly logs a warning rather than refusing to start.
 
 `DECIS_TORCH_THREADS` defaults to one thread per vCPU. That is the default, not the
 recommendation: in the checked-in sweep the best thread count depends on the request size, so
@@ -184,13 +186,14 @@ Request and response bodies are not logged: they contain your data.
 The playground is its own process, and it reads `os.environ` directly
 ([`playground/server.py`](../playground/server.py)) rather than going through `config.py`.
 Under Compose it deliberately does **not** get the engine's `env_file` — those values describe
-the engine, and this container runs none of it — so only the variables below are passed in.
+the engine, and this container runs no engine — so only the variables below are passed in.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `DECIS_PLAYGROUND_HOST` | `0.0.0.0` | Bind address of the playground. |
 | `DECIS_PLAYGROUND_PORT` | `8080` | Bind port inside the container; Compose pins it. This is not the host port — that is `DECIS_PLAYGROUND_HOST_PORT` below. |
-| `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | How long one proxied `/v1/systemone` call may take. Generous on purpose: a proxy timeout that fires while the engine is still thinking reports an error for an answer that was about to arrive. |
+| `DECIS_PLAYGROUND_WEB_DIR` | `playground/web` | Directory of the static files it serves. |
+| `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | How long one proxied `/v1/systemone` call may take. Generous on purpose: a proxy timeout that fires while the engine is still computing reports an error for an answer that was about to arrive. |
 | `DECIS_PLAYGROUND_PROBE_TIMEOUT_S` | `2` | How long a `/readyz` probe of one candidate engine may take. |
 | `DECIS_PLAYGROUND_UPSTREAM` | unset | Name one engine to try first instead of searching. It is still probed, not trusted. |
 | `DECIS_PLAYGROUND_CANDIDATES` | built-in list | Comma-separated `/readyz` candidates, tried in order. Compose sets it to every engine service name (four today) plus `host.docker.internal`. |
@@ -207,4 +210,6 @@ These are read by `docker-compose.yml`, not by the server. See [Deployment](depl
 | `COMPOSE_PROFILES` | `laya-multilingual` | Which engine container `docker compose up` starts. |
 | `DECIS_HOST_PORT` | `8000` | Host port for the default engine. |
 | `DECIS_KEV_HOST_PORT` | `8001` | Host port for the kev engine. |
+| `DECIS_JEFF_QWEN_HOST_PORT` | `8002` | Host port for the jeff-qwen3.5-0.8b engine. |
+| `DECIS_JEFF_GEMMA_HOST_PORT` | `8003` | Host port for the jeff-gemma4-e2b engine. |
 | `DECIS_PLAYGROUND_HOST_PORT` | `8080` | Host port for the playground, published to `DECIS_PLAYGROUND_PORT` in the container. |

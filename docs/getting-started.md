@@ -57,7 +57,7 @@ its weights come from, and the bind address — and then says, in the log, that 
 is **not ready** yet:
 
 ```
-decis 0.3.2
+decis 0.4.0
   engine    laya-multilingual
   weights   convaiinnovations/laya/multilingual@1c5edc17a7acd8701df6fc341c0d179f1c62c982
             read from the Hugging Face cache; 646.8 MiB on a cold cache
@@ -101,8 +101,7 @@ only wastes time.
 
 ## Send a request
 
-The point of Decis is that the official SDK does not know it is talking to anything
-different. Only `base_url` changes:
+The point of Decis is that the official SDK needs no change beyond `base_url`:
 
 ```python
 from typesafe_sdk import Choice, Noul, TypeSafeClient
@@ -178,10 +177,12 @@ uv run decis doctor     # dependencies, configuration safety, bind address, thre
 ```
 
 `decis models` answers one question per engine — can this machine run it — with `ready`,
-`deps missing`, `needs weights` or `unavailable`, plus a remedy such as
-`uv sync --extra laya` or `decis download --engine laya-multilingual`. So "the dependency is
-missing" and "the weights are missing" are different answers, and neither is reported as if
-the engine were broken. The capacities an engine can accept are not printed here; they are in
+`deps missing`, `needs weights`, `no weights`, `needs Python 3.12+` or `unavailable`, plus a
+remedy such as `uv sync --extra laya` or `decis download --engine laya-multilingual`. So a
+missing dependency, weights that were never downloaded, a directory that is not a valid
+checkpoint and an interpreter below an engine's floor are all different answers, and none of
+them is reported as if the engine were broken. The capacities an engine can accept are not
+printed here; they are in
 [`GET /v1/models`](api.md#get-v1models).
 
 ## Next

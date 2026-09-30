@@ -22,12 +22,13 @@ generating text: one forward pass, small enough to run next to your app.
   startup and there is no volume to mount.
 - **A Jev-like API.** Decis speaks the contract the closed model does, so the official
   `typesafe-sdk` needs `base_url` changed and nothing else.
-- **Laya and kev, one image each.** A published multi-arch image per engine, weights
-  included.
+- **One image per engine, the engine id is the tag.** Published multi-arch images for
+  `laya-multilingual`, `kev-0.8b`, `jeff-qwen3.5-0.8b` and `jeff-gemma4-e2b`, weights
+  inside; [Deployment](docs/deployment.md) lists the tags.
 - **A playground with three games.** Snake, dino and tetris, each one deciding through a
   real `/v1/systemone` call.
 
-> **Status:** pre-1.0, currently `v0.3.2`. The wire contract (`v1`) is stable and only gains
+> **Status:** pre-1.0, currently `v0.4.0`. The wire contract (`v1`) is stable and only gains
 > fields; the running server reports its own version at `/healthz`.
 
 ## Quickstart
@@ -94,10 +95,10 @@ uv run decis download --engine laya-multilingual   # 647 MiB, once
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
 
-Engine dependencies live in extras, so `--all-extras` installs both engine families plus the
-dev tools; a plain `uv sync` installs neither, and removes what an earlier sync added. To
-install one engine only, name its extra: `uv sync --extra dev --extra kev`. The extras are in
-[Engines](docs/engines.md).
+Engine dependencies live in extras, so `--all-extras` installs all three engine extras
+(`laya`, `kev`, `jeff`) plus the dev tools; a plain `uv sync` installs none of them, and
+removes what an earlier sync added. To install one engine only, name its extra:
+`uv sync --extra dev --extra kev`. The extras are in [Engines](docs/engines.md).
 
 [Getting started](docs/getting-started.md) covers readiness, the raw `curl` form, and
 `decis models` / `decis doctor`.

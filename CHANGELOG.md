@@ -10,6 +10,8 @@ each engine will run.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-30
+
 ### Added
 
 - **Two more engines: `jeff-qwen3.5-0.8b` and `jeff-gemma4-e2b`.** Both are fine-tunes of
@@ -30,6 +32,22 @@ each engine will run.
   accepted), replacing the per-engine `DECIS_MODEL_PATH_<ENGINE_ID>` variables.
 - The `jeff` extra, plus the two new tags in the workflow matrix, the `docker-compose.yml`
   profiles, `.env.example` and the playground's engine picker.
+
+### Changed
+
+- **The documentation was reorganised, and the stale parts were removed.**
+  [`docs/design-review.md`](docs/design-review.md) now separates the two defects that are still
+  open (§2.1: `D11`, `D13`) from the 29 that are fixed and guarded (§2.2, each condensed to
+  symptom → fix → guard, with the full incident narrative left in git history). Every `§2-Dxx`
+  and `§4-Mx` reference used by `AGENTS.md`, the tests and the code still resolves. Statements
+  that no longer matched the code were corrected across `docs/design.md`,
+  `docs/feasibility.md`, `docs/api.md`, `docs/configuration.md`, `docs/deployment.md`,
+  `docs/engines.md`, `docs/performance.md`, `docs/playground.md`, `docs/getting-started.md` and
+  `benchmarks/README.md` — the engine matrix, the directory tree, kev's weight sizes, the
+  `/v1/models` `aliases`, the `batch_size` field, the `decis models` statuses, the playground
+  candidate list and the `report.py` targets were all wrong or out of date in at least one place.
+  Colloquial jargon (CI "构建腿", "烤权重", a failing test "红了", "假引擎") was replaced with
+  plain wording in both languages of every page.
 
 ### Removed
 
@@ -309,7 +327,10 @@ The first tagged release. Everything below is the initial implementation.
   ([`docs/design-review.md`](docs/design-review.md)) and the feasibility study
   ([`docs/feasibility.md`](docs/feasibility.md)).
 
-[Unreleased]: https://github.com/chaitin/Decis/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/chaitin/Decis/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/chaitin/Decis/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/chaitin/Decis/releases/tag/v0.3.2
+[0.3.1]: https://github.com/chaitin/Decis/releases/tag/v0.3.1
 [0.3.0]: https://github.com/chaitin/Decis/releases/tag/v0.3.0
 [0.2.0]: https://github.com/chaitin/Decis/releases/tag/v0.2.0
 [0.1.0]: https://github.com/chaitin/Decis/releases/tag/v0.1.0

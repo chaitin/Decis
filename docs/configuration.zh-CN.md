@@ -9,7 +9,7 @@ Decis 从 `.env` 和环境变量读取配置。**shell 里已经设好的变量�
 `decis doctor` 会打印实际解析出的值，以及哪些变量被设过。
 
 本页**服务端**的每个变量都只在一个模块里读取：
-[`src/decis/config.py`](../src/decis/config.py)。包里的其他任何地方都不碰环境变量。playground 是
+[`src/decis/config.py`](../src/decis/config.py)。包里没有其他模块读环境变量。playground 是
 另一个进程，有它自己的一组变量；Compose 文件也有几个自己的变量——两者都列在本页末尾。
 
 ## 认证
@@ -124,9 +124,10 @@ Laya 把它交给自己的 `Agent`。
 值 `fp32`。
 
 dtype 按引擎**和**设备分别选择，因为同一个选择在不同硬件上可能差一个数量级。`kev-0.8b`
-在 CPU 上用 `bf16` 比 `fp32` 慢 83 倍；实测表见
-[性能](performance.zh-CN.md#每种引擎每种设备的-dtype)。`DECIS_DTYPE` 主要用来在你自己的硬件上
-重测，而且只有 `kev-0.8b` 会读它。设置一个已知很糟的组合只会记一条警告，不会拒绝启动。
+在 CPU 上用 `bf16` 比 `fp32` 慢好几个数量级；实测表见
+[性能](performance.zh-CN.md#每种引擎每种设备的-dtype)——每种 dtype 只有一次观测，所以那个倍数是
+数量级结论，不是统计量。`DECIS_DTYPE` 主要用来在你自己的硬件上
+重测，而且只有 `kev-0.8b` 会读它。设置一个已知性能很差的组合只会记一条警告，不会拒绝启动。
 
 `DECIS_TORCH_THREADS` 默认每个 vCPU 一个线程。这是默认值，不是推荐值：在签入的扫描里，最佳
 线程数取决于请求大小，所以对单个问题最快的设置对十个问题并不最快。给部署定规模前先测量；
@@ -165,14 +166,15 @@ dtype 按引擎**和**设备分别选择，因为同一个选择在不同硬件�
 
 playground 是独立的进程，它直接读 `os.environ`
 （[`playground/server.py`](../playground/server.py)），不经过 `config.py`。在 Compose 下它刻意
-**不**继承引擎的 `env_file`——那些值描述的是引擎，而这个容器什么都不跑——所以传进去的只有下面
+**不**继承引擎的 `env_file`——那些值描述的是引擎，而这个容器不跑任何引擎——所以传进去的只有下面
 这些变量。
 
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `DECIS_PLAYGROUND_HOST` | `0.0.0.0` | playground 的绑定地址。 |
 | `DECIS_PLAYGROUND_PORT` | `8080` | 容器内的绑定端口，由 Compose 钉住。这不是宿主端口——宿主端口是下面的 `DECIS_PLAYGROUND_HOST_PORT`。 |
-| `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | 一次经代理的 `/v1/systemone` 调用最多允许多久。故意给得宽：代理超时如果在引擎还在算的时候触发，就会把一个即将到达的答案报成错误。 |
+| `DECIS_PLAYGROUND_WEB_DIR` | `playground/web` | 它提供的静态文件目录。 |
+| `DECIS_PLAYGROUND_TIMEOUT_S` | `120` | 一次经代理的 `/v1/systemone` 调用最多允许多久。故意给得宽：代理超时如果在引擎还在计算的时候触发，就会把一个即将到达的答案报成错误。 |
 | `DECIS_PLAYGROUND_PROBE_TIMEOUT_S` | `2` | 探测某个候选引擎的 `/readyz` 最多允许多久。 |
 | `DECIS_PLAYGROUND_UPSTREAM` | 未设置 | 直接指定一个先试的引擎，跳过搜索。它仍然要被探测，不是无条件信任。 |
 | `DECIS_PLAYGROUND_CANDIDATES` | 内置列表 | 逗号分隔的 `/readyz` 候选，按顺序尝试。Compose 把它设成每个引擎的服务名（目前四个）加 `host.docker.internal`。 |
@@ -188,4 +190,6 @@ playground 是独立的进程，它直接读 `os.environ`
 | `COMPOSE_PROFILES` | `laya-multilingual` | `docker compose up` 启动哪个引擎容器。 |
 | `DECIS_HOST_PORT` | `8000` | 默认引擎的宿主端口。 |
 | `DECIS_KEV_HOST_PORT` | `8001` | kev 引擎的宿主端口。 |
+| `DECIS_JEFF_QWEN_HOST_PORT` | `8002` | jeff-qwen3.5-0.8b 引擎的宿主端口。 |
+| `DECIS_JEFF_GEMMA_HOST_PORT` | `8003` | jeff-gemma4-e2b 引擎的宿主端口。 |
 | `DECIS_PLAYGROUND_HOST_PORT` | `8080` | playground 的宿主端口，发布到容器内的 `DECIS_PLAYGROUND_PORT`。 |

@@ -19,28 +19,28 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **引擎注册表**：出厂六个——`laya`、`laya-multilingual`、`laya-typed-decisions`、`kev-0.8b`、
 > `jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b`。其中两个需要第二个仓库：`kev-0.8b` 是适配器 + Qwen3.5-0.8B
 > 基座（见 `paths.BaseModel`），而两个 Jeff 是**全权重微调**，一个目录里就是全部，`bases` 为空。
-> **注册表里没有假引擎**：无权重的确定性测试替身住在 `tests/fixture_engine.py`，由 `tests/conftest.py`
+> **注册表里没有测试替身**：无权重的确定性测试替身住在 `tests/fixture_engine.py`，由 `tests/conftest.py`
 > 以 id `stub` 只在测试进程里注册，出厂镜像永远不会用它作答。
 >
 > **镜像**：`.github/workflows/docker-build.yml` 按引擎构建、推送到 Docker Hub 的**一个**仓库
 > `chaitin/decis`，**引擎就是 tag**（`chaitin/decis:laya-multilingual`）。命名空间来自工作流的
 > `IMAGE_NAMESPACE`（默认 `chaitin`，仓库变量 `DOCKERHUB_NAMESPACE` 可覆盖），**不从
 > `DOCKERHUB_USERNAME` 推导**——那是登录身份，不是发布目标。tag 规则：默认分支只给引擎名，其中
-> `laya-multilingual` 的烤权重变体另外拿裸 `latest`；**只有 release tag 追加版本**（`<engine>-v1.2.0`）；
+> `laya-multilingual` 的内置权重变体另外拿裸 `latest`；**只有 release tag 追加版本**（`<engine>-v1.2.0`）；
 > 不带权重的变体带后缀 `-runtime`，只在 release 或手动 dispatch 时发布，且**没有第二个名字**。
 > `playground` 是唯一的非引擎镜像（release 为 `playground-<version>`）。多架构（amd64 + arm64 原生
 > runner）、带 SBOM 与 provenance；只有 Docker Hub 一个 registry，**GHCR 不再推送**。
 > tag 全表在 `docs/deployment.md`，规则的理由在工作流的注释里。
 >
 > **本地编排**：`docker-compose.yml` 是部署文件，用 profile 选引擎，**profile 名 == 引擎 id ==
-> image tag == `--engine` == `DECIS_DEFAULT_ENGINE`**。权重烤在镜像的 `DECIS_MODEL_DIR=/models` 下，
-> **不许往那里挂卷**（挂上去会盖掉烤进去的权重，容器转去联网下载而不报错）。compose 层的探针打
+> image tag == `--engine` == `DECIS_DEFAULT_ENGINE`**。权重在构建期写入镜像的 `DECIS_MODEL_DIR=/models`，
+> **不许往那里挂卷**（挂上去会盖掉镜像里已有的权重，容器转去联网下载而不报错）。compose 层的探针打
 > `/readyz`（该层不会因探针失败重启容器，所以 `--wait` 是真的就绪等待），镜像自带的 `HEALTHCHECK`
 > 仍是 `/healthz`，给编排器用。`docker-compose.override.yml` 靠**文件名**被 Compose 自动叠上，
 > 于是源码目录里的裸 `docker compose up` 用本仓库源码构建 `decis-local:*`，部署只拷基文件。
 >
-> **容器内已实测的边界**：烤权重的引擎镜像与 playground 镜像都从 `chaitin/decis` 拉下来跑过——
-> 前者在 `HTTP_PROXY`/`HTTPS_PROXY` 指向死端口时从 `/models/...` 加载、零下载，并作出完整契约响应
+> **容器内已实测的边界**：内置权重的引擎镜像与 playground 镜像都从 `chaitin/decis` 拉下来跑过——
+> 前者在 `HTTP_PROXY`/`HTTPS_PROXY` 指向一个没有服务监听的端口时从 `/models/...` 加载、零下载，并作出完整契约响应
 > （无凭证 403、错 key 401）。**未验证**：`-runtime` 变体只验到能构建、能合并、体积对（没拉下来跑过）、
 > kev 的容器内冷启动、kev 的 compose 路径。两个 Jeff 镜像在 2026-09-30 第一次构建并推送成功，
 > 体积已从 registry manifest 读出并记进 `docs/deployment.md`，但**同样没拉下来跑过**——它们的
@@ -84,13 +84,13 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 |---|---|---|
 | 各层共享的领域类型（`Option`/`PreparedQuestion`/`PreparedRequest`/`ProbDist`） | `src/decis/domain.py` | 在 `schema.py`/`render.py` 里另定义一份；`domain.py` **不得 import 包内任何模块** |
 | `state`/`instructions`/`criteria` → 可读文本（任意 JSON 的扁平化） | `src/decis/render.py` | 引擎各自实现 JSON 扁平化；引擎各自做分隔符转义 |
-| 「调用方原始 JSON 原样交给需要它的引擎」 | `domain.PreparedQuestion.raw` / `PreparedRequest.raw_state` / `WorkItem.raw_state`，由 `render.py` 填 | 引擎自己去解析请求体；把扁平化后的文本当成 `raw`（Jeff 的提示词是 `json.dumps`，喂错不报错、只是答案变差） |
+| 「调用方原始 JSON 原样交给需要它的引擎」 | `domain.PreparedQuestion.raw` / `PreparedRequest.raw_state` / `WorkItem.raw_state`，由 `render.py` 填 | 引擎自己去解析请求体；把扁平化后的文本当成 `raw`（Jeff 的提示词是 `json.dumps`，传入错误的文本不会报错，只是答案变差） |
 | `--model-path ENGINE=PATH` 的语法与别名规范化 | `src/decis/cli.py: _parse_model_paths`（规范化后写进 `Settings.model_paths`） | 引擎自己解析命令行参数；用把引擎 id 编进**变量名**的方式做覆盖（点号在变量名里没有表示法，见 §9） |
 | 第三方 vendored 副本的字节 | `src/decis/engines/_kev_vendor/`、`src/decis/engines/_jeff_vendor/`，各自带 `VENDOR.md` | 就地改 vendored 代码；re-vendor 时不一起改 `VENDOR.md` / `NOTICE` / 守卫里的 sha256 |
 | 「某个引擎需要哪个 Python 版本」 | `src/decis/engines/registry.py: EngineSpec.python_min`（`jeff.MIN_PYTHON` 是同一数字给 `load()` 用的那份，`pyproject.toml` 的 marker 是给包管理器的那份） | 三处各写一个数字而不加守卫；把"vendored 代码需要更新的语法"报成"缺依赖"（Jeff 要 3.12，`design-review.md §2-D31`；守卫 `tests/test_engines_jeff.py` 把三处钉在一起，并用 `ast.parse(feature_version=…)` 把 floor **从 vendored 源码推出来**） |
 | 把渲染片段排成**某个引擎自己的序列** | 该引擎（并优先用它上游库的函数，如 Laya 的 `build_sequence`） | 在 `render.py` 里重写某个模型的序列格式——那是对上游内部的复制，保证会漂移（`design.md §4.1` 的 Stage 1 修正） |
 | `noul` 的选项名 `"false"/"true"` | `src/decis/render.py: noul_options` | 任何地方写字面量 `Option("false", …)` |
-| 「这个请求会被吃掉多少 token」（容量校验的**测量**） | 各引擎的 `DecisionEngine.measure` | 用 `len(text)//4` 估算一个会截断的引擎；在 `render.py` 里猜某个模型的 head 开销 |
+| 「这个请求会消耗多少 token」（容量校验的**测量**） | 各引擎的 `DecisionEngine.measure` | 用 `len(text)//4` 估算一个会截断的引擎；在 `render.py` 里猜某个模型的 head 开销 |
 | 概率分布 → `Noul`/`Choice`/`Score` answer | `src/decis/answers.py` | 引擎返回线格式 answer |
 | `confidence` 计算 | `src/decis/answers.py` | 引擎各自算 confidence 并直接透出 |
 | question 的 wire key（`"false"/"true"`、选项名、`"0".."n-1"`） | `src/decis/answers.py: question_keys` | 任何地方重复这份规则 |
@@ -104,7 +104,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 引擎加载状态（idle/loading/ready/failed 与失败原因） | `src/decis/scheduler.py: LoadStatus` | 在 CLI/路由里各写一份"就绪"判断；用 `ready` 一个布尔表示"为什么不能服务" |
 | 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
 | 「一个 checkpoint 需要哪些仓库」（适配器 + 它适配的基座） | `src/decis/paths.py: BaseModel` / `WeightSpec.bases` | 引擎自己下载基座；把基座写成引擎里第二个硬编码 repo id |
-| `(引擎, 设备) → dtype`、以及"能跑但已知很糟"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
+| `(引擎, 设备) → dtype`、以及"能跑但性能已知很差"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
 | `DECIS_DEVICE` 的合法取值、「这台机器能用哪个设备」、「不设时用哪个」 | `src/decis/engines/devices.py: DEVICES` / `ACCELERATOR_ORDER` / `available_devices` / `best_device` / `requested_device` | 引擎自己写设备回退（`settings.device or "cpu"` 曾让 kev 在 Apple 芯片上跑 CPU，实测慢 15 倍）；在别处再判断一次"CUDA/MPS 可用吗" |
 | 「某个 primitive 的选项在提示里长什么样」 | 各引擎自己的 record 构造 | 让 `render.py` 决定——kev 的 noul 是 `no`/`yes`、score 是裸层级文本，与 Decis 的 `Option.name` 不同（`design-review.md §2-D9`） |
 | 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
@@ -200,7 +200,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
    - **`max_sequence_tokens` 是"state + 一个问题"的总预算**，不是 state 单独的预算。state 与 head 共享同一条序列，分开检查会让两边都合规、合起来超长的请求被静默截断（`design.md §4.1`）。
    - **若引擎额外限制 state 本身**（kev：state ≤ 384 而 state+问题 ≤ 1024），必须填 `max_state_tokens`。不填就意味着"序列上限已经覆盖了"，而 kev 那种情况不填会让超长 state 通过校验后被静默截断（`design-review.md §2-D10`）。
    - **`max_question_tokens` 要填最宽松的可靠上界**，不要用"最坏情况"（如 `max_sequence - max_state`）：那会拒掉引擎其实处理得了的请求。真正生效的比较是序列那一条。
-   - **`measure()` 必须报真实长度，不能从上游"截断后"的输出反推**：`encode` 会把 state 截到上限，反推出来的数字永远等于上限，上限检查就成了永不触发的摆设（D10 实际踩到过）。
+   - **`measure()` 必须报真实长度，不能从上游"截断后"的输出反推**：`encode` 会把 state 截到上限，反推出来的数字永远等于上限，上限检查就成了永不触发的摆设（D10 实际发生过）。
    - **`measure()` 必须用真实 tokenizer 和真实的序列布局测量，不能退回 `len(text)//4`。** 如果上游会截断，就把它的不截断条件压成一个可验证的表达式（Laya 的做法：`budgeted_head`），并用上游函数本身断言这个表达式正确。
 5. 加**两套**测试：
    - 快速套（无权重，CI 必跑）：`tests/test_engines_laya.py` 的做法——假 tokenizer + stub 掉上游渲染，覆盖 `measure` 的算术与 `_internal` 的形状；
@@ -256,7 +256,7 @@ DECIS_DEVICE=cpu                     # 强制设备；不设则按 cuda → xpu 
                                      #   （`engines/devices.py`；npu 需要 torch_npu 插件）。
                                      #   设备也会决定 dtype 查表的哪一列
 DECIS_DTYPE=bf16                     # 强制精度；不设则查 registry.DTYPE_DEFAULTS。
-                                     #   已知很糟的组合（kev CPU 上 bf16）只告警不拒绝
+                                     #   已知性能很差的组合（kev CPU 上 bf16）只告警不拒绝
 ```
 `DECIS_DTYPE` 只对**查 `DTYPE_DEFAULTS` 的引擎**生效（目前是 kev）；Laya 由它自己的
 `Agent` 决定精度，不受这个变量影响。
@@ -308,7 +308,7 @@ uv run decis models --model-path jeff=/srv/jeff-qwen        # 别名在这里也
 docker run --rm -p 8000:8000 chaitin/decis:laya-multilingual   # 权重在镜像里，不需要网络也不需要挂卷
 docker run --rm -p 8000:8000 chaitin/decis:kev-0.8b
 #   想换成自己的权重目录：-v /srv/models:/models，但那个目录里必须已经有 <engine-id>/
-#   ——挂在 /models 上会盖掉烤进镜像的权重（§2-D21）。要"权重放卷"就用 release 的
+#   ——挂在 /models 上会盖掉镜像里已有的权重（§2-D21）。要"权重放卷"就用 release 的
 #   <engine>-runtime-<version> 镜像先 `decis download` 填一次卷。
 ```
 
@@ -336,7 +336,7 @@ docker compose up -d --build              # 源码目录里：自动叠 docker-c
 ```bash
 make help                    # 目标清单 + 本目录解析到的引擎
 make up / down               # 起（构建源码）/ 停
-make up-local                # 同上，但先重建镜像（引擎那次是全量烤权重，慢）
+make up-local                # 同上，但先重建镜像（引擎那次会重新下载全部权重，慢）
 make build-playground        # 只重建游戏页面镜像：几秒（那个 Dockerfile 没有 RUN）
 make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
 make build-engine / up-engine ENGINE=kev-0.8b
@@ -360,14 +360,14 @@ docker build -f docker/Dockerfile \
 ```bash
 uv run decis bench --engine laya-multilingual --batch 1,3,10,30   # 采集，写 benchmarks/results/
 uv run python benchmarks/report.py --write   # 由原始 JSON 生成 docs 里的表
-uv run python benchmarks/report.py --check   # CI 跑这个：手改过的数字会让它变红
+uv run python benchmarks/report.py --check   # CI 跑这个：手改过的数字会让它失败
 ```
 
 对外 API 的 JSON Schema 与 OpenAPI 文档（生成物，进 CI）：
 
 ```bash
 uv run python docs/schema/export.py --write   # 由 src/decis/schema.py 重新生成 docs/schema/*.json
-uv run python docs/schema/export.py --check   # CI 跑这个：手改过的 schema 会让它变红
+uv run python docs/schema/export.py --check   # CI 跑这个：手改过的 schema 会让它失败
 ```
 
 `openapi.json` 由 `create_app(..., load_engine=False)` 导出，因此它描述的是**真正在跑的那个 app**，
@@ -400,9 +400,9 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 - 有额外依赖的环境（`uv sync --extra dev --extra laya`）会发现上面那类 bug，
   但会漏掉"依赖缺失时的提示是否清楚"，因为那时依赖是齐的。
 
-- **解释器版本也算一维**：CI 跑 3.11 / 3.12 / 3.13 三条腿，而本地默认只有一条（当前是 3.14）。
+- **解释器版本也算一维**：CI 覆盖 Python 3.11 / 3.12 / 3.13 三个版本，而本地默认只有一条（当前是 3.14）。
   `design-review.md §2-D31` 就是这么漏的：vendored 代码里的 PEP 695 语法在 3.11 上直接
-  `SyntaxError`，两个本地环境全绿，只有 CI 的 3.11 腿红了。接引擎或改 vendored 之后，在项目
+  `SyntaxError`，两个本地环境全绿，只有 CI 的 3.11 任务失败。接引擎或改 vendored 之后，在项目
   floor（`requires-python`，当前 3.11）上真跑一次：
   `uv python install 3.11 && uv venv --python 3.11 .scratch/venv311 && uv pip install -e ".[dev]"`，
   然后跑全量。没有 3.11 解释器时，`ast.parse(..., feature_version=(3, 11))` 也能把"这个文件需要
@@ -415,8 +415,8 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 需要判断环境就 `pytest.skip` 并说清理由。**给配方一个最小 `PATH` 的 fixture，要把配方可能
 exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕过 shell 直接 `exec`，`@echo` 这种
 空行正好落在这一档，而**走不走这条捷径取决于 make 版本**（Ubuntu 的 4.3 走 shell、macOS 的
-3.81 不走），于是同一个 fixture 在一条腿上是绿的、在另一条腿上是红的——`tests/test_makefile.py`
-里补的那个 `echo` 就是这么被 macOS 那条腿抓出来的。
+3.81 不走），于是同一个 fixture 在一个任务上通过、在另一个任务上失败——`tests/test_makefile.py`
+里补的那个 `echo` 就是这么被 macOS 那个任务抓出来的。
 
 ---
 
@@ -436,7 +436,7 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 
 - ❌ 手写规则里的性能数字
 - ❌ 在请求路径上做首次权重加载（冷启动必须在服务就绪前完成，或 `/readyz` 明确报告未就绪）
-- ❌ 把 `host` 硬编码成 `127.0.0.1`（容器里必须能监听 `0.0.0.0`；kev 上游就踩过这个坑）
+- ❌ 把 `host` 硬编码成 `127.0.0.1`（容器里必须能监听 `0.0.0.0`；kev 上游就有这个问题）
 - ❌ 把模型权重提交进 git（`.gitignore` 必须挡住 `models/`、`*.safetensors`、`*.pt`）
 - ❌ 在 `answers.py` 之外构造 answer dict
 - ❌ 让引擎返回 `confidence`
@@ -450,13 +450,13 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 对"引擎永久加载失败"报 `retry-after`（等于让 SDK 永远重试一个不会恢复的服务）
 - ❌ 让引擎自己写设备回退（`settings.device or "cpu"` 曾让 `kev-0.8b` 在 Apple 芯片上默认跑 CPU，
   `design-review.md §2-D24`）。设备由 `src/decis/engines/devices.py` 决定，引擎只问它
-- ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会静默降质）
+- ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会无提示地降低答案质量）
 - ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
 - ❌ 改动 `src/decis/engines/_jeff_vendor/` 里的任何字节（同一条规则：整体 re-vendor，并一起改
   `VENDOR.md` / `NOTICE` / `jeff.REVISION`。`tests/test_jeff_vendor.py` 同时比对 vendored 与上游两份
   sha256，还会把 vendored 文本反向套回 import 重写再和上游逐字节比——只更新期望哈希是过不去的）
 - ❌ 让一个按调用方 JSON 训练的引擎去读 `render.py` 扁平化后的文本（Jeff 的提示词是
-  `json.dumps(state)` 与原样 criteria，不是 `key: value` 行；喂错了不报错，只是答案比 checkpoint 的
+  `json.dumps(state)` 与原样 criteria，不是 `key: value` 行；传入错误的文本不会报错，只是答案比 checkpoint 的
   基准差。引擎读 `WorkItem.raw_state` / `PreparedQuestion.raw`，不要自己再解析一次请求）
 - ❌ 用把引擎 id 编进**变量名**的方式覆盖单个引擎的权重目录（`DECIS_MODEL_PATH_<ENGINE_ID>` 已在本轮
   删除）。任何变量名都装不下 `kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b` 里的点号，那个名字会
@@ -466,7 +466,7 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` / `<!-- BATCHING -->` 标记块里的数字
   （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）。**标记块里的散文同样是生成物**——
   措辞要改就改 `benchmarks/report.py` 里的模板再 `--write`。中文那两句的语病（"随后已经测过"、
-  "旁边的散文"）就是这么修的，手改会让 `--check` 变红
+  "旁边的散文"）就是这么修的，手改会让 `--check` 失败
 - ❌ 手改 `benchmarks/RESULTS.md`（它是生成物）
 - ❌ 手改 `docs/schema/*.json`（生成物；改线格式要改 `src/decis/schema.py` 再 `export.py --write`，
   `docs/schema/export.py --check` 与 `tests/test_api_schema.py` 会拦下）
@@ -485,18 +485,18 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 手工把一张表从一个文件抄到另一个文件（`README.zh-CN.md` 抄过，于是它**只在中文版里**带着 D12）：
   抄写就是第二处实现（§2），要么生成，要么不要放
 - ❌ 报跨请求批处理的结论时省略它的范围：**上界**（合成批、无队列）、**CPU**、**只有 Laya**
-- ❌ 用"一个大小测到底"的顺序做批次扫描（序效应会伪装成批大小的效果，`§4-M2` 与 M5 各踩过一次）
+- ❌ 用"一个大小测到底"的顺序做批次扫描（序效应会伪装成批大小的效果，`§4-M2` 与 M5 各出现过一次）
 - ❌ 增加一个收益类机制却没有正对照或能证明它触发的指标（`§2-D1`）
 - ❌ 比较不同进程数时让总线程预算不一致（那测的是线程超配，不是进程扩展性）
 - ❌ 用 `A && B || C` 表达"可能为空的三元"（GitHub 表达式里没有三元运算符，而**空字符串是假值**，
   所以"没有 extra"这种分支永远选不中：当时那个无权重镜像因此装上了 Laya + torch，多出 3.1 GB，
-  见 `design-review.md §2-D14`；那个镜像已随假引擎一起移除）。选一个可以合法为空的值时，
+  见 `design-review.md §2-D14`；那个镜像已随测试替身一起移除）。选一个可以合法为空的值时，
   用真正的分支，或把决定搬到脚本里
 - ❌ 让测试里的映射表是**手抄的常量**而不是从被执行的那份东西读出来的
   （`design-review.md §2-D14`：表达式错了、抄本对了，于是测试恒绿地放过了一个 3.1 GB 的缺陷）
-- ❌ 在**共享仓库**里让多个构建/合并腿写同一个 tag（`design-review.md §2-D16`：
-  per-arch 中间 tag 少了 artifact 名，六个腿互相覆盖，三个 tag 发出同一个 manifest）。
-  检查"我这条腿的 tag 对不对"是不够的，必须有一条测试断言**任意两条腿的 tag 集合不相交**
+- ❌ 在**共享仓库**里让多个构建/合并任务写同一个 tag（`design-review.md §2-D16`：
+  per-arch 中间 tag 少了 artifact 名，六个构建任务互相覆盖，三个 tag 发出同一个 manifest）。
+  检查"我这个任务的 tag 对不对"是不够的，必须有一条测试断言**任意两个任务的 tag 集合不相交**
 - ❌ 在文档里写出一个**没被任何测试对照过**的镜像 tag / URL / 文件名
   （`design-review.md §2-D15`：README 曾写一个实际不存在的镜像 tag，照着文档拉的第一条命令就失败）。
   凡是文档里出现的、由 CI 产出的名字，都要有一条测试从**真正产出它的那段脚本**里读出来比对
@@ -520,8 +520,8 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   Kubernetes 会一直重启它：`design-review.md §2-D19`）。探针命令必须 `env -u` 掉代理变量，
   并且有一条测试盯住这一点
 - ❌ 让**引擎名那个 tag** 指向不带权重的镜像（`design-review.md §2-D20`：一个引擎的镜像存在的
-  意义就是"拿到就能用"，而 README 曾把它写成"需要网络或挂卷"，同时真正的烤权重变体叫 `-offline`
-  并且从没构建成功过）。默认变体必须是烤权重那个，瘦身变体只能带后缀；同一个东西不给两个名字
+  意义就是"拿到就能用"，而 README 曾把它写成"需要网络或挂卷"，同时真正的内置权重变体叫 `-offline`
+  并且从没构建成功过）。默认变体必须是内置权重那个，瘦身变体只能带后缀；同一个东西不给两个名字
 - ❌ 在测试里**重建**被测系统会拼的东西，尤其是引擎的提示词文本
   （`design-review.md §2-D30`：weights 套里的 `prompt_of()` 用 `decision_messages` +
   `processor.apply_chat_template` 拼了一份提示词，而 Gemma 那个 loader 走的是
@@ -529,7 +529,7 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   `.processor`**，于是 4 项断言在 Gemma 上直接 `AttributeError`，而配来"钉住这份镜像"的那条守卫
   自己也是用同一份镜像写的、在 Qwen 上永远绿）。要断言"引擎实际发出去的字节"，就从**引擎自己的
   产物**读回来——解码它 `prepare()` 出来的 `input_ids`、看它真的写出去的请求体——不要重算一遍
-- ❌ 在 compose 里把卷/目录挂到镜像烤权重的路径上（`DECIS_MODEL_DIR`，`design-review.md §2-D21`：
+- ❌ 在 compose 里把卷/目录挂到镜像写入权重的路径上（`DECIS_MODEL_DIR`，`design-review.md §2-D21`：
   命名卷会用镜像内容初始化一次然后自己留一份，bind mount 直接盖掉整个目录，于是"离线镜像"变成
   "启动就联网下载"，而且不报任何错）。守卫必须**从 Dockerfile 读出**那个路径再断言没人挂它
 - ❌ 在编排器里把 liveness 探针指向 `/readyz`（`design-review.md §2-D22`：镜像还在加载引擎就被判
@@ -553,7 +553,7 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   `checkpoint_root` 验证拿到的目录真能被读到，再把**目录**交给上游
 - ❌ 在项目声明支持的 Python 上让引擎直接 `SyntaxError`，或把"代码需要更新的语法"报成"缺依赖"
   （`design-review.md §2-D31`：`_jeff_vendor/types.py` 用了 PEP 695 别名，项目写着
-  `requires-python = ">=3.11"`、CI 也有 3.11 腿，于是 3.11 上连 `import` 都过不去——而
+  `requires-python = ">=3.11"`、CI 也覆盖 3.11，于是 3.11 上连 `import` 都过不去——而
   `decis models` 当时报的是 `deps missing   uv sync --extra jeff`，那条命令在 3.11 上装不出任何东西）。
   floor 声明在 `registry.EngineSpec.python_min`，extra 的依赖带同样的 `python_version` marker，
   引擎自己的报错也用同一个数字；守卫要**从 vendored/引擎源码本身**推出来

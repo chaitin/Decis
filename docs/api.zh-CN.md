@@ -165,7 +165,8 @@ JSON Schema 是 [`docs/schema/systemone-request.schema.json`](schema/systemone-r
 
 上面样例里的 `@0.3.6` 是抓它们时装的 `laya` 构建，不是 Decis 的版本：`engine_version` 取的是
 `importlib.metadata.version("laya")`（`src/decis/engines/laya.py`），跟着镜像或本机 extra 装到的
-那个上游版本走（`laya<0.4`）。
+那个上游版本走（`laya<0.4`）。本仓库的 `uv.lock` 锁的是 0.3.5，所以从 checkout 构建的安装会报
+`decis/laya-multilingual@0.3.5`。
 
 JSON Schema 是
 [`docs/schema/systemone-response.schema.json`](schema/systemone-response.schema.json)。
@@ -178,7 +179,7 @@ JSON Schema 是
   `criteria` 完全一致。
 - `noul` 是标量，既没有 `confidence` 也没有 `probabilities`。
 - `score` 等于在 `legend` 的 0 基档位上求 `Σ k · pₖ`。
-- `usage.input_tokens` 与 `usage.output_tokens` 是必填整数。它们是计费口径而不是生成长度：
+- `usage.input_tokens` 与 `usage.output_tokens` 是必填整数。它们是计费约定而不是生成长度：
   这些模型不生成文本，`output_tokens` 是序列化后的 `answers` 对象的 token 数，不是答案的数量。
 
 #### `decis` 命名空间
@@ -193,7 +194,7 @@ Decis 在契约之外增加的一切都放在同一个键下，所以官方 SDK�
 | `device` | `cpu`、`cuda`、`mps`、`xpu` 或 `npu`。 |
 | `dtype` | `float32`、`float16` 或 `bfloat16`。 |
 | `latency_ms` | 本次请求在服务端的推理耗时。 |
-| `batch_size` | 一次前向里算了多少个问题。`1` 表示没有发生批处理。 |
+| `batch_size` | 本次请求一起提交了多少个问题——`src/decis/service.py` 把它设成 `len(items)`。它不是前向次数：Jeff 引擎内部随后会按自己固定的 8 个一块来跑（`src/decis/engines/jeff.py` 里的 `_BATCH_SIZE`）。`1` 表示这个请求只带了一个问题。 |
 | `requested_model` | 仅当你点了一个服务端没有的模型名（通常是 `jev-latest`），而它用自己的引擎作答时才出现。这个替换从不静默发生。 |
 | `native_confidence` | 引擎自己的逐问题置信度，前提是它有标定过的值。契约层的 `confidence` 是 Decis 自己的公式，可跨引擎比较；这个字段保留引擎的原生值，而后者不可跨引擎比较。 |
 
@@ -233,11 +234,14 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 - `dtype` 与 `device` 在引擎加载前都是 `unloaded`。引擎拿到哪个设备取决于这台机器，而加载前
   要回答就得先去探测它——所以 `unloaded` 是诚实的值，不是"先随便填一个"的占位符。
 - 这里的 `max_question_tokens` 与 `max_sequence_tokens` 是 Laya 为"没有声明上限的 checkpoint"
-  准备的兜底值（`src/decis/engines/laya.py` 的 `DEFAULT_HEAD_MAX_LEN` / `DEFAULT_MAX_LEN`）——
+  准备的后备上限（`src/decis/engines/laya.py` 的 `DEFAULT_HEAD_MAX_LEN` / `DEFAULT_MAX_LEN`）——
   尚未加载的引擎报的就是它们。加载完成后这一项会被换成 checkpoint 自己声明的上限，所以请等
   `/readyz` 变绿之后再读这一行。
-- `languages` 是 checkpoint 声明的语言覆盖范围。`aliases` 是响应里就有的字段，但今天出厂的
-  引擎都报空列表；服务端真正会应答的名字由 `uv run decis models` 打印。
+- `languages` 是每个引擎里硬编码的字符串，不是 checkpoint 声明的语言覆盖范围
+  （`src/decis/engines/laya.py`、`kev.py`、`jeff.py`）。`aliases` 是响应里就有的字段：两个
+  Jeff 引擎会填它——`jeff-qwen3.5-0.8b` 是 `jeff`、`jeff-qwen`、`jeff-qwen3.5`，
+  `jeff-gemma4-e2b` 是 `jeff-gemma`、`jeff-gemma4`；而三个 `laya*` 引擎和 `kev-0.8b` 报空
+  列表。服务端真正会应答的名字由 `uv run decis models` 打印。
 - 额外字段只允许出现在 `decis` 命名空间里，容量信息放在那里而不是顶层，就是这个原因。
 - `max_state_tokens: 0` 表示只有序列上限这一条。`kev-0.8b` 会设置它（384），因为它把 `state`
   单独设了上限，与 `state + question` 分开。
@@ -248,7 +252,7 @@ curl -s localhost:8000/v1/models -H 'authorization: Bearer local'
 
 ```jsonc
 // GET /healthz -> 进程一起来就 200，加载期间也一样
-{"status": "ok", "version": "0.3.2"}
+{"status": "ok", "version": "0.4.0"}
 
 // GET /readyz -> 引擎能作答后 200
 {"status": "ready", "engine": "laya-multilingual"}
@@ -295,7 +299,7 @@ request id 头仍然会带上。
 | **403** | `authentication_error` | 没有凭证，或 scheme 不是 `Bearer`。 |
 | **404** | —（`detail` 是字符串） | 路径不存在，由路由答复。 |
 | **405** | —（`detail` 是字符串） | 路径存在但方法不对，由路由答复。 |
-| **413** | `request_too_large` | 请求体超过 `DECIS_MAX_REQUEST_BYTES`（默认 2 MiB）。 |
+| **413** | `request_too_large` | 声明的 `Content-Length` 超过 `DECIS_MAX_REQUEST_BYTES`（默认 2 MiB）。只有当客户端发送数字形式的 `Content-Length` 时才会检查这个上限（`src/decis/app.py`，在读取请求体之前），所以分块传输的请求体不会按它计量。 |
 | **422** | —（`detail` 是列表） | JSON 形状不合法，或 Decis 无法满足的请求：选项过多、问题过长、`state` 超出引擎预算、`criteria` 为空、`model` 未知。 |
 | **429** | `rate_limit_error` | 等待引擎超过了 `DECIS_REQUEST_TIMEOUT_MS`。会带 `retry-after-ms`。已经开始的前向无法中断，所以这只覆盖排队——没有单独的 504。 |
 | **500** | `engine_error` | 引擎抛异常。消息里给出引擎名和异常；request id 在响应头和日志里。 |

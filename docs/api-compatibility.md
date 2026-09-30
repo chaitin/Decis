@@ -255,7 +255,7 @@ Decis 必须照此实现。只返回 401（很多 API 的做法）会让依赖�
 | `engine_version` | 引擎版本 | 便于把一条答案追溯回具体的构建 |
 | `device` / `dtype` | 如 `cpu` / `float32` | 复现性能与数值差异的必要信息 |
 | `latency_ms` | 本次推理耗时（毫秒） | 服务端自己测的，比客户端往返更干净 |
-| `batch_size` | 本次实际一起算的问题数 | **这是批处理真的发生了的证据**。`design-review.md §2-D1` 的教训是：无法观测的批处理等于没有批处理 |
+| `batch_size` | 本次请求一起提交的问题数（`service.py` 取 `len(items)`） | 它说明一个请求带了多少个问题，**但"几次前向"由引擎决定**：Laya 把它们放进同一次前向（`collate_items` 展平多组），两个 Jeff 引擎内部按固定 8 个一块分批。`design-review.md §2-D1` 的教训是：无法观测的批处理等于没有批处理 |
 | `requested_model` | 仅当客户端点了非本服务器的模型名（如 `jev-latest`）时出现，原样回报客户端请求的字符串 | 替换必须可见 |
 | `native_confidence` | 引擎自己的标定置信度，**按 question id 键控的字典**（`{"q1": 0.63, …}`）；引擎不提供时为 `null` | `noul` answer 按契约没有 confidence，这是唯一能拿到 `noul` 不确定性的地方 |
 

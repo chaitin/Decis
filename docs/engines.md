@@ -24,14 +24,15 @@ the public API is unchanged, and `render.py` still owns which fields a question 
 | `laya-multilingual` | mmBERT-base | 322M | 647 MiB | `laya` | 100+ languages, the default engine |
 | `laya` | ModernBERT-large | 421M | 807 MiB | `laya` | The English checkpoint; no accuracy benchmark is checked in |
 | `laya-typed-decisions` | ModernBERT-large | 421M | 807 MiB | `laya` | The typed-decisions checkpoint from the same repository |
-| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.69 GiB | `kev` | Prefill-only, no text generation; wants a GPU |
+| `kev-0.8b` | Qwen3.5-0.8B + LoRA + pointer head | 0.8B | 1.66 GiB | `kev` | Prefill-only, no text generation; wants a GPU |
 | `jeff-qwen3.5-0.8b` | Qwen3.5-0.8B, full fine-tune + readout head | 0.85B | 1.61 GiB | `jeff` | Prefill-only; `jeff`, `jeff-qwen` and `jeff-qwen3.5` are aliases |
 | `jeff-gemma4-e2b` | Gemma 4 E2B, full fine-tune + readout head | 4.63B | 8.65 GiB | `jeff` | Prefill-only; trained on 26 options; the largest image here |
 
 Neither Jeff parameter count is the checkpoint's name: the first is 852,985,920 and the
 second 4,628,569,379, both from the Hub's own `safetensors.parameters` block rather than from
 `0.8B` / `E2B`. The weight figures are the Hub's file listing restricted to the files an
-engine needs.
+engine needs: for `kev-0.8b` that is the three adapter files (~13 MB) plus the Qwen3.5 base
+it resolves through (1.65 GiB), not the adapter repository's full 43 MiB listing.
 
 ```bash
 uv run decis models     # what is registered, and what this machine can actually run
@@ -63,8 +64,8 @@ of naming a module that the extra would never install (`docs/design-review.md §
 ## Capacity
 
 Each engine reports its own limits, and the only place they are published is `GET /v1/models`
-(under the `decis` namespace). `decis models` reports whether an engine can run here, not how
-much it can take.
+(under the `decis` namespace). `decis models` reports whether an engine can run here, not what
+its token and option limits are.
 
 | Engine | `max_options` | `max_question_tokens` | `max_sequence_tokens` | `max_state_tokens` |
 |---|---|---|---|---|
@@ -76,9 +77,10 @@ much it can take.
 The Laya limits come from the checkpoint's own `config`, so they are correct for the model
 you loaded rather than a constant. The fallbacks apply before weights are present. The Jeff
 `max_options` values are the training ceilings recorded in each checkpoint's
-`decision_config.json`, read again at load time; both readout heads have 255 rows, so the
-option *vocabulary* is never the binding limit. 8192 is the vendored serving code's own
-sequence window, and it applies to `state + one question` together.
+`decision_config.json`, read again at load time; both readout heads have 255 rows, so how many
+options an engine accepts is the checkpoint's declared `max_options`, not a limit of the head.
+8192 is the vendored serving code's own sequence window, and it applies to `state + one
+question` together.
 
 A request that exceeds a limit is rejected with **422** and a message naming the measured
 number and the limit. Decis never truncates an over-long input to make it fit: upstream does
@@ -108,8 +110,9 @@ placeholder Kubernetes request/limit that these numbers exist to replace.
 ## Adding an engine
 
 The work is one module plus one registry line. If an engine needs
-[`render.py`](../src/decis/render.py) or [`answers.py`](../src/decis/answers.py) changed,
-the abstraction is wrong — that is the test the second engine was added to pass.
+[`render.py`](../src/decis/render.py) or [`answers.py`](../src/decis/answers.py) changed to fit
+in, the engine interface does not accommodate it: adding an engine should not mean editing the
+normalisation layer.
 
 1. Implement `DecisionEngine` in `src/decis/engines/<name>.py`: `info()`, `load()`,
    `predict()`, `close()`, plus `weights()` and `measure()`.
@@ -128,16 +131,13 @@ the abstraction is wrong — that is the test the second engine was added to pas
 
 ## dtype and device
 
-`DECIS_DEVICE` selects `cpu`, `cuda`, `mps`, `xpu` or `npu`; unset takes the first
-accelerator `torch` reports, in the order `cuda`, `xpu`, `npu`, `mps`, and otherwise
-`cpu` (`src/decis/engines/devices.py`). `kev-0.8b` and both Jeff engines ask for that
-choice; Laya leaves the unset case to its own `Agent`, whose order is CUDA, then Metal,
-then CPU.
-`DECIS_DTYPE` forces a precision for **`kev-0.8b` only** — it is read by the engines that
-consult `registry.DTYPE_DEFAULTS`, and Laya decides its own precision through its `Agent`
-while both Jeff loaders decide theirs internally. Setting it on a Laya or Jeff engine has
-no effect. Its use is re-measuring on your own hardware.
-Without it, the dtype comes from the engine and device:
+How `DECIS_DEVICE` resolves and which engines `DECIS_DTYPE` reaches are in
+[Configuration](configuration.md#compute); the measured cost of the wrong dtype is in
+[Performance](performance.md#dtype-per-engine-and-device). What follows is per engine.
+
+`kev-0.8b` and both Jeff engines ask for the device that resolution picks; Laya leaves the
+unset case to its own `Agent`, whose order is CUDA, then Metal, then CPU. Without an override,
+the dtype comes from the engine and device:
 
 | Engine | cpu | cuda | mps |
 |---|---|---|---|
@@ -154,10 +154,6 @@ The Jeff rows are the vendored loaders' own rule (`bfloat16` on `cuda` and `mps`
 `float32` everywhere else), which is why `xpu` and `npu` land on `fp32` rather than on a
 Decis default. The Qwen loader also turns cuDNN's SDPA backend off process-wide, as
 upstream does; one engine per process is the deployment this service targets.
-
-`kev-0.8b` on CPU in `bf16` is **83× slower** than `fp32`. Forcing it logs a warning rather
-than refusing to start. The measurement is in
-[Performance](performance.md#dtype-per-engine-and-device).
 
 ## Weights
 

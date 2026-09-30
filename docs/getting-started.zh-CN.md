@@ -30,8 +30,8 @@ uv run decis serve --host 127.0.0.1 --port 8000
 ```
 
 引擎依赖都在 extras 里，`--all-extras` 会把所有引擎和开发工具一起装上。只服务一个引擎只需要
-它的 extra（`uv sync --extra dev --extra laya`）；裸 `uv sync` 一个都不点名，而且会删掉上一次
-sync 装上的引擎依赖。见[引擎](engines.zh-CN.md#安装引擎)。
+它的 extra（`uv sync --extra dev --extra laya`）；不带任何 extra 的 `uv sync` 一个都不点名，而且会删掉
+上一次 sync 装上的引擎依赖。见[引擎](engines.zh-CN.md#安装引擎)。
 
 token 填什么值都可以，但下面的示例发的都是 `local`，所以第一次运行就用它。
 
@@ -51,7 +51,7 @@ token；第一次运行就该用它。要在网络上暴露服务，先设 `DECI
 说明引擎**还没就绪**：
 
 ```
-decis 0.3.2
+decis 0.4.0
   engine    laya-multilingual
   weights   convaiinnovations/laya/multilingual@1c5edc17a7acd8701df6fc341c0d179f1c62c982
             read from the Hugging Face cache; 646.8 MiB on a cold cache
@@ -93,7 +93,7 @@ uv run decis serve --host 127.0.0.1 --preload
 
 ## 发送一个请求
 
-Decis 的意义在于：官方 SDK 察觉不到自己在跟别的东西说话。要改的只有 `base_url`：
+Decis 的意义在于：官方 SDK 除了 `base_url` 之外不需要任何改动：
 
 ```python
 from typesafe_sdk import Choice, Noul, TypeSafeClient
@@ -167,9 +167,10 @@ uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数
 ```
 
 `decis models` 对每个引擎回答一个问题——本机能不能跑它——答案是 `ready`、`deps missing`、
-`needs weights` 或 `unavailable`，并给出补救办法，例如 `uv sync --extra laya` 或
-`decis download --engine laya-multilingual`。所以“依赖缺失”和“权重缺失”是两个不同的答案，
-两者都不会被报成引擎坏了。引擎能接受的容量上限不在这里打印，而在
+`needs weights`、`no weights`、`needs Python 3.12+` 或 `unavailable`，并给出补救办法，例如
+`uv sync --extra laya` 或 `decis download --engine laya-multilingual`。所以缺依赖、权重从没下载过、
+指到的目录不是合法 checkpoint、解释器低于某个引擎的下限，都是各不相同的答案，哪一个都不会被报成
+引擎坏了。引擎能接受的容量上限不在这里打印，而在
 [`GET /v1/models`](api.zh-CN.md#get-v1models)。
 
 ## 下一步

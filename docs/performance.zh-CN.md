@@ -50,9 +50,9 @@ Decis 跑的是决策模型——每个请求只有一次前向，不生成文�
 **GPU** 上。以前不管这台机器有什么，它都加载到 CPU。在 Apple 芯片上比较这个 release 与更早的版本时，
 先读设备：已经不是同一个设备了。
 
-两条 CPU 路径也不等价。PyTorch 的 macOS wheel 能用到 Apple 自己的矩阵内核，`linux-aarch64` 的
-wheel 用不到，所以同一段前向在容器里比在宿主机上可测量地更慢——即使两侧把 `DECIS_TORCH_THREADS`
-设成同一个值，这个差距依然在。这一部分是平台的性质，不是容器额外加上的开销。
+两条 CPU 路径也不等价，不过 Decis 并没有量过这个差距：PyTorch 的 macOS wheel 能用到 Apple 自己的
+矩阵内核，`linux-aarch64` 的 wheel 用不到。[`benchmarks/results/`](../benchmarks/results/) 里没有
+签入容器与宿主机的对比数据，所以请把它当作"要同条件比较"的理由，而不是一条实测差距。
 
 想公平比较就固定设备，并从任意答案的 `decis` 命名空间、或引擎启动时那行
 `loaded ... device=... threads=...` 日志里读回真正的设备：
@@ -72,7 +72,7 @@ DECIS_DEVICE=cpu uv run decis serve --host 127.0.0.1   # 与容器同一个设�
 ## 每种引擎、每种设备的 dtype
 
 `kev-0.8b` 的 Qwen3.5 骨干要用 `flash-linear-attention` 和 `causal_conv1d`，而这两个都依赖
-Triton/CUDA。在 CPU 上它比 Laya 慢一个数量级，它的 `bf16` 路径还要更差：
+Triton/CUDA。在 CPU 上 dtype 的影响很大——下面的表就是实测：
 
 <!-- DTYPE:START -->
 
@@ -86,7 +86,7 @@ Triton/CUDA。在 CPU 上它比 Laya 慢一个数量级，它的 `bf16` 路径�
 <!-- DTYPE:END -->
 
 所以 Decis 按引擎*和*设备分别选 dtype（[`engines/registry.py`](../src/decis/engines/registry.py)），
-对已知很糟的组合给出警告，而不是悄悄选它。
+对已知性能很差的组合给出警告，而不是悄悄选它。
 
 ## 跨请求批处理：测过了，结论是否定的
 

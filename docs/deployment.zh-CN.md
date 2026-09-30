@@ -15,16 +15,17 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 | tag | 内容 | 压缩后体积 |
 |---|---|---|
 | `chaitin/decis:laya-multilingual`（= `:latest`） | 默认引擎及其 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
-| `chaitin/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已烤进镜像 | 6.0 GB / 6.2 GB |
-| `chaitin/decis:jeff-qwen3.5-0.8b` | Qwen3.5-0.8B 的 Jeff 微调，已烤进镜像（1.61 GiB 权重） | 5.9 GB / 6.0 GB |
-| `chaitin/decis:jeff-gemma4-e2b` | Gemma 4 E2B 的 Jeff 微调，已烤进镜像（8.65 GiB 权重） | 17.7 GB / 17.9 GB |
+| `chaitin/decis:kev-0.8b` | kev 适配器及其 Qwen3.5 基座，已内置在镜像里 | 6.0 GB / 6.2 GB |
+| `chaitin/decis:jeff-qwen3.5-0.8b` | Qwen3.5-0.8B 的 Jeff 微调，已内置在镜像里（1.61 GiB 权重） | 5.9 GB / 6.0 GB |
+| `chaitin/decis:jeff-gemma4-e2b` | Gemma 4 E2B 的 Jeff 微调，已内置在镜像里（8.65 GiB 权重） | 17.7 GB / 17.9 GB |
 
 那四个 Jeff 数字是 2026-09-30 工作流第一次构建这两个 tag 后，从已发布 tag 的 registry manifest
-里读出来的。Gemma 那个如预期是这里最大的镜像：在同一个基座之上多烤进 8.65 GiB 权重。**未实测**：
-这两个 tag 的容器从来没起过，所以它们的冷启动与容器内加载都还是未知。两者也都会发布下面说的不带
-权重的 `jeff-*-runtime` 变体；如果你更想挂卷，走那条路——但那个变体也没被拉下来跑过。
+里读出来的。Gemma 那个如预期是这里最大的镜像：它的 checkpoint 本身就是 8.65 GiB 权重。每个 Jeff
+引擎都是全权重微调，没有单独的基座仓库，所以一个目录里就是全部。**未实测**：这两个 tag 的容器从来
+没起过，所以它们的冷启动与容器内加载都还是未知。两者也都会发布下面说的不带权重的 `jeff-*-runtime`
+变体，但那个变体也没被拉下来跑过。
 
-`chaitin/decis:playground` 是同一仓库里的第三个镜像，由同一个工作流构建并推送：三个网页小游戏，
+`chaitin/decis:playground` 是同一仓库里唯一的非引擎镜像，由同一个工作流构建并推送：三个网页小游戏，
 以及挡在它们前面的那个代理——没有模型权重，Dockerfile 里也没有 `RUN`。`make build-playground`
 会在几秒内从当前 checkout 构建出 `decis-local:playground`；源码目录里的 Compose 覆盖层用的就是
 这个名字，它绝不会复用发布用的 tag，所以本地构建不会把它覆盖掉。
@@ -37,12 +38,14 @@ Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而�
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingual
 ```
 
-`laya-multilingual` 是唯一同时拿到裸 `latest` 的 tag，所以 `docker pull chaitin/decis` 拿到的
-就是默认引擎。每个 tag 都是覆盖 `amd64` 与 `arm64` 的多架构 manifest。注册的 `laya`（英文）
-与 `laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
+`laya-multilingual` 是唯一还带一个不带后缀的 `latest` 的引擎 tag，所以 `docker pull chaitin/decis`
+拿到的就是默认引擎。用户会拉的那些 tag——每个引擎 tag 和 `playground`——都是覆盖 `amd64` 与
+`arm64` 的多架构 manifest。工作流还会把单架构的中间 tag（`<tag>-<arch>`、
+`<tag>-sha-<short>-<arch>`）推到同一个仓库，那些不是多架构的。注册的 `laya`（英文）与
+`laya-typed-decisions` checkpoint 没有镜像；这两个要在源码目录里跑。
 
 release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会为矩阵里的每个引擎生成
-`<engine>-v<version>`——当前 release 是 `laya-multilingual-v0.3.2` 与 `kev-0.8b-v0.3.2`——以及
+`<engine>-v<version>`——当前 release 是 `laya-multilingual-v0.4.0` 与 `kev-0.8b-v0.4.0`——以及
 下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
 对应的 GitHub Release。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，所以要钉住的
 是带版本的 tag。
@@ -56,7 +59,7 @@ release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` 
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaitin/decis:laya-multilingual
 ```
 
-> **不要把空目录挂到 `/models`。** 挂在那里会盖住烤进镜像的权重——命名卷只会被镜像内容初始化
+> **不要把空目录挂到 `/models`。** 挂在那里会盖住镜像里已有的权重——命名卷只会被镜像内容初始化
 > 一次，之后留自己的一份副本，而绑定挂载会直接替换掉整个目录。容器随后会悄悄下载你以为已经
 > 有了的东西。`docker-compose.yml` 因此在那里不挂任何东西。
 
@@ -67,17 +70,16 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaiti
 然后运行：
 
 ```bash
-docker pull chaitin/decis:laya-multilingual-runtime-v0.3.2
-docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.2 \
+docker pull chaitin/decis:laya-multilingual-runtime-v0.4.0
+docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.4.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  chaitin/decis:laya-multilingual-runtime-v0.3.2
+  chaitin/decis:laya-multilingual-runtime-v0.4.0
 ```
 
 要在离线环境服务，就得先把卷填好：卷为空时 `paths.resolve` 会退回 Hub，容器在加载时下载权重。
 这个 runtime 镜像确实装了引擎的依赖，所以那次下载能成功——它只是需要网络，而气隙部署没有网络。
-`v0.3.2` 是当前版本，而钉住版本正是这个变体存在的意义——引擎名那些 tag 会随每次推送到 `master`
-移动。
+`v0.4.0` 是当前版本，要钉住的就是带版本的 tag（见上面的 tag 规则）。
 
 ## Docker Compose
 
@@ -93,16 +95,13 @@ docker compose up -d laya-multilingual              # 只起引擎，不起 play
 
 `--wait` 在引擎真的能作答时才返回：Compose 层的探针打 `/readyz`，所以它会一直等到 CPU 冷启动
 结束（见[性能](performance.zh-CN.md)里的延迟表）。镜像自带的 `HEALTHCHECK` 仍然留在 `/healthz`，
-因为存活探针不能在引擎加载期间失败。如果你不想用 `--wait`：
-
-```bash
-until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
-```
+因为存活探针不能在引擎加载期间失败。如果你不想用 `--wait`，轮询的那条命令在
+[快速开始](getting-started.zh-CN.md#等待就绪)里。
 
 按名字指定服务只会起那一个服务。引擎 profile 里还包含 playground，所以 `docker compose up`
 会两个都起；不想要游戏时，用上面最后一条命令按名字选引擎。
 
-`-f docker-compose.yml` 不是装饰。在源码目录里，Compose 还会按文件名自动加载
+`-f docker-compose.yml` 不能省，原因如下：在源码目录里，Compose 还会按文件名自动加载
 `docker-compose.override.yml`，并用你工作区里的源码把同样的服务构建成 `decis-local:*`。想对着
 自己的改动开发就别加 `-f`；部署只拷 `docker-compose.yml` 一个文件。
 
@@ -110,19 +109,19 @@ until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
 
 ## `make` 快捷方式
 
-`make` 封装的是 Compose 文件，所以没有要重敲的东西：
+`make` 封装的是 Compose 文件，所以你不必重敲那些命令：
 
 ```bash
 make help                    # 目标清单，以及本目录解析到的引擎
 
 make up                      # 用本仓库源码跑 decis-local:*；缺什么才构建什么
-make up-local                # 同上，但先重建：引擎那一层要重新烤权重
+make up-local                # 同上，但先重建：重新构建会把引擎的权重重新写进镜像
 make down                    # 停止；镜像保留
 
 make build                   # 当前 profile 要跑的每个镜像
 make build-engine ENGINE=kev-0.8b
 make build-engines           # 所有引擎镜像，不论当前是哪个 profile
-make build-playground        # 几秒：那个 Dockerfile 没有 RUN
+make build-playground        # 几秒，因为那个镜像不安装任何东西
 make up-engine    ENGINE=kev-0.8b
 make up-playground           # 只起游戏页面，旁边接一个跑在任何地方的引擎
 make restart                 # 重启正在运行的东西
@@ -150,7 +149,7 @@ docker build -f docker/Dockerfile \
 |---|---|
 | `DECIS_EXTRAS` | 要安装哪个引擎的 extra。不设置会得到纯 API 镜像：能启动，`/healthz` 与 `/v1/models` 有响应，但 `/readyz` 一直是 503。 |
 | `DECIS_ENGINE` | 镜像被配置为服务哪个引擎。 |
-| `DECIS_PREDOWNLOAD` | 要把哪个引擎的权重烤进镜像。不设置会得到不带权重的变体。 |
+| `DECIS_PREDOWNLOAD` | 要把哪个引擎的权重写进镜像。不设置会得到不带权重的变体。 |
 
 在需要代理的网络上，还要把代理传给**构建**。`env_file` 只作用于容器，而 Docker 既不转发
 `.env`，也不把 shell 里的 `HTTP_PROXY` 转发进 `RUN`——于是权重下载会以
@@ -183,7 +182,8 @@ terminationGracePeriodSeconds: 30   # > DECIS_SHUTDOWN_GRACE_MS
 ```
 
 - `/healthz` 表示“进程还活着”。只把它用于存活探针。
-- `/readyz` 表示“这个实例能作答”。把存活探针指向它，会让每次冷启动都变成重启循环。
+- `/readyz` 表示“这个实例能作答”。不要把存活探针指向它：冷启动会被看成崩溃循环。完整契约见
+  [快速开始](getting-started.zh-CN.md#等待就绪)。
 - 加载失败会返回 503 `{"status":"failed"}`，且不带 `retry-after`——这个状态在进程被替换前是
   终态，所以要对它告警，而不是重试。
 - 上面的内存值是占位示例。引擎加载后是常驻的，峰值是权重文件的数倍，所以要按

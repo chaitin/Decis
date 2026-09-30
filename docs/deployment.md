@@ -16,23 +16,23 @@ All engines share one Docker Hub repository; the engine is the tag:
 | Tag | What it carries | Compressed size |
 |---|---|---|
 | `chaitin/decis:laya-multilingual` (= `:latest`) | The default engine and its 647 MiB checkpoint | 4.4 GB amd64 / 4.5 GB arm64 |
-| `chaitin/decis:kev-0.8b` | The kev adapter and its Qwen3.5 base, baked in | 6.0 GB / 6.2 GB |
-| `chaitin/decis:jeff-qwen3.5-0.8b` | The Qwen3.5-0.8B Jeff fine-tune, baked in (1.61 GiB of weights) | 5.9 GB / 6.0 GB |
-| `chaitin/decis:jeff-gemma4-e2b` | The Gemma 4 E2B Jeff fine-tune, baked in (8.65 GiB of weights) | 17.7 GB / 17.9 GB |
+| `chaitin/decis:kev-0.8b` | The kev adapter and its Qwen3.5 base, both in the image | 6.0 GB / 6.2 GB |
+| `chaitin/decis:jeff-qwen3.5-0.8b` | The Qwen3.5-0.8B Jeff fine-tune, in the image (1.61 GiB of weights) | 5.9 GB / 6.0 GB |
+| `chaitin/decis:jeff-gemma4-e2b` | The Gemma 4 E2B Jeff fine-tune, in the image (8.65 GiB of weights) | 17.7 GB / 17.9 GB |
 
 The four Jeff numbers were read from the registry manifests of the published tags on
 2026-09-30, when the workflow built them for the first time. Gemma is the largest image here by
-a wide margin, as expected: 8.65 GiB of weights on top of the same base. **Not measured**: a
-container built from either tag has never been started, so their cold start and in-container load
-are unknown. Both also publish the weightless `jeff-*-runtime` variant described below, and the
-weightless path is the one to use if you would rather mount a volume, but that variant has not
-been pulled and run either.
+a wide margin, as expected: its checkpoint alone is 8.65 GiB of weights. Each Jeff engine is a
+full-weight fine-tune with no separate base repository, so one directory holds everything.
+**Not measured**: a container built from either tag has never been started, so their cold start
+and in-container load are unknown. Both also publish the weightless `jeff-*-runtime` variant
+described below, but that variant has not been pulled and run either.
 
-`chaitin/decis:playground` is the third image in the same repository, built and pushed by the
-same workflow: three browser games and the proxy that fronts them, with no model weights and
-no `RUN` in its Dockerfile. `make build-playground` builds `decis-local:playground` from this
-checkout in seconds; that is what the source tree's Compose override uses, and it never reuses
-the published tag, so a local build cannot overwrite it.
+`chaitin/decis:playground` is the one non-engine image in the same repository, built and pushed
+by the same workflow: three browser games and the proxy that fronts them, with no model weights
+and no `RUN` in its Dockerfile. `make build-playground` builds `decis-local:playground` from
+this checkout in seconds; that is what the source tree's Compose override uses, and it never
+reuses the published tag, so a local build cannot overwrite it.
 
 Sizes are the compressed download size, summed from the registry manifests of the tags
 above. They are not part of `benchmarks/results/` and `report.py` does not regenerate them,
@@ -43,13 +43,15 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 ```
 
 `laya-multilingual` is the only tag that also gets a bare `latest`, so `docker pull
-chaitin/decis` gives you the default engine. Every tag is a multi-arch manifest covering
-`amd64` and `arm64`. The registered `laya` (English) and `laya-typed-decisions` checkpoints
-have no image; run those from a source checkout.
+chaitin/decis` gives you the default engine. The tags a user pulls — every engine tag and
+`playground` — are multi-arch manifests covering `amd64` and `arm64`. The workflow also pushes
+single-architecture intermediate tags (`<tag>-<arch>`, `<tag>-sha-<short>-<arch>`) to the same
+repository, and those are not multi-arch. The registered `laya` (English) and
+`laya-typed-decisions` checkpoints have no image; run those from a source checkout.
 
 A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
-`<engine>-v<version>` for every engine in the matrix — `laya-multilingual-v0.3.2` and
-`kev-0.8b-v0.3.2` for the current release — plus the weightless `-runtime-v<version>`
+`<engine>-v<version>` for every engine in the matrix — `laya-multilingual-v0.4.0` and
+`kev-0.8b-v0.4.0` for the current release — plus the weightless `-runtime-v<version>`
 variants described below, and the GitHub Release for that tag. The engine-named tags are the
 opposite — they keep moving with every push to `master`, so a versioned tag is the one to pin.
 
@@ -63,31 +65,31 @@ holds `<engine-id>/`:
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaitin/decis:laya-multilingual
 ```
 
-> **Do not mount an empty directory at `/models`.** A mount there hides the baked weights —
-> a named volume is seeded from the image once and then keeps its own copy, and a bind mount
-> replaces the directory outright. The container then quietly downloads what you thought it
-> already had. `docker-compose.yml` mounts nothing there for this reason.
+> **Do not mount an empty directory at `/models`.** A mount there hides the weights already in
+> the image — a named volume is initialised from the image once and then keeps its own copy, and
+> a bind mount replaces the directory outright. The container then quietly downloads what you
+> thought it already had. `docker-compose.yml` mounts nothing there for this reason.
 
 ### Weightless images
 
 For a deployment that keeps one copy of the weights on a shared volume, or must keep every
 node's image small, releases also publish a weightless variant named
-`<engine>-runtime-v<version>` (3.2 GB amd64 / 3.3 GB arm64). It has no weights baked in, so
-fill the volume once and mount it from then on:
+`<engine>-runtime-v<version>` (3.2 GB amd64 / 3.3 GB arm64). It carries no weights, so fill the
+volume once and mount it from then on:
 
 ```bash
-docker pull chaitin/decis:laya-multilingual-runtime-v0.3.2
-docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.3.2 \
+docker pull chaitin/decis:laya-multilingual-runtime-v0.4.0
+docker run --rm -v decis-models:/models chaitin/decis:laya-multilingual-runtime-v0.4.0 \
   decis download --engine laya-multilingual
 docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v decis-models:/models \
-  chaitin/decis:laya-multilingual-runtime-v0.3.2
+  chaitin/decis:laya-multilingual-runtime-v0.4.0
 ```
 
 Fill the volume before you serve offline: with an empty volume, `paths.resolve` falls back to
 the Hub and the container downloads the weights at load time. The runtime image does ship the
 engine's dependencies, so that download works — it just needs the network, which an air-gapped
-deployment does not have. `v0.3.2` is the current version, and pinning it is the point of this
-variant — the engine-named tags move with every push to `master`.
+deployment does not have. `v0.4.0` is the current version, and a versioned tag is the one to
+pin (see the tag rule above).
 
 ## Docker Compose
 
@@ -105,17 +107,14 @@ docker compose up -d laya-multilingual              # the engine alone, no playg
 `/readyz`, so it waits out the CPU cold start (see the latency table in
 [Performance](performance.md)). The image's own `HEALTHCHECK` stays on `/healthz`, because a
 liveness probe must not fail while the engine is loading. If you would rather not use
-`--wait`:
-
-```bash
-until curl -fsS localhost:8000/readyz >/dev/null; do sleep 2; done
-```
+`--wait`, the polling one-liner is in
+[Getting started](getting-started.md#wait-for-readiness).
 
 Naming a service starts that service alone. The engine profile also includes the playground,
 so `docker compose up` brings up both; the last command above selects the engine by name when
 you do not want the games.
 
-The `-f docker-compose.yml` is not decoration. Inside a checkout, Compose also loads
+`-f docker-compose.yml` is required here, and here is why: inside a checkout, Compose also loads
 `docker-compose.override.yml` by filename and builds the same services from your working
 tree into `decis-local:*`. Leave `-f` off to develop against your edit; a deployment copies
 `docker-compose.yml` alone.
@@ -125,19 +124,20 @@ memory, which is why the default profile starts only one.
 
 ## `make` shortcuts
 
-`make` wraps the Compose files, so there is nothing to retype:
+`make` wraps the Compose files, so you do not have to repeat those commands:
 
 ```bash
 make help                    # every target, and the engine this checkout resolves to
 
 make up                      # run decis-local:* from this tree; builds only what is missing
-make up-local                # same, but rebuild first: the engine layer re-bakes the weights
+make up-local                # same, but rebuild first: the rebuild writes the engine's
+                             # weights into the image again
 make down                    # stop; the images stay
 
 make build                   # every image the current profile runs
 make build-engine ENGINE=kev-0.8b
 make build-engines           # every engine image, whichever profile is active
-make build-playground        # seconds: that Dockerfile has no RUN
+make build-playground        # seconds, because that image installs nothing
 make up-engine    ENGINE=kev-0.8b
 make up-playground           # the games only, beside an engine already running anywhere
 make restart                 # restart what is running
@@ -166,7 +166,7 @@ docker build -f docker/Dockerfile \
 |---|---|
 | `DECIS_EXTRAS` | Which engine extra to install. Unset produces an API-only image: it starts and answers `/healthz` and `/v1/models`, but `/readyz` stays 503. |
 | `DECIS_ENGINE` | Which engine the image is configured to serve. |
-| `DECIS_PREDOWNLOAD` | Which engine's weights to bake in. Unset produces the weightless variant. |
+| `DECIS_PREDOWNLOAD` | Which engine's weights to write into the image. Unset produces the weightless variant. |
 
 On a network that needs a proxy, pass it to the **build** as well. `env_file` only reaches
 containers, and Docker forwards neither `.env` nor your shell's `HTTP_PROXY` into a `RUN` —
@@ -200,8 +200,9 @@ terminationGracePeriodSeconds: 30   # > DECIS_SHUTDOWN_GRACE_MS
 ```
 
 - `/healthz` means "the process is up". Use it for liveness only.
-- `/readyz` means "this instance can answer". Pointing liveness at it turns every cold start
-  into a restart loop.
+- `/readyz` means "this instance can answer". Do not point liveness at it: a cold start would
+  look like a crash loop. The full contract is in
+  [Getting started](getting-started.md#wait-for-readiness).
 - A load that failed returns 503 `{"status":"failed"}` with no `retry-after` — that state is
   terminal until the process is replaced, so alert on it rather than retrying.
 - The memory values above are placeholders. The engine is resident after load and its peak is

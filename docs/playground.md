@@ -69,12 +69,13 @@ the service name at all, so a dependency on a stopped engine would fail to start
 
 ## Interface
 
-The five pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css)),
-one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)) and one shell
-([`playground/web/game.js`](../playground/web/game.js)). A page carries its own strings, its own
-board and its own options; the manual/AI switch, the inference panel, the console for the last
-call, the engine chip and the keyboard shortcuts come from the shell, so no page restates the
-palette or re-implements a mode control. Three of the five pages are games; the other two are
+The five pages share one stylesheet ([`playground/web/theme.css`](../playground/web/theme.css))
+and one i18n mechanism ([`playground/web/i18n.js`](../playground/web/i18n.js)); the three game
+pages additionally share one shell ([`playground/web/game.js`](../playground/web/game.js)). A page
+carries its own strings, its own board and its own options; on the games the manual/AI switch, the
+inference panel, the console for the last call, the engine chip and the keyboard shortcuts come
+from that shell, so no game page restates the palette or re-implements a mode control. Three of
+the five pages are games; the other two are
 the index and `/api` ([`playground/web/api.html`](../playground/web/api.html)), the human-facing
 reference for the call they make — the endpoint, the three primitives, a real request/response
 pair captured from the snake page, a box that sends one of your own, the parameters, the limits
@@ -96,7 +97,7 @@ One switch (`M`) decides who plays: you, or the model. `enter` starts and pauses
 and `R` resets. In manual mode snake and tetris take the arrow keys — `space` is the hard drop in
 tetris — and dino takes `space` or the up arrow to jump and the down arrow to duck.
 
-The inference panel is fed only by the API's own `usage` and the browser's clock. Latency and
+The inference panel's numbers come only from the API's own `usage` and the browser's clock. Latency and
 throughput are end-to-end, because the contract has no server-side timing; p50 and p95 describe
 the last 200 calls, and a page that has not called anything yet shows dashes rather than a
 plausible-looking number. The console prints the body of the last `/v1/systemone` call as it went
@@ -117,23 +118,22 @@ be localised, but the value on the wire is not.
 
 ## The placement shortlist
 
-**Five placements, not six.** Laya charges a whole question against its `head_max_len`, so the
-option list has to fit the smallest question budget Decis supports (192 tokens, the fallback when
-a checkpoint declares no limits). Five is the configuration every number on the page was measured
-at, and the criteria rewrite below left that budget with room to spare rather than spending it.
-Every rotation is represented in the shortlist, so the model chooses a rotation as well as a
-column.
+**A short list, not every legal placement.** Laya charges a whole question against its
+`head_max_len`, so the option list has to fit the smallest question budget Decis supports — the
+fallback Laya declares for a checkpoint that names no limits (`src/decis/engines/laya.py`). The
+list is deliberately short, and the criteria rewrite below left that budget with room to spare
+rather than spending it. Every rotation is represented in the shortlist, so the model chooses a
+rotation as well as a column.
 
 **The criteria are words, not numbers.** An option reads like `clears two lines, no new holes,
 keeps the stack very low.`, and it is named `option_a`..`option_e` rather than by its rotation and
 column. Both halves are measurements against a running engine rather than style: with the numeric
 wording this page used to send (`cols 1-3: 0 clear, 0 new holes, height 2, flat`) the model
-answered by taking whichever placement was listed *last*, and over 60 real boards it picked the
-page's own best placement 0 and 1 times out of 60 across two seeds; with the wording above it
-picks that placement 87% and 93% of the time and clears 21-23 lines per 60 pieces, which is what
-the page's own planner clears. The
-rotation and column are still what the inference panel shows, as `r2 · c4`. The full before/after
-measurements sit in the comment above `describePlacement` in
+answered by taking whichever placement was listed *last*; with the wording above it picks the
+page's own best placement most of the time and clears about as many lines over a run as the page's
+own planner. The rotation and column are still what the inference panel shows, as `r2 · c4`. The
+option count and the token budget are sized in the comment above `PLACEMENT_SHORTLIST`, and the
+before/after agreement and line counts sit in the comment above `describePlacement`, both in
 [`playground/web/tetris.html`](../playground/web/tetris.html).
 
 ## Credits
@@ -162,8 +162,12 @@ docker run --rm -p 8080:8080 -e DECIS_API_KEY=change-me \
 
 `--add-host` is what makes `host.docker.internal` resolve on Linux; Docker Desktop resolves
 it on its own. `DECIS_PLAYGROUND_UPSTREAM` names one engine to try first (it is still probed,
-not trusted). Without it, the proxy tries both engine container names, `host.docker.internal`
-and `127.0.0.1`; the first that answers `/readyz` with 200 wins.
+not trusted). Without it, the proxy probes a candidate list in order and the first entry that
+answers `/readyz` with 200 wins: all four engine container names, then `host.docker.internal` and
+`127.0.0.1`. That list is
+[`playground/server.py: DEFAULT_CANDIDATES`](../playground/server.py), and
+[`docker-compose.yml`](../docker-compose.yml) sets it explicitly under Compose; set
+`DECIS_PLAYGROUND_CANDIDATES` to replace it.
 
 Or through Compose, beside an engine that is already running anywhere:
 

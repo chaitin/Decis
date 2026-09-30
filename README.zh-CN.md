@@ -17,13 +17,15 @@ Decis 是一个可以自托管的推理服务端，专门跑开源决策模型�
 *决策模型*不生成文本，而是针对有类型的问题返回校准过的概率：只做一次前向，小到可以和应用跑在
 一起。
 
-- **开箱即用。** 三条命令，你就有一个在回答 `/v1/systemone` 的引擎和一个可以上手的 playground。权重烤在镜像里，启动时不需要下载，也没有任何卷要挂。
+- **开箱即用。** 三条命令，你就有一个在回答 `/v1/systemone` 的引擎和一个可以上手的 playground。权重已经包含在镜像里，启动时不需要下载，也没有任何卷要挂。
 - **Jev 风格的 API。** 服务端说的是那个闭源模型同样的契约，官方 `typesafe-sdk` 只需要改 `base_url`。
-- **Laya 与 kev，各自一个镜像。** 每个引擎一个多架构发布镜像，权重自带。
+- **一个引擎一个镜像，引擎 id 就是 tag。** 发布了 `laya-multilingual`、`kev-0.8b`、
+  `jeff-qwen3.5-0.8b` 与 `jeff-gemma4-e2b` 的多架构镜像，权重自带；tag 全表见
+  [部署](docs/deployment.zh-CN.md)。
 - **带三个游戏的 playground。** 贪吃蛇、恐龙、俄罗斯方块，每个决策都真的是一次 `/v1/systemone`
   调用。
 
-> **状态：pre-1.0，当前 `v0.3.2`。** 线格式契约（`v1`）稳定，只增字段；运行中的服务在
+> **状态：pre-1.0，当前 `v0.4.0`。** 线格式契约（`v1`）稳定，只增字段；运行中的服务在
 > `/healthz` 报告自己的版本。
 
 ## 快速开始
@@ -89,9 +91,9 @@ uv run decis download --engine laya-multilingual   # 647 MiB，只需一次
 uv run decis serve --host 127.0.0.1 --port 8000
 ```
 
-引擎依赖都在 extras 里，所以 `--all-extras` 会把两个引擎家族和开发工具一起装上；裸 `uv sync`
-一个都不装，而且会删掉上一次 sync 装上的东西。只装一个引擎就点名它的 extra：
-`uv sync --extra dev --extra kev`。各引擎的 extra 见[引擎](docs/engines.zh-CN.md)。
+引擎依赖都在 extras 里，所以 `--all-extras` 会把三个引擎 extra（`laya`、`kev`、`jeff`）和开发
+工具一起装上；裸 `uv sync` 一个都不装，而且会删掉上一次 sync 装上的东西。只装一个引擎就点名
+它的 extra：`uv sync --extra dev --extra kev`。各引擎的 extra 见[引擎](docs/engines.zh-CN.md)。
 
 就绪语义、裸 `curl` 写法，以及 `decis models` / `decis doctor`，见
 [快速开始](docs/getting-started.zh-CN.md)。

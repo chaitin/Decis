@@ -158,7 +158,13 @@ does nothing rather than failing.
 
 `v<version>` appears in [`SECURITY.md`](SECURITY.md), both READMEs, and
 `docs/deployment.md`; `tests/test_docs.py` fails if any of those literals disagrees with
-`decis.__version__`, so the bump is the one edit that touches several files on purpose.
+`decis.__version__`, so the bump is the one edit that touches several files on purpose. Three
+copies carry the bare number instead: the `/healthz` body in `docs/api.md` and its Chinese
+twin, the startup banner in `docs/getting-started{,.zh-CN}.md`, and `info.version` in
+`docs/schema/openapi.json` — the last one comes from `docs/schema/export.py --write`, not from
+an editor. `pyproject.toml` and `src/decis/__init__.py` are the two that define the version.
+Keep a `## [Unreleased]` heading at the top of `CHANGELOG.md`; the release notes for the version
+you just cut go under `## [<version>] - <date>` below it.
 
 ## Commit and review style
 

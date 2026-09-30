@@ -3,7 +3,7 @@
 ## 1. 这份调查的定位
 
 这是**实现 Decis 之前**的调查报告，调查时间 2026-09-22，回答三个问题：这条路走得通吗、当时的假设对不对、
-最大的坑在哪。**它现在只保留证据本身**：§2 的上游调查、§3 的逐条对照、§4 的实测数据与复现路径、
+最大的问题在哪。**它现在只保留证据本身**：§2 的上游调查、§3 的逐条对照、§4 的实测数据与复现路径、
 §5 的风险登记册。
 
 从这些证据推出的结论已经分别写进 [`design.md`](design.md)（§12.1 按"能对外承诺什么"排的三档账）、
@@ -35,7 +35,7 @@
 | 契约偏差 | `/v1/models` 形状不符；`model` 有默认值；score 上限 255（文档称 10）；响应多 `latency_ms`；`HTTPException(422, str)` 错误体与 SDK 生成模型不符 | 见 [api-compatibility.md §7](api-compatibility.md) |
 | 并发 | **单请求串行**（一个 `threading.Lock`），无跨请求批处理 | `kev/serve.py:33,45` |
 | Docker | **无 Dockerfile，无镜像 CI**，无 ONNX/量化导出 | 全仓 grep |
-| 权重 | adapter 小（0.8b 仓库 ≈113MB），基座大（0.8B bf16 ≈1.6GB） | HF API |
+| 权重 | adapter 小（整个 0.8b 仓库 ≈43 MiB，`decis download` 只取其中 3 个文件 ≈13 MB），基座大（0.8B bf16 ≈1.6GB） | HF API |
 
 **注意一个认知校正**：kev 不是"很小的 transformers 变种"。它是 **0.8B–9B** 的因果 LM 加 adapter。"轻量"只对 0.8B 成立；4B/9B 已经超出这个定位（4B bf16 服务需约 9GB 显存）。
 
@@ -61,7 +61,7 @@
 items = [it for group in batch for it in group]  # 展平多组问题
 ```
 
-即 **Laya 的官方原语天然支持"把多个请求的问题组展平成一个 batch 做一次前向"**。上游 `system_one` 只传了 `[items]`（一组），但底下的 `collate_items` + `model(...)` 可以直接喂多组。这意味着 Decis 的**跨请求批处理在 Laya 上是复用官方原语，不是 hack**，实现量约 50 行。
+即 **Laya 的官方原语天然支持"把多个请求的问题组展平成一个 batch 做一次前向"**。上游 `system_one` 只传了 `[items]`（一组），但底下的 `collate_items` + `model(...)` 可以一次性传入多组。当时据此判断 Decis 的**跨请求批处理在 Laya 上可以复用官方原语，实现量约 50 行**——**后续实测否定了它的收益**（CPU 上不提升吞吐，见 [`design-review.md §4-M5`](design-review.md)），所以这条没有落地。
 
 ### 2.4 laya-mlx（mizorewww/laya-mlx）
 
@@ -274,16 +274,16 @@ device `cpu` · dtype `fp32 / bf16` · processes 1, within-request batching
 
 | # | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|---|
-| R1 | **kev 的 Qwen3.5 混合基座缺少 CPU/CUDA 优化内核**（`flash-linear-attention` / `causal_conv1d`），回落到参考实现 | **已发生（CPU）** | 高 | CPU 实测 1.66 s/请求（fp32）；**bf16 在 CPU 上慢 83 倍**。缓解：按「引擎×设备」设 dtype 默认值 + 劣化组合告警（`design.md §5.2`）；镜像构建期做真跑 smoke test；pin 全部版本；kev 定位为 GPU 引擎；提供 Qwen3 世代 kev 作回退（待实测） |
+| R1 | **kev 的 Qwen3.5 混合基座缺少 CPU/CUDA 优化内核**（`flash-linear-attention` / `causal_conv1d`），回落到参考实现 | **已发生（CPU）** | 高 | CPU 实测 1.66 s/请求（fp32）；**bf16 在 CPU 上慢 83 倍**。缓解：按「引擎×设备」设 dtype 默认值 + 劣化组合告警（`design.md §5.2`）；pin 全部版本；kev 定位为 GPU 引擎；提供 Qwen3 世代 kev 作回退（待实测）。**未实现**：「镜像构建期做真跑 smoke test」——`docker/Dockerfile` 只跑 `decis download` + `decis doctor`，镜像验证在 CI 的 `docker` job（起镜像、跑 `docker compose config -q`） |
 | R2 | Laya 在 **>20 选项**的 choice 上准确率断崖式下降 | 高 | 中 | `EngineInfo.max_options` 诚实声明并在文档中明说；为高基数场景保留 `predict_shortlist` 扩展路径；不与 jev 的 255 选项能力做等价宣称 |
 | R3 | **CPU 上的延迟达不到用户预期**（用户基准是 M3 Pro 20 ms） | **已发生** | 中（预期管理） | 实测 200–450 ms/请求（单问），与 Laya 官方 CPU 数字一致。缓解：文档分层给数字；`decis bench` 让用户自测；提供 CUDA 镜像；README 首屏就说明"20 ms 属于 M3 Max+MLX，CPU 是百毫秒级" |
 | R4 | `laya` 包内部 API（`build_sequence`/`collate_items` 未被 `__all__` 导出）在 0.4 变更 | 中 | 中 | pin `<0.4`；加"上游契约测试"断言存在与签名；最坏情况退回 `system_one`（失去把多个问题组展平进一次前向的能力但仍可服务；跨请求攒批本来就没有实现，见 `design-review.md` §4-M5） |
 | R5 | **vendor kev 的推理内核**造成长期维护负担 | 中 | 中 | 只 vendor 最小子集（不含训练/评测）；pin commit；在 `NOTICE` 记录；上游若发布 serve-only extra 或 PyPI 包则切回依赖 |
 | R6 | 各引擎的 `confidence` 语义不同导致阈值不可移植 | 高（若不处理） | 高（统一 API 的价值受损） | 已在设计中收敛为**服务端统一定义**（`design.md §4.2`），引擎原生置信度放入扩展字段 |
 | R7 | 契约细节做错（尤其 `score` 字符串键、`noul` 无 confidence） | 中 | 高（SDK 直接解码失败） | 契约来自 OpenAPI 生成物而非推测；L1–L3 契约测试进 CI；官方 SDK 作为验收 |
-| R8 | **冷启动 73–76 s**（实测）导致编排器在加载期反复重启 Pod | **已发生** | 高 | `HEALTHCHECK --start-period` 取 **180 s**（`docker/Dockerfile`）；`/healthz` 与 `/readyz` 分离（加载期间 `/healthz` 仍然 200，`/readyz` 报 `loading`）；权重烘进镜像避免叠加下载时间；文档给出 readiness 配置示例 |
-| R9 | **内存占用被低估**：峰值 RSS 4.84 GB（多语）/ 2.80 GB（英文），远高于权重 644/804 MB | **已发生** | 中 | 文档按实测 RSS 给容器内存建议；`N_engine × RSS`；提供 `decis doctor` 报告真实占用 |
-| R10 | 免费 HF 下载在 CI 中不稳定/限流 | 中 | 中（构建失败） | 构建期设 `HF_TOKEN`；缓存 HF 目录；digest artifact 保留更久以便重试 merge |
+| R8 | **冷启动 73–76 s**（实测）导致编排器在加载期反复重启 Pod | **已发生** | 高 | `HEALTHCHECK --start-period` 取 **180 s**（`docker/Dockerfile`）；`/healthz` 与 `/readyz` 分离（加载期间 `/healthz` 仍然 200，`/readyz` 报 `loading`）；权重在构建期写入镜像避免叠加下载时间；文档给出 readiness 配置示例 |
+| R9 | **内存占用被低估**：峰值 RSS 4.84 GB（多语）/ 2.80 GB（英文），远高于权重 644/804 MB | **已发生** | 中 | 文档按实测 RSS 给容器内存建议；`N_engine × RSS`。**未实现**：`decis doctor` 只报依赖、配置安全性、绑定地址与线程数，**不报内存/RSS** |
+| R10 | 免费 HF 下载在 CI 中不稳定/限流 | 中 | 中（构建失败） | 构建期设 `HF_TOKEN`；缓存 HF 目录；构建任务按 engine × variant × arch 分开，单个任务失败可以单独重跑（没有中间 artifact 依赖） |
 | R11 | 模型许可证 | 低 | 高 | Laya 与 kev 均为 Apache-2.0，已确认；`NOTICE` 保留署名；不复制 laya-mlx 代码 |
 
 ---
