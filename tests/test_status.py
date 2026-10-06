@@ -443,8 +443,15 @@ def test_a_weighted_engine_without_huggingface_hub_says_so(cli, tmp_path: Path, 
     the fetch over -- and the probe is stubbed to answer, so this neither reaches the network
     nor downloads anything.
     """
+    from decis.hub import Survey
+
     monkeypatch.setattr("decis.paths.missing_requirements", lambda spec: [])
     monkeypatch.setattr("decis.hub.probe_endpoint", lambda url, **kwargs: True)
+    # Both hubs are surveyed when a checkpoint is named, and the answer decides which client's
+    # remedy the message names. Answered here, with no speed either side, so the selection is
+    # the one this test is about -- Hugging Face -- rather than whichever hub this host can
+    # reach (`tests/conftest.py` closes the transport for the same reason).
+    monkeypatch.setattr("decis.hub.survey_hub", lambda name, spec, settings, **kwargs: Survey(name, available=True))
     monkeypatch.setattr("decis.hub.client_installed", lambda name: False)
     code, output = cli("download", "--engine", "laya", "--dest", str(tmp_path), "--env-file", "")
     assert code != 0

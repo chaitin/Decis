@@ -1,6 +1,6 @@
 """`decis` command line.
 
-`serve`, `models`, `doctor`, `download` and `bench`.
+`serve`, `engines`, `models`, `doctor`, `download` and `bench`.
 
 `bench` is a thin wrapper around `benchmarks/run.py` rather than a second
 implementation: the measurement code has to be the same code whose output
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from . import __version__
 from .app import create_app
 from .config import HUBS, ConfigError, Settings, load_settings
 from .engines.registry import SPECS, canonical, known_names
-from .hub import Selection
+from .hub import Selection, speed_policy
 from .observability import configure_logging
 from .paths import WeightSpec
 
@@ -60,6 +61,10 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_model_path(serve)
     _add_hub(serve)
     serve.set_defaults(handler=_serve)
+
+    engines = sub.add_parser("engines", help="list the engines this build ships, with their weights")
+    engines.add_argument("--env-file", default=None)
+    engines.set_defaults(handler=_engines)
 
     models = sub.add_parser("models", help="list registered engines and whether they are usable here")
     models.add_argument("--env-file", default=None)
@@ -121,8 +126,9 @@ def _add_hub(parser: argparse.ArgumentParser) -> None:
         choices=HUBS,
         default=None,
         help=(
-            "where to fetch weights from: auto probes Hugging Face and falls back to ModelScope when it "
-            "cannot be reached (default: DECIS_HUB, auto)"
+            "where to fetch weights from: auto probes Hugging Face, and for a named checkpoint also measures "
+            f"both hubs ({speed_policy()}); it falls back to ModelScope when Hugging Face cannot be reached "
+            "(default: DECIS_HUB, auto)"
         ),
     )
 
@@ -327,6 +333,54 @@ def _serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _engines(args: argparse.Namespace) -> int:
+    """What this build ships: the ids `--engine`/`model` accept, and what each one needs.
+
+    The catalogue, not the local verdict: `decis models` answers "can this machine run it",
+    which changes with what is installed and mounted, while this answers "what exists
+    here to ask for" and is the same on every host. Both read the same registry, so neither
+    can name an id the other does not know -- and `decis download --engine <typo>` prints
+    this same list on its error line.
+    """
+    settings = _load(args)
+    print(f"decis {__version__}  default engine: {settings.default_engine}\n")
+    rows = [(engine_id, *_engine_columns(engine_id)) for engine_id in sorted(SPECS)]
+    headers = ("id", "aliases", "extra", "python", "weights")
+    widths = [max(len(headers[column]), *(len(row[column]) for row in rows)) for column in range(len(headers))]
+    for row in [headers, *rows]:
+        print("  " + "  ".join(row[column].ljust(widths[column]) for column in range(len(headers))))
+
+    print(
+        "\nweights: the Hub repository `decis download --engine <id>` fetches, the size this build "
+        "declares, and (after `->`) the base a checkpoint adapts."
+    )
+    print("`decis models` says whether each id is runnable on this machine; `decis engines` is the catalogue.")
+    return 0
+
+
+def _engine_columns(engine_id: str) -> tuple[str, str, str, str]:
+    """The non-id columns of `decis engines`, read from the registry and the engine's `WeightSpec`.
+
+    Read, never restated: the repository, the declared size and the aliases are the same values
+    the fetch itself uses, so this table cannot drift from what `decis download` does (`AGENTS.md`
+    §2, §9). `WeightSpec` is reachable without the engine's dependencies (`cli._weight_spec`),
+    which is what makes this command work in the API-only image.
+    """
+    from .paths import human_bytes
+
+    entry = SPECS[engine_id]
+    aliases = ", ".join(entry.aliases) if entry.aliases else "-"
+    python = f">={entry.python_min[0]}.{entry.python_min[1]}" if entry.python_min else "any"
+    weights = _weight_spec(engine_id)
+    if weights is None or not weights.is_downloadable():
+        return aliases, entry.extra or "-", python, "none (self-contained)"
+    location = weights.repo_id if not weights.subfolder else f"{weights.repo_id}/{weights.subfolder}"
+    size = f" ({human_bytes(weights.expected_bytes)})" if weights.expected_bytes else ""
+    bases = weights.base_specs()
+    adapted = f" -> {', '.join(base.repo_id for base in bases)}" if bases else ""
+    return aliases, entry.extra or "-", python, f"{location}{size}{adapted}"
+
+
 def _models(args: argparse.Namespace) -> int:
     settings = _load(args)
     from .engines.registry import SPECS, status
@@ -508,8 +562,28 @@ def _download(args: argparse.Namespace) -> int:
         # yet. The Hub is only probed if something actually has to be fetched.
         return _download_bases(spec, configured)
 
-    selection = choose(settings)
+    # The cache is consulted before the decision even when `--dest` is set: the files are
+    # already on disk, and copying them from there beats re-fetching them from whichever hub
+    # won a speed race (`hub.cached`).
+    hit = _cached_hit(spec, configured)
+    if hit is not None:
+        # Nothing to transfer: the checkpoint is whole in a client cache already. Without a
+        # destination that cache *is* where `paths.resolve` reads from; with one, the bytes are
+        # copied to where the loader looks, which is also a local operation -- asking the client
+        # to re-fetch them would send the one case that should never touch the network back out
+        # to the network (and offline it failed with a client traceback).
+        remembered, cached_root = hit
+        print(f"{engine_id}: source {remembered.describe()}")
+        _warn_unpinned(engine_id, spec, remembered)
+        if base is None:
+            return _download_bases(spec, configured)
+        if _lay_out_from_cache(cached_root, base / spec.directory_name(), spec):
+            return _download_bases(spec, configured)
+        # The copy failed; fall through to the client, which knows its own cache layout.
+    selection = choose(configured, spec=spec)
     print(f"{engine_id}: source {selection.describe()}")
+    if selection.warning:
+        print(f"warning: {selection.warning}", file=sys.stderr)
     if not client_installed(selection.name):
         print(
             f"error: fetching from {selection.name} needs the `{selection.module}` package, which is not "
@@ -517,13 +591,7 @@ def _download(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return _EXIT_CONFIG_ERROR
-    if spec.revision and not selection.pinned:
-        print(
-            f"warning: {engine_id} pins the revision {spec.revision[:12]}, which {selection.name} cannot "
-            f"address; the mirror's current revision is fetched instead. DECIS_HUB=huggingface fails "
-            f"loudly rather than substituting.",
-            file=sys.stderr,
-        )
+    _warn_unpinned(engine_id, spec, selection)
 
     expected = spec.expected_bytes or 0
 
@@ -534,6 +602,12 @@ def _download(args: argparse.Namespace) -> int:
         except HubUnavailableError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return _EXIT_CONFIG_ERROR
+        except Exception as exc:
+            # The clients raise their own transport exceptions (`httpx.ConnectError`,
+            # `requests.ConnectionError`); a stack trace is not a user-facing report of
+            # "the Hub could not be reached".
+            print(f"error: could not fetch {spec.repo_id} from {selection.name}: {exc}", file=sys.stderr)
+            return 1
         if checkpoint_root(cached, spec) is None:
             print(
                 f"error: download finished but {cached} still has no usable checkpoint. "
@@ -542,7 +616,7 @@ def _download(args: argparse.Namespace) -> int:
             )
             return 1
         print(f"{engine_id}: ready in the {selection.name} cache at {cached}")
-        return _download_bases(spec, configured, selection)
+        return _download_bases(spec, configured)
 
     # `snapshot_download(local_dir=...)` replicates the *repository's* own layout, so the
     # checkpoint keeps the subfolder it lives in upstream. Landing it under
@@ -564,6 +638,9 @@ def _download(args: argparse.Namespace) -> int:
     except HubUnavailableError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return _EXIT_CONFIG_ERROR
+    except Exception as exc:
+        print(f"error: could not fetch {spec.repo_id} from {selection.name}: {exc}", file=sys.stderr)
+        return 1
 
     resolved = resolve(spec, configured)
     if not resolved.is_local:
@@ -577,7 +654,7 @@ def _download(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"{engine_id}: ready at {resolved.path} ({describe_local(resolved.path)})")
-    return _download_bases(spec, configured, selection)
+    return _download_bases(spec, configured)
 
 
 def _report_hub(settings: Settings) -> None:
@@ -589,10 +666,14 @@ def _report_hub(settings: Settings) -> None:
     relies on it. The probe is bounded by `hub.PROBE_TIMEOUT_S`; pinning `DECIS_HUB` skips
     it entirely.
     """
-    from .hub import choose, client_installed
+    from .hub import choose, client_installed, speed_policy
 
     selection = choose(settings)
     print(f"  weight hub       {settings.hub} -> {selection.name}: {selection.reason}")
+    if settings.hub == "auto":
+        # No repository is named here, so nothing was measured: say which question this line
+        # answered, instead of implying a number that no fetch would necessarily get.
+        print(f"  hub speed        not measured (no engine named); a fetch measures both hubs ({speed_policy()})")
     if not selection.pinned:
         print(f"  hub pin          {selection.name} has no commit revisions; DECIS_HUB=huggingface fails instead")
     if not client_installed(selection.name):
@@ -620,19 +701,23 @@ def _why_unusable(directory: Path, marker: str | None) -> str:
     return f"Expected to find {marker} there."
 
 
-def _download_bases(spec: WeightSpec, configured: Settings, selection: Selection | None = None) -> int:
+def _download_bases(spec: WeightSpec, configured: Settings) -> int:
     """Fetch the base models a checkpoint adapts.
 
     kev's adapter is useless on its own (see `paths.BaseModel`), so a `download` that
     fetched only the adapter would report success and leave `serve` unable to load.
 
     A base is a normal transformers model, but it is resolved exactly like a checkpoint --
-    `paths.resolve`, then the same Hub choice -- because that is what the loader now does
+    `paths.resolve`, then `hub.cached`/`hub.choose` -- because that is what the loader now does
     with it: `engines/kev.py` hands `transformers` a *directory*, so a base that lives in
     `DECIS_MODEL_DIR/<base name>/` is found offline, and one that does not is fetched from
     whichever Hub answers and lands in that Hub's cache. Writing it next to the checkpoint
     under `--dest` is what makes a mounted model directory self-contained: leaving it in the
     Hugging Face cache meant an air-gapped volume held the adapter and not its base.
+
+    Each base decides its own source: it is a different repository, and the mirrors cover the
+    two independently (`mstrasser/Jeff-*` are on Hugging Face only), so inheriting the
+    adapter's answer would send a base to a hub that has never heard of it.
     """
     from .hub import HubUnavailableError, choose
     from .hub import download as hub_download
@@ -648,12 +733,23 @@ def _download_bases(spec: WeightSpec, configured: Settings, selection: Selection
         if resolve(base, configured).is_local:
             print(f"{spec.engine_id}: base model {base.repo_id} is already present")
             continue
-        if selection is None:
-            selection = choose(configured)
         destination = configured.model_dir / base.directory_name() if configured.model_dir is not None else None
+        hit = _cached_hit(base, configured, label=base.repo_id or spec.engine_id)
+        if hit is not None and destination is None:
+            continue
+        if hit is not None and _lay_out_from_cache(hit[1], destination, base):
+            continue
+        remembered = hit[0] if hit is not None else None
+        # A base is a *different repository* from the checkpoint that names it, and the two
+        # are mirrored independently (`mstrasser/Jeff-*` have no ModelScope mirror at all),
+        # so it gets its own decision rather than inheriting the adapter's.
+        selection = remembered or choose(configured, spec=base)
         size = f" ({human_bytes(base.expected_bytes)})" if base.expected_bytes else ""
         where = str(destination) if destination is not None else f"the {selection.name} cache"
         print(f"{spec.engine_id}: base model {base.repo_id}{size} -> {where} ...")
+        if selection.warning:
+            print(f"warning: {selection.warning}", file=sys.stderr)
+        _warn_unpinned(spec.engine_id, base, selection)
         if destination is not None:
             if filesystem_has_room(destination, base.expected_bytes) is False:
                 print(f"warning: {destination} may not have room for {size.strip(' ()')}.", file=sys.stderr)
@@ -663,6 +759,9 @@ def _download_bases(spec: WeightSpec, configured: Settings, selection: Selection
         except HubUnavailableError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return _EXIT_CONFIG_ERROR
+        except Exception as exc:
+            print(f"error: could not fetch {base.repo_id} from {selection.name}: {exc}", file=sys.stderr)
+            return 1
         # The same predicate the loader will apply, so "downloaded" and "loadable" cannot
         # drift apart (docs/design-review.md §2-D17).
         if checkpoint_root(landed, base) is None:
@@ -673,6 +772,69 @@ def _download_bases(spec: WeightSpec, configured: Settings, selection: Selection
             )
             return 1
     return 0
+
+
+def _warn_unpinned(engine_id: str, spec: WeightSpec, selection: Selection) -> None:
+    """Say which pinned revision this source cannot address, before any bytes move (§2-D32).
+
+    Called for a cache hit as well as a fresh fetch: the bytes in a ModelScope cache *are* the
+    mirror's current revision, which is exactly what the warning is about. A base model carries
+    a pin too, so it gets the same sentence rather than a quieter version of the same fact.
+    """
+    if spec.revision and not selection.pinned:
+        print(
+            f"warning: {engine_id} pins the revision {spec.revision[:12]}, which {selection.name} cannot "
+            f"address; the mirror's current revision is fetched instead. DECIS_HUB=huggingface fails "
+            f"loudly rather than substituting.",
+            file=sys.stderr,
+        )
+
+
+def _cached_hit(spec: WeightSpec, settings: Settings, *, label: str | None = None) -> tuple[Selection, Path] | None:
+    """A client cache that already holds `spec`, as a source *and* a directory, or None.
+
+    Consulted before the Hub decision because the decision now includes a speed measurement,
+    and re-fetching a checkpoint that is already on disk (in the *other* client's cache) to
+    win a race would be the worse outcome. Says so out loud: "already there" and "downloaded
+    it" have to be distinguishable in the output. The directory comes back too because
+    `--dest` lays the checkpoint out from it, which is a copy rather than a second fetch.
+    """
+    from .hub import HUGGINGFACE, cached
+
+    hit = cached(spec, settings)
+    if hit is None:
+        return None
+    name, path = hit
+    print(f"{label or spec.engine_id}: already in the {name} cache at {path}")
+    return Selection(name, f"already in the {name} cache", pinned=name == HUGGINGFACE), path
+
+
+def _lay_out_from_cache(landed: Path, destination: Path, spec: WeightSpec) -> bool:
+    """Copy a cached checkpoint to `destination`, without the network. False if that failed.
+
+    `destination` is `<model dir>/<engine id>/` -- the one layout `paths.resolve` reads -- and
+    `landed` is the checkpoint root `hub.cached` validated, so the copy is a complete checkpoint
+    by the same predicate the loader applies. A failure (no room, permissions) is not fatal: the
+    caller falls back to the client, and this says why it did.
+    """
+    from .paths import checkpoint_root, describe_local, filesystem_has_room, human_bytes
+
+    if filesystem_has_room(destination, spec.expected_bytes) is False:
+        print(
+            f"warning: {destination} may not have room for {human_bytes(spec.expected_bytes)}.",
+            file=sys.stderr,
+        )
+    try:
+        shutil.copytree(landed, destination, dirs_exist_ok=True)
+    except OSError as exc:
+        print(f"{spec.engine_id}: could not copy {landed} to {destination} ({exc}); fetching it instead.")
+        return False
+    root = checkpoint_root(destination, spec)
+    if root is None:
+        print(f"{spec.engine_id}: the copy in {destination} is not a usable checkpoint; fetching it instead.")
+        return False
+    print(f"{spec.engine_id}: ready at {root} ({describe_local(root)})")
+    return True
 
 
 def _weight_spec(engine_id: str) -> WeightSpec | None:

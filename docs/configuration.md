@@ -103,12 +103,30 @@ A fetch tries Hugging Face and falls back to [ModelScope] when the Hugging Face 
 cannot be reached *at all*: a DNS failure, a refused connection or a timeout. An HTTP error
 status is not "unreachable" — a 401 or a 404 still proves the host answered — so a private or
 authenticated mirror is never misread as a blocked one. The fallback is for networks where
-Hugging Face is blocked; where it is reachable, nothing changes.
+Hugging Face is blocked.
+
+A host that answers is not necessarily a host worth waiting for. So when a *specific*
+checkpoint is about to be fetched — `decis download`, or a server starting with a cold cache —
+`auto` also measures both hubs, and takes the faster one if it is faster by at least 1.5x. Each
+hub is asked for the repository's file listing (which also says whether it has the repository at
+all) and gets at most 1 MiB of the largest file that fetch would really pull. Both requests are
+bounded in size *and* in time (6 seconds for the sample, 3 for the listing), so a hub that
+trickles cannot hold the command open. Nothing is measured without a checkpoint named, and
+nothing is measured when a pinned `DECIS_HUB` says where to go.
+
+**Two facts move the fetch to the mirror, and neither one is a speed number.** A 404 means the
+repository is not there (the case ModelScope-only checkpoints live in). A request that never
+completed — DNS, a refused connection, a timeout, or a body that is not a listing — means the
+endpoint cannot be used from here at all, which is what this fallback was always for. An
+*answer* with a status, on the other hand, keeps Hugging Face: a 401 on a gated repository, a
+403, a 429 or a 5xx is about the request, not the route, and this listing carries no credential
+while the client may have one.
 
 The decision covers **every** download a command makes, not just the first one: a kev fetch
-resolves its adapter *and* the base model behind it through the same choice, and both are
-handed to the loaders as directories. So if `decis download --engine kev-0.8b --hub modelscope`
-prints `source modelscope`, neither the adapter nor the base comes from Hugging Face.
+resolves its adapter *and* the base model behind it, and each repository gets its own decision —
+they are different repositories and the mirrors cover them independently. Both are handed to the
+loaders as directories. So if `decis download --engine kev-0.8b --hub modelscope` prints
+`source modelscope`, neither the adapter nor the base comes from Hugging Face.
 
 ```bash
 uv run decis doctor                      # which source a fetch here would use, and why
@@ -118,16 +136,37 @@ uv run decis download --engine kev-0.8b  # prints the source before transferring
 | Variable | Default | Meaning |
 |---|---|---|
 | `DECIS_HUB` | `auto` | `auto`, `huggingface` or `modelscope`. `auto` probes and falls back; a pinned value never probes and never substitutes, so `huggingface` fails loudly where `auto` would switch sources. |
-| `HF_ENDPOINT` | `https://huggingface.co` | The endpoint `huggingface_hub` uses **and** the one the probe asks, so an internal mirror (or `https://hf-mirror.com`) is treated as reachable rather than as a blocked Hugging Face. |
+| `HF_ENDPOINT` | `https://huggingface.co` | The endpoint `huggingface_hub` uses **and** the one the probe and the measurement ask, so an internal mirror (or `https://hf-mirror.com`) is treated as reachable rather than as a blocked Hugging Face. |
+| `MODELSCOPE_ENDPOINT` | `https://www.modelscope.cn` | The endpoint ModelScope's client uses **and** the one the measurement asks, for the same reason: measuring the public host while the client talks to an internal mirror would decide the source from somebody else's network. The older `MODELSCOPE_DOMAIN` is accepted as a fallback. |
 
 [ModelScope]: https://modelscope.cn
 
-**`auto` answers one question: does the endpoint answer?** It does not measure speed, and it
-does not try a transfer first. A Hugging Face that answers slowly, throttles large files, or
-has only its model *pages* reachable will therefore keep being chosen, and the download either
-takes a long time or fails in the client. `decis download` prints which source it picked and
-why (`https://huggingface.co answered`), so the line to read is that one — reachable means
-no fallback. Force the other source with `--hub modelscope` or `DECIS_HUB=modelscope`.
+**"Reachable" and "usable" are different questions, and `auto` answers both.** It probes the
+endpoint, and — with a checkpoint named — measures a bounded sample from each side. The source
+line prints both rates, so the pick is explainable instead of feeling arbitrary:
+
+```text
+kev-0.8b: source huggingface at https://huggingface.co: huggingface at <rate> against
+modelscope at <rate>; fetches the pinned revision
+```
+
+The rates in that line are what this network did at that moment, which is why they are printed
+rather than documented. `decis doctor` names no checkpoint, so it reports reachability and says
+so explicitly (`hub speed  not measured (no engine named)`). Force a source with
+`--hub huggingface|modelscope` or `DECIS_HUB=`: a pinned value never probes, never measures and
+never substitutes.
+
+**A checkpoint that is already in a client cache is never fetched again.** Both clients are
+asked to look only at their own cache (`local_files_only`, a local directory lookup) before
+anything is decided, so a warm cache costs no probe, no measurement and no transfer — and "the
+other hub is faster" cannot re-download gigabytes that are already on disk. With `--dest` (or
+`DECIS_MODEL_DIR`) the cached checkpoint is *copied* to `<dir>/<engine id>/` instead: a local
+copy, not a second fetch, so this also works on a host with no route to either hub.
+
+**A mirror that does not have the repository is reported before the failure, not as one.**
+ModelScope has no mirror of either `mstrasser/Jeff-*` checkpoint (`docs/design-review.md`
+§2-D32), so on a network that cannot reach Hugging Face the command prints a warning naming the
+missing repository instead of surfacing a client error halfway through.
 
 **A pinned revision cannot be honored on ModelScope.** Its revisions are branch and tag
 names, and the mirrors of these repositories carry `master` and nothing else. Handing it the

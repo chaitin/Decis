@@ -39,8 +39,18 @@ listing (`tokenizer.json` alone is 19 MiB and the base's copy is the one that ge
 keeps them equal to the file list.
 
 ```bash
+uv run decis engines    # the catalogue: ids, aliases, extra, Python floor, and what each one fetches
 uv run decis models     # what is registered, and what this machine can actually run
 ```
+
+The two commands answer different questions, and only one of them depends on this host.
+`decis engines` is the shipped catalogue — the same on every machine, readable before anything
+is installed — and includes the repository each id fetches, the size this build declares, and
+the base model a checkpoint adapts (`kev-0.8b -> Qwen/Qwen3.5-0.8B-Base`). `decis models` is
+the local verdict: dependencies, weights on disk, interpreter floor. Everything in both is read
+from `registry.SPECS` and each engine's own `weights()`, so an id cannot exist in one and be
+missing from the other, and the ids it prints are exactly what `--engine` and the request's
+`model` field accept.
 
 ## Installing an engine
 

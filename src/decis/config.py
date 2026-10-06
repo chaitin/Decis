@@ -230,6 +230,11 @@ class Settings:
     #: endpoint `huggingface_hub` will use (an internal mirror, `hf-mirror.com`, ...); the
     #: variable itself belongs to `huggingface_hub`, so an empty value means "its default".
     hf_endpoint: str = ""
+    #: `MODELSCOPE_ENDPOINT` (or the older `MODELSCOPE_DOMAIN`), if the host set one. Read for
+    #: the same reason as `hf_endpoint`: the speed measurement has to describe the network the
+    #: *client* will use, so measuring the public host while the client talks to an internal
+    #: mirror would decide the source from somebody else's numbers.
+    modelscope_endpoint: str = ""
     log_level: str = "info"
     env_file: str = DEFAULT_ENV_FILE
     # Names of the DECIS_* variables that were actually set, for `decis doctor`.
@@ -297,6 +302,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         dtype=_str("DECIS_DTYPE") or None,
         hub=_hub("DECIS_HUB"),
         hf_endpoint=_str("HF_ENDPOINT"),
+        modelscope_endpoint=_str("MODELSCOPE_ENDPOINT") or _str("MODELSCOPE_DOMAIN"),
         log_level=_str("DECIS_LOG_LEVEL", "info"),
         env_file=path,
         sources=tuple(sorted(name for name in os.environ if name.startswith("DECIS_"))),

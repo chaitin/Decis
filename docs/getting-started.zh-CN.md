@@ -190,12 +190,15 @@ curl -s localhost:8000/v1/systemone \
 ## 检查本机能跑什么
 
 ```bash
+uv run decis engines    # 这个构建出厂带了什么：id、别名、extra、Python 下限，
+                        # 以及 `decis download` 会去哪个 Hub 仓库取它的权重
 uv run decis models     # 本机注册了哪些引擎、每个是否可用
 uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数、本机下载权重会走哪个 Hub，
                         # 以及 compute 一节：选中的设备、torch 构建、驱动报告的 GPU
 ```
 
-`decis models` 对每个引擎回答一个问题——本机能不能跑它——答案是 `ready`、`deps missing`、
+`decis engines` 是出厂目录，在任何机器上都是同一份：`--engine` 与请求的 `model` 接受哪些 id、
+每个引擎的权重来自哪里。`decis models` 则是**这台机器**的结论，对每个引擎回答一个问题——本机能不能跑它——答案是 `ready`、`deps missing`、
 `needs weights`、`no weights`、`needs Python 3.12+` 或 `unavailable`，并给出补救办法，例如
 `uv sync --extra laya` 或 `decis download --engine laya-multilingual`。所以缺依赖、权重从没下载过、
 指到的目录不是合法 checkpoint、解释器低于某个引擎的下限，都是各不相同的答案，哪一个都不会被报成

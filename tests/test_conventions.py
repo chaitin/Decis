@@ -437,6 +437,32 @@ def test_module_presence_has_one_home() -> None:
     assert askers == ["paths.py"], askers
 
 
+def test_how_fast_a_hub_is_has_one_home() -> None:
+    """The speed rule — thresholds, sample caps and the unit — lives in `hub.py` (AGENTS.md §2).
+
+    Checked as module-level *definitions* of `SPEED_*`, not as the names appearing anywhere:
+    `decis doctor` has to report the policy, and reading it is not a second implementation --
+    spelling the numbers out again would be, and the first threshold change would leave the
+    diagnostic lying (`hub.speed_policy` exists for exactly that).
+    """
+    definers = [
+        str(path.relative_to(PACKAGE))
+        for path in _modules()
+        if any(
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id.startswith("SPEED_") for target in node.targets)
+            for node in _tree(path).body
+        )
+    ]
+    # Positive control: the guard has to be able to see the real definitions.
+    assert definers == ["hub.py"], definers
+    for name in ("SPEED_MARGIN", "SPEED_SAMPLE_BYTES", "SPEED_SAMPLE_SECONDS"):
+        assert name in _source(PACKAGE / "hub.py")
+    # The unit belongs to the formatter beside them: nothing else may print a rate.
+    printers = [str(path.relative_to(PACKAGE)) for path in _modules() if "MiB/s" in _source(path)]
+    assert printers == ["hub.py"], printers
+
+
 def test_the_laya_engine_does_not_import_torch_at_module_scope() -> None:
     """AGENTS.md §6: an image with the `laya` extra absent must still list the engine.
 

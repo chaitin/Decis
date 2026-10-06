@@ -206,13 +206,17 @@ question primitives, and CI executes every command in it.
 ## Check what this machine can run
 
 ```bash
+uv run decis engines    # the catalogue this build ships: id, aliases, extra, Python floor,
+                        # and the Hub repository `decis download` would fetch for it
 uv run decis models     # registered engines, and whether each is usable here
 uv run decis doctor     # dependencies, configuration safety, bind address, thread count,
                         # which Hub a weight download would use, and the compute section:
                         # the device it picked, the torch build, any GPU the driver reports
 ```
 
-`decis models` answers one question per engine — can this machine run it — with `ready`,
+`decis engines` is the catalogue, and it is the same on every host: the ids `--engine` and a
+request's `model` accept, and where each engine's weights come from. `decis models` is the
+verdict for this one, and answers one question per engine — can this machine run it — with `ready`,
 `deps missing`, `needs weights`, `no weights`, `needs Python 3.12+` or `unavailable`, plus a
 remedy such as `uv sync --extra laya` or `decis download --engine laya-multilingual`. So a
 missing dependency, weights that were never downloaded, a directory that is not a valid

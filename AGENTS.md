@@ -74,10 +74,9 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 
 **`design-review.md` 不是历史文档，是活文档。** 它列的"尚未验证"清单在对应验证完成前一直有效。
 
-**M5 已经有数据了（§4-M5），结论是否定**：跨请求批处理不提升吞吐。所以原来那条"不得承诺 QPS"的理由消失了，
-但**新理由接上**：现在可以报的是一条**负结论**加一个**实测的吞吐上界**（单进程 24 线程，`laya-multilingual`，
-CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），**不得**把它包装成"批处理带来的高 QPS"，
-也**不得**把它外推到 GPU、kev 或真实并发负载——那三样都没有数据。
+**M5 已经有数据了（§4-M5），结论是否定**：跨请求批处理不提升吞吐。所以"不得承诺 QPS"的理由消失了，
+但**新理由接上**：可以报这条**负结论**加一个**实测吞吐上界**（单进程 24 线程、`laya-multilingual`、CPU，
+合成批的串行路径），**不得**包装成"批处理带来的高 QPS"，也**不得**外推到 GPU、kev 或真实并发负载。
 
 ---
 
@@ -109,7 +108,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 引擎加载状态（idle/loading/ready/failed 与失败原因） | `src/decis/scheduler.py: LoadStatus` | 在 CLI/路由里各写一份"就绪"判断；用 `ready` 一个布尔表示"为什么不能服务" |
 | 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
 | 「一个 checkpoint 需要哪些仓库」（适配器 + 它适配的基座） | `src/decis/paths.py: BaseModel` / `WeightSpec.bases` | 引擎自己下载基座；把基座写成引擎里第二个硬编码 repo id |
-| 「网络取权重时问哪个 Hub、pin 能不能兑现」 | `src/decis/hub.py`: `choose` / `Selection.pinned` / `download` | 引擎或 CLI 自己判断『连得上吗』再挑客户端；把 `WeightSpec.revision` 转交给不支持 commit 的客户端（ModelScope 收到 sha 会**静默成功且一个文件都不下**，`design-review.md §2-D32`）；在 `hub.py` 之外提 `snapshot_download` / `huggingface_hub` / `modelscope`（守卫 `tests/test_conventions.py::test_only_hub_names_a_hub_client`）；把 repo id（尤其 `f"{repo_id}@{revision}"` 这种字串）交给**会自己联网**的上游 loader——vendored 的 `resolve_run` 拿到它就自己调 Hugging Face 客户端，于是 `DECIS_HUB`/`--hub` 被绕过（`design-review.md §2-D33`；守卫 `tests/test_engines_kev.py::test_the_vendored_loader_is_handed_a_directory_not_a_hub_id` 与 `test_conventions.py::test_engines_do_not_build_a_hub_id_string`） |
+| 「网络取权重时问哪个 Hub、pin 能不能兑现、以及两个 Hub 谁快」 | `src/decis/hub.py`: `choose` / `Selection.pinned` / `survey_hub` / `cached` / `download`（测速阈值 `SPEED_MARGIN`、两个采样上限与两个列表上限也在这里；「404 = 仓库不在」与「没有状态码 = 这里用不了」这两条判定同样只住在这里；守卫 `tests/test_conventions.py::test_how_fast_a_hub_is_has_one_home`） | 引擎或 CLI 自己判断『连得上吗』再挑客户端；把 `WeightSpec.revision` 转交给不支持 commit 的客户端（ModelScope 收到 sha 会**静默成功且一个文件都不下**，`design-review.md §2-D32`）；在 `hub.py` 之外提 `snapshot_download` / `huggingface_hub` / `modelscope`（守卫 `tests/test_conventions.py::test_only_hub_names_a_hub_client`）；把 repo id（尤其 `f"{repo_id}@{revision}"` 这种字串）交给**会自己联网**的上游 loader——vendored 的 `resolve_run` 拿到它就自己调 Hugging Face 客户端，于是 `DECIS_HUB`/`--hub` 被绕过（`design-review.md §2-D33`；守卫 `tests/test_engines_kev.py::test_the_vendored_loader_is_handed_a_directory_not_a_hub_id` 与 `test_conventions.py::test_engines_do_not_build_a_hub_id_string`） |
 | 「本机有没有装某个模块」 | `src/decis/paths.py: module_available` | 在别处再写一遍 `importlib.util.find_spec`（少写那个 `except` 就会把『父包不存在』报成已安装；守卫 `test_module_presence_has_one_home`） |
 | `(引擎, 设备) → dtype`、以及"能跑但性能已知很差"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
 | `DECIS_DEVICE` 的合法取值、「这台机器能用哪个设备」、「不设时用哪个」，以及「明明有 GPU 为什么在 CPU 上服务」 | `src/decis/engines/devices.py: DEVICES` / `ACCELERATOR_ORDER` / `available_devices` / `best_device` / `requested_device` / `torch_build` / `nvidia_gpus` / `accelerator_advice` / `warn_if_accelerator_is_idle` | 引擎自己写设备回退（`settings.device or "cpu"` 曾让 kev 在 Apple 芯片上跑 CPU，实测慢 15 倍）；在别处再判断一次"CUDA/MPS 可用吗"；或在 `devices.py` 之外再拼一次 `nvidia-smi` 查询——PyPI 的 Windows torch 是 CPU-only 构建，`torch.cuda.is_available()` 分不开"没有 GPU"和"这个 wheel 用不了 GPU"，所以这一问只能有一处（`design-review.md §2-D36`） |
@@ -220,8 +219,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 **已记录的唯一例外（Jeff，2026-09-30）**：接 Jeff 时确实动了 `render.py`——不是改渲染规则，而是给
 `PreparedQuestion` 加了 `raw`、给 `PreparedRequest` 加了 `raw_state`，把调用方原始 JSON 原样带到引擎，
 因为 Jeff 的提示词是 `json.dumps(state)` 而不是扁平化文本（`docs/design.md §2` 已补）。判断标准没变：
-"任意 JSON → 可读文本"仍然只住在 `render.py`，"某个 primitive 的选项长什么样"仍然由引擎决定。第二个
-引擎若又要求"另一种 JSON 渲染"，先改 `design.md §2` 再动手，不要各自再解析一遍请求。
+第二个引擎若又要求"另一种 JSON 渲染"，先改 `design.md §2` 再动手。
 
 ---
 
@@ -253,6 +251,7 @@ uv run ruff check && uv run ruff format --check
 
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
 uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token；同样需要引擎就绪
+uv run decis engines                 # 出厂目录：id / 别名 / extra / Python floor / 要取的仓库
 uv run decis models                  # 列出已注册引擎及其在本机是否可用
 uv run decis doctor                  # 环境自检：依赖、配置安全性、绑定地址、线程数，
                                      #   以及 compute 一节（选中的设备、torch 构建、nvidia-smi 看到的 GPU；不报 dtype）
@@ -277,10 +276,14 @@ DECIS_DTYPE=bf16                     # 强制精度；不设则查 registry.DTYP
 ```bash
 uv sync --extra laya
 uv run decis download --engine laya-multilingual                    # 约 647 MiB，进 Hub 缓存（零配置时 serve 读这里）
-#   连不上 huggingface.co 时自动改用 ModelScope（DECIS_HUB=auto，探测失败才回退，探测打的是
-#   <endpoint>/api/models?limit=1，任何 HTTP 状态码都算『连得上』）；写死源用
-#   `--hub huggingface|modelscope`。这些仓库在 ModelScope 上只有 master，所以回退时 pin 的
-#   commit 兑现不了，命令会在传输前警告一次（§2-D32）
+#   DECIS_HUB=auto 的判据有两条：探测 endpoint（<endpoint>/api/models?limit=1，任何 HTTP 状态码
+#   都算『连得上』），以及——当命令知道要取哪个 checkpoint 时——两个 Hub 各一次有上限的测速
+#   （列表 + 最多 1 MiB / 6 s 采样，两者都同时受字节与时间约束；镜像要快到 1.5 倍才换源；
+#   404『仓库不在』与『压根没有状态码回来』（DNS/连接被拒/超时/回来的不是列表）都能换源，
+#   而 401/403/429/5xx 是『有答复但没问到仓库』，留在能兑现 pin 的一侧，§2-D37）。已经在任一
+#   客户端缓存里的 checkpoint 先命中缓存，既不探测也不测速；写死源用
+#   `--hub huggingface|modelscope`，那时既不探测也不测量。这些仓库在 ModelScope 上只有 master，
+#   所以换源时 pin 的 commit 兑现不了，命令会在传输前警告一次（§2-D32）
 uv run decis serve --engine laya-multilingual --host 127.0.0.1     # 冷启动实测见 docs/performance.md 的延迟表
 #   想落到挂载目录：`--dest ./models` 写成 ./models/laya-multilingual/，再用 DECIS_MODEL_DIR=./models 服务
 #   冷启动期间 /healthz 立即可用，/readyz 报 {"status":"loading"}；加载失败则报 "failed"
@@ -315,10 +318,9 @@ uv run decis serve --engine kev-0.8b --model-path kev-0.8b=/srv/finetunes/acme-t
 uv run decis models --model-path jeff=/srv/jeff-qwen        # 别名在这里也会被规范化
 ```
 
-**没有** `DECIS_MODEL_PATH_<ENGINE_ID>` 这类环境变量，而且是刻意删掉的：它把引擎 id 编进变量**名**，
-任何变量名都装不下 `kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b` 里的点号——`kev-0.8b` 会规范化成
-`kev-0-8b`，一个没注册的 id，于是覆盖被静默丢弃。把 id 放进**值**里就没有这个限制；未知 id 现在是
-`ConfigError`，`decis doctor` 会打印解析到的每一条覆盖。
+**没有** `DECIS_MODEL_PATH_<ENGINE_ID>` 这类环境变量，而且是刻意删掉的：任何变量名都装不下
+`kev-0.8b` 里的点号，覆盖会被静默丢弃（§9）。未知 id 现在是 `ConfigError`，`decis doctor`
+会打印解析到的每一条覆盖。
 
 镜像（CI 构建并推送，tag 方案见 `docs/deployment.md`）：
 
@@ -431,8 +433,16 @@ item 数决定每个 batch size 有多少个样本，16 是当前 JSON 用的值
 外加至少一次项目 floor 上的解释器。
 写测试时不要假设自己在哪个环境里——**不要断言 `laya` 没被安装、不要假设会走网络、
 不要假设别的测试没 import 过 torch**。需要"某个模块不存在"就挑一个真的不存在的名字，
-需要判断环境就 `pytest.skip` 并说清理由。**给配方一个最小 `PATH` 的 fixture，要把配方可能
-exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕过 shell 直接 `exec`，`@echo` 这种
+需要判断环境就 `pytest.skip` 并说清理由。
+
+**出网这条有守卫兜着**：`tests/conftest.py` 把 `urllib.request.urlopen` 关掉了（Hub 的探测与
+测速都走它），忘记 stub 的测试会在 teardown 失败并指名该替换哪个 seam（`decis.hub.probe_endpoint` /
+`survey_hub` / 它们的 `open_url` 参数）；确实要真网络的测试自己标 `network`。之所以在 teardown 报，
+是因为 `probe_endpoint` / `survey_hub` **有意**吞掉所有异常（连不上是一个答案，不是崩溃），
+当场抛的错会被吞掉、于是测试悄悄量了别的东西却全绿——`auto` 刚加测速时就这么漏过一次：
+一个只 stub 了探测的测试开始间歇性失败，换源与否取决于跑它的那台机器先答上哪一边。
+
+**给配方一个最小 `PATH` 的 fixture，要把配方可能 exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕过 shell 直接 `exec`，`@echo` 这种
 空行正好落在这一档，而**走不走这条捷径取决于 make 版本**（Ubuntu 的 4.3 走 shell、macOS 的
 3.81 不走），于是同一个 fixture 在一个任务上通过、在另一个任务上失败——`tests/test_makefile.py`
 里补的那个 `echo` 就是这么被 macOS 那个任务抓出来的。
@@ -472,20 +482,31 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 在 `hub.py` 之外挑 Hub 或调 `snapshot_download`（§2；守卫
   `tests/test_conventions.py::test_only_hub_names_a_hub_client`），或在 `paths.module_available`
   之外再写一遍 `find_spec`（守卫 `test_module_presence_has_one_home`）
-- ❌ 把 repo id 交给**会自己联网**的上游 loader（`design-review.md §2-D33`：`kev.py` 把
-  `jaredpalmer/kev-0.8b@<sha>` 交给 vendored 的 `Checkpoint`，而它的 `resolve_run` 自己调
-  `huggingface_hub.snapshot_download`——于是 `DECIS_HUB=modelscope` / `--hub modelscope` 对适配器
-  完全无效——默认配置下 `paths.resolve` 只给得出 `hub`，于是这条分支永远回 Hugging Face 取，
-  `auto` 的回退对 kev 的加载一次都没生效过（本地命中那条路旧代码是好的）；已有的字符串守卫看不见它，
-  因为那个客户端名字在 vendored 代码里）。引擎只做两件事：把 `WeightSpec` 交给 `paths.resolve` /
-  `paths.fetch_checkpoint`，把拿回来的**目录**转交出去
+- ❌ 在 `hub.py` 之外再写一遍"哪个 Hub 更快"：测速阈值、采样上限、以及"没测到数字就不算慢"
+  这条规则只有一处（`hub.py` 的 `SPEED_MARGIN` / `SPEED_SAMPLE_BYTES` / `SPEED_SAMPLE_SECONDS`
+  与 `Survey`）。也不要把测速搬进 `paths.py`／引擎／CLI：`choose(spec=…)` 是唯一入口
+  （`design-review.md §2-D37`）
+- ❌ 让测速变成"为了快而重下"：任何一次取权重（`decis download`、`paths.fetch_checkpoint`）
+  都必须先问 `hub.cached`——已经在任一客户端缓存里的 checkpoint 不许因为"另一条路更快"
+  被重新下载（§2-D37）
+- ❌ 把 repo id 交给**会自己联网**的上游 loader（`design-review.md §2-D33`：vendored 的 `resolve_run`
+  收到 repo id 就自己调 `huggingface_hub.snapshot_download`，于是 `--hub` 对那条路径完全无效）。
+  引擎只做两件事：把 `WeightSpec` 交给 `paths.resolve` / `paths.fetch_checkpoint`，
+  把拿回来的**目录**转交出去
 - ❌ 调用共享的分类器/解析函数时不把**本次解析到的**配置传进去（`design-review.md §2-D34`：
   `decis doctor` 的引擎清单用默认配置调 `registry.status`，于是同一个终端里它一边打印
   `model paths kev-0.8b=/srv/…`，一边说 `kev-0.8b needs weights`。共享函数不够，喂给它的输入
   也得是同一份；守卫 `tests/test_status.py::test_doctor_asks_the_classifier_with_the_settings_it_resolved`）
 - ❌ 让“回退到镜像”变成一个**默认看不见**的行为：选源、原因、以及兑现不了的 revision 必须在
   传输任何字节**之前**打印出来（`decis download` 的源行 + 警告，`decis doctor` 的 `weight hub` 行），
-  需要 pin 生效的部署用 `DECIS_HUB=huggingface` 把回退变成失败
+  需要 pin 生效的部署用 `DECIS_HUB=huggingface` 把回退变成失败。**不测量也能换源的只有两种事实**
+  （`Survey.missing` / `answered`）：404（这个仓库不在），以及**根本没有状态码回来**（DNS、连接被拒、
+  超时、回来的不是列表——endpoint 从本机用不了，这正是回退存在的理由）。有状态码的答复（401/403/429/
+  5xx）必须留在能兑现 pin 的那一侧，否则会在一个明明有这份 checkpoint 的 Hub 上悄悄换权重。
+  **换源的理由要带数字**：
+  `Selection.reason` 里要么是两侧各自的实测速率与 `SPEED_MARGIN`，要么明说"没有测"
+  （`decis doctor` 不指定 checkpoint，所以它那行必须写 `not measured`），不许只写"选了 modelscope"
+  （§2-D37）
 - ❌ 用 `len(text) // 4` 给一个会截断的引擎做容量校验
 - ❌ 把调用阻塞函数的路径写成 `async def` 路由（会堵死事件循环，连探针一起堵）
 - ❌ 在请求路径上无限期等引擎（取锁必须有 `DECIS_REQUEST_TIMEOUT_MS` 上限）
@@ -507,10 +528,8 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 让一个按调用方 JSON 训练的引擎去读 `render.py` 扁平化后的文本（Jeff 的提示词是
   `json.dumps(state)` 与原样 criteria，不是 `key: value` 行；传入错误的文本不会报错，只是答案比 checkpoint 的
   基准差。引擎读 `WorkItem.raw_state` / `PreparedQuestion.raw`，不要自己再解析一次请求）
-- ❌ 用把引擎 id 编进**变量名**的方式覆盖单个引擎的权重目录（`DECIS_MODEL_PATH_<ENGINE_ID>` 已在本轮
-  删除）。任何变量名都装不下 `kev-0.8b`、`jeff-qwen3.5-0.8b`、`jeff-gemma4-e2b` 里的点号，那个名字会
-  规范化成一个没注册的 id 然后被静默丢弃。引擎目录覆盖只有 `--model-path ENGINE=PATH`：id 放在**值**
-  里，别名由 `cli._parse_model_paths` 规范化，未知 id 是配置错误而不是空操作
+- ❌ 用把引擎 id 编进**变量名**的方式覆盖单个引擎的权重目录（`DECIS_MODEL_PATH_<ENGINE_ID>` 已删除，
+  理由见 §7）。引擎目录覆盖只有 `--model-path ENGINE=PATH`
 - ❌ 用"上游截断后的输出"反推 `measure()` 的数字（会得到永远等于上限的假测量）
 - ❌ 手改 `<!-- MEASUREMENTS -->` / `<!-- LATENCY -->` / `<!-- DTYPE -->` / `<!-- BATCHING -->` 标记块里的数字
   （会被 `report.py --check` 拦下；要改就改原始 JSON 或重测）。**标记块里的散文同样是生成物**——

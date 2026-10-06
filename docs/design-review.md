@@ -714,6 +714,105 @@ PyPI 的那个 124,096,356 B。也就是说 Windows 上 `torch.cuda.is_available
 所有探测都返回一个**诚实但无用**的 `False`。这类"配置决定了能力"的缺陷不会在 Mac/Linux 的 CI 上出现，
 只有"在真实用户的平台上跑一次"能发现——和 D20/D21/D22 那批容器缺陷是同一类。
 
+### D37（中，已修正）"连得上"被当成了"能用"：慢的 Hugging Face 永远不会换源
+
+**症状**（用户报告，2026-10-06）：`decis download --engine laya-multilingual` 探测到 Hugging Face
+有问题就改走 ModelScope，很快下完；换成 `kev-0.8b` 却"没有切换、非常慢"。两件事叠在一起：
+kev 的适配器当时绕过 `hub.py`（D33，已修），以及 `auto` 的判据**只有可达性**——探测打的是
+`<HF_ENDPOINT>/api/models?limit=1`，任何 HTTP 状态码都算"连得上"，于是跨境路由上
+"答得上话、但 1 MiB 要几秒"的 Hugging Face 会被一直选中，一个 647 MiB 的 checkpoint 就是几小时。
+`design.md §7.4` 甚至把这条写成了设计决定（"连得上但慢属于 `HF_ENDPOINT`"）——D37 推翻它。
+
+**怎么修的**：`auto` 在**知道要取哪个 checkpoint** 时（`decis download`、`paths.fetch_checkpoint`）
+对两个 Hub 各做一次"列表 + 有上限的采样"（`hub.survey_hub`）：
+
+- 列表用**该 Hub 自己的** API 形状，问的是**这次要取的那个仓库**：Hugging Face 问 pin 的 revision，
+  ModelScope 问 `Revision=master`。所以它顺带回答"这个仓库在不在"——`mstrasser/Jeff-*` 那类仓库
+  在 ModelScope 上根本不存在（D32），而"主机答了话"和"这个仓库取得到"是两件事；
+- 采样从列表里挑一个**这次真的会拉的文件**：按 `paths.download_arguments` 的 `allow_patterns`
+  过滤后取最大的一个（同一个仓库下的兄弟 checkpoint 因此不会被拿去计时），读最多
+  `SPEED_SAMPLE_BYTES`（1 MiB）/ `SPEED_SAMPLE_SECONDS`（6 s）。列表本身也有两个上限
+  （`LISTING_LIMIT_BYTES` / `PROBE_TIMEOUT_S`），所以"最坏 ~20 s"是从常量推出来的；
+- 只有镜像**快到 `SPEED_MARGIN`（1.5×）**才换源，否则留在能兑现 pin 的那一侧。1 MiB 里的
+  1.2× 是噪声，而换过去拿到的是**不同的字节**（D32），不值得；
+- 测量失败（404 / 超时 / 零字节）不是"慢"，是"这一侧不参与比较"：`Survey.speed = None`，
+  决策退回 pin。`--hub` / `DECIS_HUB` 写死时仍然不探测、不测量、不替换。
+
+**对抗性复查（2026-10-06，第二轮）**在本轮实现里抓出三个真实缺陷，都不是"能跑就放过"的那种：
+
+- **"6 秒上限"是假的**：`urlopen(timeout=6)` 的单次 recv 超时会被对端每个小包 reset，一个滴灌的
+  镜像能让采样——以及一条本该几十秒返回的命令——跑上几分钟（照 40 s 实测外推）。修法：真截止时间
+  （`hub._pull` 每次读之前 `sock.settimeout(剩余预算)`、用 `read1` 拿"已经到的字节"），
+  并且**收到部分字节也算一次测量**：慢就是慢，不该因为读超时退化成"没测到"。守卫
+  `tests/test_hub.py::test_a_trickling_peer_cannot_outlive_the_time_budget` 用一个真 socket
+  慢慢发字节，断言耗时 < 1.5 s（旧实现在这里要 2 s 以上）；
+- **列表读没有上限**：`response.read()` 会一直等到 body 结束，一个"活着但很慢"的 Hub 光靠列表
+  就能拖住整条命令。修法：`_read_listing` 走同一个 `_pull`（`LISTING_LIMIT_BYTES` +
+  `PROBE_TIMEOUT_S`）；守卫 `test_a_listing_is_read_within_its_own_caps`；
+- **一切"没列出仓库"都被当成了"这个仓库不存在"**：第一版只看 `available`，于是 gated 仓库的 401
+  （这份列表不带 token，而客户端可能带）、429、5xx、读不出来的列表、乃至连接被拒，都会让取权重换到
+  镜像、并丢掉 pin，日志还写着"实测更快"。修法是把答案分三类：`Survey.missing` 只有 404 才为真
+  （仓库不在）；`Survey.answered` 在没有状态码回来、或回来的不是列表时为假（endpoint 从本机用不了，
+  这正是回退存在的理由）；其余（401/403/429/5xx）是"有答复但没问到仓库"，留在能兑现 pin 的一侧。
+  `_mirror_wins(because=…)` 要求调用方交出理由，所以日志不会把一次 404 或一次连不上写成"实测更快"。
+  守卫：`test_a_listing_that_could_not_be_made_says_so_instead_of_naming_the_repository`（401/403/429/500）、
+  `test_a_hub_that_could_not_be_listed_does_not_lose_to_the_mirror`、
+  `test_a_hub_that_did_not_answer_at_all_hands_the_fetch_to_the_mirror`、
+  `test_a_body_that_is_not_a_listing_is_not_a_fact_about_the_repository`。
+
+同一轮复查还发现两处更小的：`file_url`/`listing_url` 对没有 repo 的 spec 抛 `ValueError`，
+会被读成"仓库事实"而不是"问不出来"（现在 URL 在 `try` 之外算好）；采样在列表里找不到匹配文件时
+会退回用 `spec.marker` 计时，而那个 marker 在 Laya 的三个 checkpoint 里**都存在**，于是可能去测
+兄弟 checkpoint——回退已删除，现在报 `no listed file matches`（守卫
+`test_nothing_matching_this_checkpoint_means_no_sample_rather_than_a_sibling`）。
+
+两处配套的修改是为了让这条规则不至于变成"为了快而重新下载"：
+
+- `hub.cached` 在任何决策之前先问两个客户端的**缓存**（`local_files_only=True`，本地目录查找），
+  命中就用它——`--dest` 也走这条（从缓存拷过去，不从网络再拉一遍）。顺序上它在探测之前，
+  所以热缓存既不探测也不测量；
+- 回退分支（Hugging Face 不可达）**只做列表、不做采样**：那一侧没有第二个候选可比，花 1 MiB
+  测一个不参与决策的数字是纯开销。镜像没有这个仓库时把 `Selection.warning` 打出来，
+  而不是让客户端在命令中途抛一个 SDK 错误。
+
+**实测（本机 macOS，2026-10-06，两次 Hub 都能连通）**：两个 Hub 都列出了
+`jaredpalmer/kev-0.8b` 与 `Qwen/Qwen3.5-0.8B-Base` 的完整文件清单，采样速率在同一量级，
+因此留在 Hugging Face，两个数字都进了源行。**这两个数字不要当成余量**：同一台机器上量到的比值
+在 1.0× 与 **1.42×** 之间跳（`SPEED_MARGIN = 1.5`），也就是说"谁快"在 1 MiB 的样本里本来就
+可能在两次运行之间换边——这正是 `SPEED_MARGIN` 存在的原因，也是这条规则只该被读成
+"挡掉量级差别（几倍到几十倍）"，而不是"挑出快 10% 的那一边"；`mstrasser/Jeff-Qwen3.5-0.8B` 与
+`mstrasser/Jeff-Gemma4-E2B` 在 ModelScope 上仍然 404（D32 的覆盖表，现在由 CLI 在传输前说出来）；
+把 `HF_ENDPOINT` 指向没人监听的端口时，回退输出是 `… did not answer; modelscope has it`，
+对 Jeff 追加一条 `has no repository … (HTTP 404)`；`hub.cached` 在缓存未命中的路径上是本地查找，
+热缓存下 `decis download --engine kev-0.8b` 不发任何网络请求。
+
+**代价（写下来）**：一次**冷**取最多多花两次列表 + 两个 1 MiB 采样，四项都同时受字节数与
+墙上时间约束（`SPEED_SAMPLE_BYTES` / `SPEED_SAMPLE_SECONDS` / `LISTING_LIMIT_BYTES` /
+`PROBE_TIMEOUT_S`，常量都在 `hub.py`），所以最坏情况约 20 s（2×3 s 列表 + 2×6 s 采样），
+"选源"因此成了一件有成本的事；热缓存与写死源两条路都不付这个成本。
+
+**命令**：同一轮加了 `decis engines`——出厂六个引擎的 id、别名、extra、Python floor 与
+"要取哪个仓库（含基座、含子目录、含声明体积）"，值全部从 `registry.SPECS` 与
+`create(id).weights()` 读出来，不手抄（§9）。`decis models` 仍是"这台机器能不能跑"的判词，两者不重叠。
+
+守卫：`tests/test_hub.py`（两种列表形状、采样挑中的文件与 1 MiB 上限、两个上限各自生效、
+`SPEED_MARGIN` 两侧、仓库不存在 / 问不到 / 列表不可读三种情形、回退只做列表、缓存的命中/半份/
+写死源/异常）、`tests/test_cli_download.py`（更快的镜像被采用且两个数字都打印、pin 警告仍在、
+缓存命中不重新下载、带 `--dest` 时从缓存**拷贝**、客户端自己的网络异常打成一行 `error:`、
+以及六个引擎的每个仓库（含基座）都经过 `hub.download`）、
+`tests/test_cli_engines.py`（目录命令）。
+
+**这条守卫的边界要说清楚**：上面那条"每个仓库都经过 `hub.download`"驱动的是 `decis download`；
+`serve` 走的是 `paths.fetch_checkpoint`，所以第二轮复查补了
+`tests/test_cli_download.py::test_the_load_path_reaches_the_hub_through_the_same_helper`——
+把 `fetch_checkpoint` 的函数体换成 `raise AssertionError`，只有它变红。它断言的是
+"每个出厂 spec 的 `fetch_checkpoint` 都调用 `hub.download`"，**不是**驱动每个引擎的 `load()`
+（那需要权重，`-m weights` 才跑）。
+
+**仍未验证**：**没有**在一台 huggingface.co 真正不可达的机器上跑过任何一次（§5 第 14 条）。
+本机验的是"两边都连通时的比较"和"把 endpoint 指向死端口时的回退"；被墙网络里探测/列表的真实
+耗时（DNS 污染 vs 连接挂死）仍然只是推断。
+
 ---
 
 ## 3. 标准符合性对照
@@ -930,6 +1029,7 @@ CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是
 | 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。两个引擎各只有一次探针观测（三问题一批，而且当时 CPU 被并发的测试占着），要报就得先进 `benchmarks/results/` |
 | 13 | 挂载自定义**基座**（D11）与 `noul.criteria` 未知键的策略（D13） | **两条都未修，而且都没有测试守卫**——它们只有文档层的约定，改动前请先看 §2.1 |
 | 14 | ModelScope 回退在**真正访问不到 Hugging Face** 的机器上的端到端行为 | **本机已验（含 kev），目标环境未验**。用 `modelscope 1.40.1` 在本机（能连 huggingface.co）验证过：镜像存在，`allow_file_pattern` 的子目录通配符（`multilingual/tokenizer/*`）落下的布局能通过 `paths.checkpoint_root`；`pyproject.toml` 的 extra 也已解析出这个依赖。2026-10-06 补跑 `decis download --engine kev-0.8b --hub modelscope --dest /tmp/ms-check`：适配器完整落盘（3 个文件、45,443,000 B），`paths.resolve` 判为 `local`——这是 D33 的直接验收；基座也开始从 ModelScope 下载（`model.safetensors` 1.75 GB，实测 100–500 kB/s，到 64 MB 时中断），**只验到一半**：中断后磁盘上是 `*.incomplete`，`paths.resolve` 因此判它 `hub` 而不是 `local`，即半个基座不会被当成可用（D29 的保证对 ModelScope 客户端同样成立，这是这次顺带确认的）。**没有**在一台 huggingface.co 不可达的机器上真跑过一次 `decis download`，也没测过 3 s 探测超时在被墙网络里的真实表现（DNS 污染与连接挂死的耗时不一样），而**这正是 D33 藏了整整一轮的原因**：`auto` 在本机永远选 Hugging Face，那条分支只有人工 `--hub modelscope` 才会走到 |
+| 15 | 测速换源（D37）在**被墙网络**里的表现 | **未测**。本机验的是"两个 Hub 都连通时的比较"与"endpoint 指向死端口时的回退"；真正被墙时探测与列表的耗时（DNS 污染 vs 连接挂死）没有实测。`SPEED_MARGIN` 的 1.5× 也不是从被墙网络的分布里推出来的：同一台机器上两边都连通时量到的比值在 1.0×–1.42× 之间跳，所以它挡的是量级差别，不是"快 10%" |
 
 ---
 

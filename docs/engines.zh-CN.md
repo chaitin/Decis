@@ -35,8 +35,15 @@
 让它永远等于那份文件清单。
 
 ```bash
+uv run decis engines    # 出厂目录：id、别名、extra、Python floor，以及每个引擎要取什么
 uv run decis models     # 本机注册了哪些引擎、每个是否真的能跑
 ```
+
+两条命令回答不同的问题，而且只有一条跟这台机器有关。`decis engines` 是出厂目录——每台机器上
+都一样，装任何 extra 之前就能读——里面有每个 id 要取的仓库、这份构建声明的体积，以及 checkpoint
+适配的基座（`kev-0.8b -> Qwen/Qwen3.5-0.8B-Base`）。`decis models` 是本机判词：依赖、磁盘上的
+权重、解释器 floor。两者的内容都从 `registry.SPECS` 与各引擎自己的 `weights()` 读出来，所以一个
+id 不可能只出现在其中一条里，而它打印的 id 正是 `--engine` 与请求里 `model` 字段接受的那些。
 
 ## 安装引擎
 

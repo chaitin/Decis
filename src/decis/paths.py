@@ -288,22 +288,29 @@ def fetch_checkpoint(spec: WeightSpec, settings: Settings) -> Path:
     that -- upstream has no `revision` parameter, so the loader read `main` while the
     log line promised the pinned commit (`docs/design-review.md` §2-D26).
 
-    *Which* Hub is `decis/hub.py`'s decision, not this function's: Hugging Face when it
-    answers, ModelScope when the network cannot reach it and the operator has not pinned a
-    source. Answers from that client's cache when it is there, so calling it on every start
-    costs a couple of HEAD requests, not a download. Validated with `checkpoint_root` -- the
-    same predicate a mounted directory goes through -- because "the download finished"
-    and "the loader will find a checkpoint" are different claims (D17).
+    *Which* Hub is `decis/hub.py`'s decision, not this function's: a checkpoint that is already
+    whole in either client's cache is read from there (`hub.cached`), and otherwise the source is
+    chosen on reachability *and*, when nothing is cached yet, on which hub actually moves the
+    bytes faster (`hub.choose`). Checking the caches first is what keeps a warm cache from being
+    re-fetched, in whole, from the other hub because that one measured faster. A cached
+    checkpoint is a local directory lookup (`local_files_only`), so a warm start reaches no
+    network at all; a cold one pays a probe and, with a repository named, the two bounded
+    samples. Validated with `checkpoint_root` -- the same predicate a mounted directory goes
+    through -- because "the download finished" and "the loader will find a checkpoint" are
+    different claims (D17).
 
     A Hub that cannot be used here -- no client installed for the selected source -- is raised
     as `FileNotFoundError`, the type the engines already translate into
     `EngineUnavailableError` with this message ("the weights are not where I can reach them",
     which is exactly what it is).
     """
-    from .hub import HubUnavailableError, choose
+    from .hub import HubUnavailableError, cached, choose
     from .hub import download as hub_download
 
-    selection = choose(settings)
+    remembered = cached(spec, settings)
+    if remembered is not None:
+        return remembered[1]
+    selection = choose(settings, spec=spec)
     try:
         downloaded = hub_download(spec, selection=selection)
     except HubUnavailableError as exc:

@@ -622,8 +622,36 @@ kev 是"小 adapter + 大基座"。因此：
   （DNS、连接被拒、超时）才算不可达。探某个仓库会把"仓库改名/转私有"读成"被墙"，
   从而在一个能连网的地方静默换源、换掉 pin。
 - **`HF_ENDPOINT` 既是 `huggingface_hub` 用的，也是探测问的**，所以内部镜像（或
-  `hf-mirror.com`）不会被误判成"被墙的 Hugging Face"。这也是为什么没有加
-  "ModelScope 优先"的开关：换源要治的是"连不上"，而"连得上但慢"属于 `HF_ENDPOINT`。
+  `hf-mirror.com`）不会被误判成"被墙的 Hugging Face"。`MODELSCOPE_ENDPOINT`（兼容旧的
+  `MODELSCOPE_DOMAIN`）同理，是**测量**问的地址：测的是公网、客户端连的是内网镜像，
+  等于拿别人的网络数字决定自己的源。
+- **"答得上话"不等于"能用"**（`design-review.md §2-D37`）。所以 `auto` 在**知道要取哪个
+  checkpoint** 的时候（`decis download` 与 `paths.fetch_checkpoint`）不只看可达性：两个 Hub
+  各要一次目录列表（它同时回答"这个仓库在不在"，这是 `mstrasser/Jeff-*` 那类仓库唯一重要的
+  问题）和一次**有上限的**测速——从"这次真的会拉的文件"里挑最大的那个读最多 1 MiB / 6 s。
+  候选由 `allow_patterns` 过滤，所以同一个仓库里的兄弟 checkpoint（`convaiinnovations/laya`
+  下有三个）不会被拿去计时。实测更快的一方胜出，但**要快到 1.5 倍**才值得换掉能兑现 pin 的那一方；
+  没给 checkpoint 的 `decis doctor` 只报可达性，并明说自己没有测。两个请求都同时受字节数和
+  **墙上时间**约束（`_pull`：`read1` + 逐次收紧的 socket 超时），否则"滴灌"的对端光靠 reset
+  每次 recv 的超时就能把一条交互式命令拖到几分钟——这正是这条规则要绕开的那类网络。
+- **"这个仓库不在"、"我没问到"、"这里根本用不了"是三件事**（`Survey.missing` / `answered`）。
+  404 是第一种，请求**根本没有状态码回来**（DNS、连接被拒、超时，或者回来的不是一份清单）是第三种——
+  这两种都会把取权重让给镜像，第二种不需要任何速率数字。而 gated 仓库的 401（这份清单不带 token，
+  客户端可能带）、403、429、5xx 属于第二种：说的是这次请求，不是这条路，留在能兑现 pin 的那一方，
+  并让 `describe()` 说实话。把 401 读成"Hugging Face 没有这个仓库"，就会在一个明明有这份
+  checkpoint 的 Hub 上悄悄换掉权重；反过来把"压根没答话"读成"仓库不在"，会让被墙的网络继续卡在
+  一个用不了的 endpoint 上。
+- **已经在某个客户端缓存里的 checkpoint 不会被重新下载**（`hub.cached`：两个客户端都用
+  `local_files_only=True` 只查缓存，未命中是本地目录查找）。这条是测速规则的安全阀——
+  否则"另一条路更快"会把已经躺在磁盘上的 8 GiB 再拉一遍，那才是真的慢。顺序上它先于任何决策，
+  所以热缓存既不发探测请求，也不发测量请求。带 `--dest` 时，缓存里那份由 CLI **拷贝**到
+  `<目录>/<引擎 id>/`（`cli._lay_out_from_cache`），而不是再让客户端按 `local_dir` 去解析一次：
+  那条路对 Hugging Face 要联网解析 origin，对 ModelScope 干脆绕过自己的缓存，于是"已经在缓存里"
+  会变成一次真的取权重，离线时甚至是一个客户端 traceback。
+- **回退分支只问"有没有这个仓库"，不问速度**。已经决定走 ModelScope 的分支没有第二个候选可比，
+  花 1 MiB 测一个不参与决策的数字是纯开销。反过来，如果那个镜像根本没有这个仓库
+  （两个 Jeff 就是这种，§2-D32），就把这件事放进 `Selection.warning` 在传输前说出来，
+  而不是让客户端在命令中途抛一个 SDK 错误。
 - **`DECIS_HUB` 写死时不探测、不替换**。默认 `auto`，因为"能连上的地方行为不该有任何变化"；
   需要 pin 真正生效的部署显式写 `huggingface`，那时连不上就是失败，而不是换一份权重。
 - **pin 的 commit sha 永不交给 ModelScope**（`design-review.md §2-D32`）。ModelScope 的
@@ -633,6 +661,12 @@ kev 是"小 adapter + 大基座"。因此：
   `decis download` 在传输前警告一次，`decis doctor` 报告这台机器会走哪个源、为什么。
 - **同一个清单，两种拼写**：Hugging Face 用 `allow_patterns`，ModelScope 用
   `allow_file_pattern`，`hub.py` 只做名字翻译，不重新推导要下哪些文件。
+- **代价是有上限、且写出来的**：一次冷取最多多花两次列表 + 两个 1 MiB 采样（常量在 `hub.py`，
+  给 `SPEED_SAMPLE_BYTES` / `SPEED_SAMPLE_SECONDS` / `LISTING_LIMIT_BYTES` 与 `PROBE_TIMEOUT_S`），
+  四项都同时有字节上限和时间上限，所以"最坏 ~20 s"是从常量推得出来的，而不是估的。
+  选源的**原因**（两侧各自的数字、`SPEED_MARGIN`、或者"没测"）跟着 `Selection.reason`
+  在传输前打印，所以慢在哪一侧是可解释的，而不是"今天怎么这么快"。`--hub` / `DECIS_HUB`
+  写死时这一切都不发生。
 - **kev 的基座按"第二个 checkpoint"解析，而不是交给 `transformers` 按 repo id 去找**
   （`engines/kev.py: _base_directory`）。理由有两条：`--dest` 出来的卷要自足（否则卷里只有
   adapter），以及 ModelScope 下载下来的基座 `transformers` **根本看不到** —— 它只认

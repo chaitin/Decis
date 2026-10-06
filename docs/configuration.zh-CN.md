@@ -90,11 +90,25 @@ DECIS_MODEL_DIR=./models uv run decis serve
 取权重时先试 Hugging Face，只有当它的 endpoint **完全**连不上时才退回
 [ModelScope](https://modelscope.cn)：DNS 失败、连接被拒或超时。HTTP 错误状态不算"连不上"——
 401 或 404 恰恰证明主机答了话——所以私有或需要鉴权的镜像不会被误判成"被墙"。这条退路是给
-Hugging Face 不可达的网络准备的；能连上时行为完全不变。
+Hugging Face 不可达的网络准备的。
 
-这个决定覆盖一条命令发起的**每一次**下载，而不只是第一次：kev 的适配器**和**它背后的基座都走
-同一个选择，而且都以目录的形式交给加载器。所以 `decis download --engine kev-0.8b --hub modelscope`
-打印 `source modelscope` 时，适配器和基座都不会从 Hugging Face 来。
+**答得上话的主机不一定是值得等的主机。** 所以当命令知道**具体要取哪个 checkpoint** 时
+（`decis download`，或缓存为空的服务器启动），`auto` 还会量一下两个 Hub，谁快就用谁——
+但必须快到 1.5 倍。做法是有上限的：每个 Hub 各要一次仓库文件清单（清单同时回答"它到底有没有
+这个仓库"），再从**这次真的会拉的文件**里挑最大的那个读最多 1 MiB。两个请求都同时受**大小**
+和**时间**约束（采样 6 秒、清单 3 秒），所以一个慢慢挤数据的 Hub 拖不住这条命令。
+没有指定 checkpoint 时不测量；`DECIS_HUB` 写死时既探测也不测量。
+
+**只有两类事实会换源，而且都不是速率数字。** 一是 404：这个仓库不在那里（只有 ModelScope 才有
+的 checkpoint 就属于这种）。二是请求**根本没完成**——DNS 失败、连接被拒、超时，或者回来的不是
+一份清单（门户劫持页、代理的 HTML 报错页）：这说明这个 endpoint 从本机根本用不了，而这正是这条
+回退一开始存在的理由。反过来，**有状态码的答复要留在 Hugging Face**：gated 仓库的 401、403、
+429、5xx 说的是这次请求，不是这条路；这份清单不带凭据，而客户端可能带。
+
+这个决定覆盖一条命令发起的**每一次**下载，而不只是第一次：kev 的适配器**和**它背后的基座都要
+解析，而且**各自**做一次决定——它们是两个不同的仓库，镜像对两者的覆盖也是独立的。两者都以目录的
+形式交给加载器。所以 `decis download --engine kev-0.8b --hub modelscope` 打印 `source modelscope`
+时，适配器和基座都不会从 Hugging Face 来。
 
 ```bash
 uv run decis doctor                      # 这台机器会走哪个源、为什么
@@ -104,12 +118,32 @@ uv run decis download --engine kev-0.8b  # 传输任何字节之前先打印源
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `DECIS_HUB` | `auto` | `auto`、`huggingface` 或 `modelscope`。`auto` 会探测并回退；写死一个值则既不探测也不替换，所以在 `auto` 会换源的情况下 `huggingface` 会直接失败。 |
-| `HF_ENDPOINT` | `https://huggingface.co` | `huggingface_hub` 使用的 endpoint，**也是**探测时问的那个，于是内部镜像（或 `https://hf-mirror.com`）会被当作可达，而不是当作被墙的 Hugging Face。 |
+| `HF_ENDPOINT` | `https://huggingface.co` | `huggingface_hub` 使用的 endpoint，**也是**探测与测量问的那个，于是内部镜像（或 `https://hf-mirror.com`）会被当作可达，而不是当作被墙的 Hugging Face。 |
+| `MODELSCOPE_ENDPOINT` | `https://www.modelscope.cn` | ModelScope 客户端使用的 endpoint，**也是**测量问的那个，理由同上：测的是公网、客户端连的是内网镜像，等于拿别人的网络数字决定自己的源。旧的 `MODELSCOPE_DOMAIN` 仍被接受。 |
 
-**`auto` 只回答一个问题：endpoint 答不答话。** 它不测速度，也不会先试一次传输。所以"答得慢、
-对大文件限速、或者只有模型页面通"的 Hugging Face 依然会被选中，下载要么很久、要么在客户端里
-失败。`decis download` 会打印选了哪个源、为什么（`https://huggingface.co answered`）——要读的
-就是这一行：**可达就意味着不会回退**。想强制换源用 `--hub modelscope` 或 `DECIS_HUB=modelscope`。
+**"连得上"和"能用"是两个问题，`auto` 两个都回答。** 它先探测 endpoint，指定了 checkpoint 时
+再各测一个有上限的样本。源那一行会把两侧的速率都打印出来，所以选源是可解释的，而不是"今天快、
+昨天慢"：
+
+```text
+kev-0.8b: source huggingface at https://huggingface.co: huggingface at <rate> against
+modelscope at <rate>; fetches the pinned revision
+```
+
+那一行里的速率是**当时那条网络**的实测值，所以它被打印出来而不是写进文档。`decis doctor`
+不指定 checkpoint，所以它只报可达性并明说这一点（`hub speed  not measured (no engine named)`）。
+想强制指定源用 `--hub huggingface|modelscope` 或 `DECIS_HUB=`：写死的值既不探测、也不测量、
+更不会替换。
+
+**已经在客户端缓存里的 checkpoint 不会被重新下载。** 在做任何决定之前，两个客户端都会被要求
+**只查自己的缓存**（`local_files_only`，本地目录查找），所以热缓存既不发探测、也不发测量、
+更不传输——"另一个 Hub 更快"不会把已经躺在磁盘上的几个 GB 再拉一遍。带 `--dest`
+（或 `DECIS_MODEL_DIR`）时，缓存里那份会被**拷贝**到 `<目录>/<引擎 id>/`：这是本地复制而不是
+第二次取权重，所以在两个 Hub 都连不上的机器上同样成立。
+
+**镜像没有这个仓库时，在失败之前就告诉你。** 两个 `mstrasser/Jeff-*` 在 ModelScope 上没有镜像
+（覆盖情况见 `docs/design-review.md §2-D32`），所以在连不上 Hugging Face 的网络里，命令会直接
+警告"这次下载会失败"，而不是让客户端在命令中途抛一个错误。
 
 **ModelScope 上无法兑现 pin 住的 revision。** 它的 revision 是分支名和 tag 名，而这些仓库的镜像
 只有 `master`。把 Hugging Face 的 commit sha 交给它并不会报错：它会打一行 `No files to download`

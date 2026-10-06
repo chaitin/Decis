@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,58 @@ def mixed_request() -> dict:
             },
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def the_hub_decision_is_a_stub_not_this_machines_network(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> Iterator[None]:
+    """Which Hub answers, and how fast, must not be *measured* by the test suite.
+
+    `hub.choose` asks two questions over `urllib`: the reachability probe, and (when a
+    checkpoint is named) the bounded speed sample. Both are answered by the internet, so a
+    test that leaves either un-stubbed has an outcome that depends on the host running it --
+    it passes on a laptop with a fast route to Hugging Face and fails on the network this
+    fallback exists for. That is not hypothetical: when the speed measurement was added, a
+    test that had stubbed only the probe started failing intermittently, with the source
+    chosen by whichever hub answered first on the machine running it.
+
+    So the transport is closed. A test that really wants the network marks itself `network`
+    (the convention `tests/test_jeff_vendor.py` follows for its upstream fetch), and one that
+    wants to vary the answer replaces `decis.hub.probe_endpoint` / `decis.hub.survey_hub` /
+    the `open_url` seam -- each of which this guard sees through, because they never reach
+    `urlopen`.
+
+    Only `urllib` is guarded: the hub *clients* are other libraries, and every test that
+    exercises one installs a fake module instead (`tests/test_cli_download.py`).
+    """
+    import urllib.parse
+    import urllib.request
+
+    real = urllib.request.urlopen
+    loopback = {"127.0.0.1", "localhost", "::1", ""}
+    attempted: list[str] = []
+
+    def guarded(url: object, *args: object, **kwargs: object) -> object:
+        address = getattr(url, "full_url", url)
+        host = urllib.parse.urlsplit(str(address)).hostname or ""
+        if host not in loopback and request.node.get_closest_marker("network") is None:
+            attempted.append(host)
+            raise AssertionError(f"the test suite tried to reach {host}")
+        return real(url, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(urllib.request, "urlopen", guarded)
+    yield
+    # Reported here rather than raised where it happens: `hub.probe_endpoint` and
+    # `hub.survey_hub` catch every exception on purpose (an unreachable host is an answer, not
+    # a crash), so an error raised inside them would be swallowed and the test would quietly
+    # measure the wrong thing instead of failing. At teardown there is nothing to swallow it.
+    if attempted and request.node.get_closest_marker("network") is None:
+        pytest.fail(
+            f"reached {sorted(set(attempted))} through urllib. Stub what decides the answer "
+            f"(decis.hub.probe_endpoint / decis.hub.survey_hub / their `open_url` seam); if the test is "
+            f"about the real thing, mark it `network`."
+        )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

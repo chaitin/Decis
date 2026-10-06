@@ -29,6 +29,19 @@ from decis.service import DecisionService
 STUB = "stub"
 
 
+@pytest.fixture(autouse=True)
+def the_hub_probe_is_a_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`doctor` reports which Hub answers here; the answer comes from a stub, not from the wire.
+
+    `tests/conftest.py` closes the transport, so leaving this out fails the test rather than
+    measuring this machine -- which is the point: on the network the fallback exists for,
+    Hugging Face does not answer, and a report asserted against a live probe would only hold
+    on the machine that wrote it. The two answers, and what `doctor` prints for each, are
+    asserted in `test_doctor_reports_the_source_it_would_fetch_from`.
+    """
+    monkeypatch.setattr("decis.hub.probe_endpoint", lambda url, **kwargs: True)
+
+
 def banner(*, preload: bool = False, **changes: object) -> str:
     settings = dataclasses.replace(Settings(), **{"default_engine": STUB, **changes})  # type: ignore[arg-type]
     return cli_module.startup_banner(settings, "127.0.0.1", 8000, preload=preload)
@@ -239,3 +252,30 @@ def test_doctor_refuses_a_misspelled_device_instead_of_tracebacking(monkeypatch:
     code, output = run_cli("doctor", "--env-file", "")
     assert code == 1
     assert "device           INVALID -- DECIS_DEVICE='gpu' is not a device" in output
+
+
+def test_doctor_reports_the_source_it_would_fetch_from(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Hub decision is reported as a decision, with its reason and its cost.
+
+    Two things are pinned: a reachable Hugging Face is named as the source, and the speed line
+    says `not measured` -- `doctor` names no checkpoint, so there is no fetch to measure, and a
+    number here would be one no download is obliged to get (`docs/design-review.md` §2-D37).
+
+    The fallback case then shows the other half: the report names ModelScope, gives the reason,
+    and repeats the cost a deployment is about to pay -- no commit pin.
+    """
+    monkeypatch.setenv("DECIS_API_KEY", "doctor-test-key")
+
+    code, output = run_cli("doctor", "--env-file", "")
+    assert code == 0
+    assert "  weight hub       auto -> huggingface:" in output, output
+    assert "  hub speed        not measured (no engine named)" in output, output
+    assert "hub pin" not in output, "the pin is honorable here; nothing to warn about"
+
+    monkeypatch.setattr("decis.hub.probe_endpoint", lambda url, **kwargs: False)
+
+    code, output = run_cli("doctor", "--env-file", "")
+    assert code == 0
+    assert "  weight hub       auto -> modelscope:" in output, output
+    assert "did not answer" in output, "the reason has to be on the line, not just the verdict"
+    assert "  hub pin          modelscope has no commit revisions" in output, output

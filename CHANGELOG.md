@@ -12,6 +12,37 @@ each engine will run.
 
 ### Added
 
+- **`decis engines` lists the catalogue.** One row per shipped engine: the id `--engine` and a
+  request's `model` field accept, its aliases, its extra, its Python floor, and the Hub
+  repository `decis download` would fetch — with the declared size, the subfolder (three
+  engines share one repository) and the base model an adapter resolves
+  (`kev-0.8b -> Qwen/Qwen3.5-0.8B-Base`). Every value is read from `registry.SPECS` and the
+  engine's own `weights()`. `decis models` keeps answering the other question — whether each
+  id can run on this machine.
+- **A slow Hugging Face now yields to ModelScope, not just an unreachable one.**
+  `DECIS_HUB=auto` used to ask one question ("does the endpoint answer?") and a throttled or
+  cross-border route answers *and* moves a 647 MiB checkpoint at a crawl — for hours. When a
+  *specific* checkpoint is about to be fetched, both hubs are now asked to list the repository
+  (which also settles whether they have it: neither `mstrasser/Jeff-*` has a ModelScope
+  mirror) and are timed on the largest file that fetch would really pull, bounded to 1 MiB and
+  6 s each — and each listing itself is bounded in bytes and in time, so a hub that trickles
+  cannot hold the command open. The faster one wins if it is faster by at least 1.5x — below
+  that the difference is noise, and the mirror cannot honor the pinned commit, so Hugging Face
+  keeps the tie. Two facts move the fetch without a number: a 404 (the repository is not there)
+  and a request that never completed (DNS, a refused connection, a timeout, a body that is not
+  a listing) — the blocked route this fallback was always for. An *answer* with a status keeps
+  Hugging Face, since a 401 on a gated repository (this listing carries no token), a 403, a
+  429 or a 5xx is about the request rather than the route. The source line prints both rates,
+  and every warning about the pin is unchanged.
+- **A checkpoint already in either client's cache is never re-fetched.** Both clients are
+  asked to look only at their own cache (`local_files_only`) before any choice is made, so a
+  warm cache costs no probe, no measurement and no transfer — and "the other hub measured
+  faster" cannot re-download gigabytes that are already on disk. With `--dest` (or
+  `DECIS_MODEL_DIR`) the cached checkpoint is *copied* to `<dir>/<engine id>/` instead of being
+  handed back to a client to lay out, which needs no network at all — and a client's own
+  transport error (`httpx.ConnectError` and friends) is now one `error:` line rather than a
+  traceback. `MODELSCOPE_ENDPOINT` (and the older `MODELSCOPE_DOMAIN`) is now read, so the
+  measurement describes the network the client will use rather than the public host.
 - **`decis download` falls back to ModelScope when Hugging Face cannot be reached.** A fetch
   probes `<HF_ENDPOINT>/api/models?limit=1` once (3 s timeout; any HTTP status counts as
   reachable, so a private mirror is not mistaken for a blocked host) and only then picks a
@@ -77,6 +108,14 @@ each engine will run.
   guards) and that the diagnosis above is what a CPU-only build produces.
 
 ### Changed
+
+- **The source decision is now a measurement, and says so.** `decis download` prints what each
+  hub measured, or which one did not have the repository; `decis doctor` names no checkpoint,
+  so it reports reachability and prints `hub speed  not measured (no engine named)` instead of
+  implying a number no fetch would necessarily get. A pinned `--hub`/`DECIS_HUB` still probes
+  nothing, measures nothing and never substitutes. The cost is bounded and documented: two
+  listings and two 1 MiB samples at most, and nothing at all from a warm cache
+  (`docs/design-review.md` §2-D37).
 
 - **Weight-bearing images are built only at release.** A push to the default branch publishes
   the weightless `<engine>-runtime` images, a feature branch keeps
