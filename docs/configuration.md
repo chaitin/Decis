@@ -105,6 +105,16 @@ status is not "unreachable" — a 401 or a 404 still proves the host answered �
 authenticated mirror is never misread as a blocked one. The fallback is for networks where
 Hugging Face is blocked; where it is reachable, nothing changes.
 
+The decision covers **every** download a command makes, not just the first one: a kev fetch
+resolves its adapter *and* the base model behind it through the same choice, and both are
+handed to the loaders as directories. So if `decis download --engine kev-0.8b --hub modelscope`
+prints `source modelscope`, neither the adapter nor the base comes from Hugging Face.
+
+```bash
+uv run decis doctor                      # which source a fetch here would use, and why
+uv run decis download --engine kev-0.8b  # prints the source before transferring anything
+```
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `DECIS_HUB` | `auto` | `auto`, `huggingface` or `modelscope`. `auto` probes and falls back; a pinned value never probes and never substitutes, so `huggingface` fails loudly where `auto` would switch sources. |
@@ -112,11 +122,22 @@ Hugging Face is blocked; where it is reachable, nothing changes.
 
 [ModelScope]: https://modelscope.cn
 
+**`auto` answers one question: does the endpoint answer?** It does not measure speed, and it
+does not try a transfer first. A Hugging Face that answers slowly, throttles large files, or
+has only its model *pages* reachable will therefore keep being chosen, and the download either
+takes a long time or fails in the client. `decis download` prints which source it picked and
+why (`https://huggingface.co answered`), so the line to read is that one — reachable means
+no fallback. Force the other source with `--hub modelscope` or `DECIS_HUB=modelscope`.
+
 **A pinned revision cannot be honored on ModelScope.** Its revisions are branch and tag
 names, and the mirrors of these repositories carry `master` and nothing else. Handing it the
 Hugging Face commit sha does not fail: it logs `No files to download` and returns success
 with an empty directory, so the pinned revision becomes a silent no-op. Decis therefore never
-sends the sha there. Instead `decis download` prints which source it is about to use, why,
+sends the sha there. That is not a cosmetic difference: measured on 2026-10-06, the mirror's
+`kev-0.8b` adapter is the same size as the pinned commit and **different bytes**
+(`adapter_model.safetensors` hashes to `9b908623…` there and `c81d5716…` at the pin), because
+a mirror tracks the repository's branch. A fallback is a different download, not the same
+download from a closer host. Instead `decis download` prints which source it is about to use, why,
 and a warning naming the revision that source cannot honor; `decis doctor` reports what a
 fetch would do on this host. `DECIS_HUB=huggingface` turns the whole situation into a
 failure, which is what a deployment that needs the pin to mean something should set.

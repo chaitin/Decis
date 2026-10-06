@@ -92,15 +92,31 @@ DECIS_MODEL_DIR=./models uv run decis serve
 401 或 404 恰恰证明主机答了话——所以私有或需要鉴权的镜像不会被误判成"被墙"。这条退路是给
 Hugging Face 不可达的网络准备的；能连上时行为完全不变。
 
+这个决定覆盖一条命令发起的**每一次**下载，而不只是第一次：kev 的适配器**和**它背后的基座都走
+同一个选择，而且都以目录的形式交给加载器。所以 `decis download --engine kev-0.8b --hub modelscope`
+打印 `source modelscope` 时，适配器和基座都不会从 Hugging Face 来。
+
+```bash
+uv run decis doctor                      # 这台机器会走哪个源、为什么
+uv run decis download --engine kev-0.8b  # 传输任何字节之前先打印源
+```
+
 | 变量 | 默认值 | 含义 |
 |---|---|---|
 | `DECIS_HUB` | `auto` | `auto`、`huggingface` 或 `modelscope`。`auto` 会探测并回退；写死一个值则既不探测也不替换，所以在 `auto` 会换源的情况下 `huggingface` 会直接失败。 |
 | `HF_ENDPOINT` | `https://huggingface.co` | `huggingface_hub` 使用的 endpoint，**也是**探测时问的那个，于是内部镜像（或 `https://hf-mirror.com`）会被当作可达，而不是当作被墙的 Hugging Face。 |
 
+**`auto` 只回答一个问题：endpoint 答不答话。** 它不测速度，也不会先试一次传输。所以"答得慢、
+对大文件限速、或者只有模型页面通"的 Hugging Face 依然会被选中，下载要么很久、要么在客户端里
+失败。`decis download` 会打印选了哪个源、为什么（`https://huggingface.co answered`）——要读的
+就是这一行：**可达就意味着不会回退**。想强制换源用 `--hub modelscope` 或 `DECIS_HUB=modelscope`。
+
 **ModelScope 上无法兑现 pin 住的 revision。** 它的 revision 是分支名和 tag 名，而这些仓库的镜像
 只有 `master`。把 Hugging Face 的 commit sha 交给它并不会报错：它会打一行 `No files to download`
 然后返回成功，留下一个空目录，于是 pin 住的 revision 变成了静默的空操作。所以 Decis 从不把 sha
-发给它。取而代之的是：`decis download` 在传输任何东西之前打印将要使用的源、原因，以及一条警告，
+发给它。这不是措辞上的差别：2026-10-06 实测，镜像上 `kev-0.8b` 的适配器和 pin 的那份**大小相同、
+字节不同**（`adapter_model.safetensors` 在镜像上是 `9b908623…`，pin 是 `c81d5716…`），因为镜像是
+跟着仓库的分支走的。**换源换的就是另一份下载**，不是“同一份从更近的机器上拿”。取而代之的是：`decis download` 在传输任何东西之前打印将要使用的源、原因，以及一条警告，
 点名那个源兑现不了的 revision；`decis doctor` 报告在这台机器上取权重会发生什么。需要 pin 真正
 生效的部署应该设 `DECIS_HUB=huggingface`，把这件事直接变成失败。
 

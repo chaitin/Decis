@@ -109,7 +109,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 引擎加载状态（idle/loading/ready/failed 与失败原因） | `src/decis/scheduler.py: LoadStatus` | 在 CLI/路由里各写一份"就绪"判断；用 `ready` 一个布尔表示"为什么不能服务" |
 | 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
 | 「一个 checkpoint 需要哪些仓库」（适配器 + 它适配的基座） | `src/decis/paths.py: BaseModel` / `WeightSpec.bases` | 引擎自己下载基座；把基座写成引擎里第二个硬编码 repo id |
-| 「网络取权重时问哪个 Hub、pin 能不能兑现」 | `src/decis/hub.py`: `choose` / `Selection.pinned` / `download` | 引擎或 CLI 自己判断『连得上吗』再挑客户端；把 `WeightSpec.revision` 转交给不支持 commit 的客户端（ModelScope 收到 sha 会**静默成功且一个文件都不下**，`design-review.md §2-D32`）；在 `hub.py` 之外提 `snapshot_download` / `huggingface_hub` / `modelscope`（守卫 `tests/test_conventions.py::test_only_hub_names_a_hub_client`） |
+| 「网络取权重时问哪个 Hub、pin 能不能兑现」 | `src/decis/hub.py`: `choose` / `Selection.pinned` / `download` | 引擎或 CLI 自己判断『连得上吗』再挑客户端；把 `WeightSpec.revision` 转交给不支持 commit 的客户端（ModelScope 收到 sha 会**静默成功且一个文件都不下**，`design-review.md §2-D32`）；在 `hub.py` 之外提 `snapshot_download` / `huggingface_hub` / `modelscope`（守卫 `tests/test_conventions.py::test_only_hub_names_a_hub_client`）；把 repo id（尤其 `f"{repo_id}@{revision}"` 这种字串）交给**会自己联网**的上游 loader——vendored 的 `resolve_run` 拿到它就自己调 Hugging Face 客户端，于是 `DECIS_HUB`/`--hub` 被绕过（`design-review.md §2-D33`；守卫 `tests/test_engines_kev.py::test_the_vendored_loader_is_handed_a_directory_not_a_hub_id` 与 `test_conventions.py::test_engines_do_not_build_a_hub_id_string`） |
 | 「本机有没有装某个模块」 | `src/decis/paths.py: module_available` | 在别处再写一遍 `importlib.util.find_spec`（少写那个 `except` 就会把『父包不存在』报成已安装；守卫 `test_module_presence_has_one_home`） |
 | `(引擎, 设备) → dtype`、以及"能跑但性能已知很差"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
 | `DECIS_DEVICE` 的合法取值、「这台机器能用哪个设备」、「不设时用哪个」 | `src/decis/engines/devices.py: DEVICES` / `ACCELERATOR_ORDER` / `available_devices` / `best_device` / `requested_device` | 引擎自己写设备回退（`settings.device or "cpu"` 曾让 kev 在 Apple 芯片上跑 CPU，实测慢 15 倍）；在别处再判断一次"CUDA/MPS 可用吗" |
@@ -285,7 +285,10 @@ uv run decis serve --engine laya-multilingual --host 127.0.0.1     # 冷启动�
 uv run pytest -m weights             # 真实推理 + 批不变性（需要权重，CPU 上慢）
 
 uv sync --extra kev
-uv run decis download --engine kev-0.8b   # adapter 取 3 个文件约 13 MB（仓库共 43 MiB）+ 基座 1.65 GiB
+uv run decis download --engine kev-0.8b   # adapter 取 3 个文件约 43 MiB（仓库共 62.5 MiB）+ 基座 1.65 GiB
+#   两个仓库都走同一套规则：源由 hub.py 选（`--hub` / DECIS_HUB）、pin 由 paths 兑现，
+#   适配器和基座都以**目录**交给加载器——把 repo id 交给 vendored 的 Checkpoint 会让它自己去
+#   联网（§2-D33），`--hub modelscope` 就白设了
 uv run decis serve --engine kev-0.8b --host 127.0.0.1   # 需要权重；容器内未验证
 
 uv sync --extra jeff
@@ -465,6 +468,16 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 在 `hub.py` 之外挑 Hub 或调 `snapshot_download`（§2；守卫
   `tests/test_conventions.py::test_only_hub_names_a_hub_client`），或在 `paths.module_available`
   之外再写一遍 `find_spec`（守卫 `test_module_presence_has_one_home`）
+- ❌ 把 repo id 交给**会自己联网**的上游 loader（`design-review.md §2-D33`：`kev.py` 把
+  `jaredpalmer/kev-0.8b@<sha>` 交给 vendored 的 `Checkpoint`，而它的 `resolve_run` 自己调
+  `huggingface_hub.snapshot_download`——于是 `DECIS_HUB=modelscope` / `--hub modelscope` 对适配器
+  完全无效，从 ModelScope 取来的适配器也永远读不回来；已有的字符串守卫看不见它，因为那个客户端
+  名字在 vendored 代码里）。引擎只做两件事：把 `WeightSpec` 交给 `paths.resolve` /
+  `paths.fetch_checkpoint`，把拿回来的**目录**转交出去
+- ❌ 调用共享的分类器/解析函数时不把**本次解析到的**配置传进去（`design-review.md §2-D34`：
+  `decis doctor` 的引擎清单用默认配置调 `registry.status`，于是同一个终端里它一边打印
+  `model paths kev-0.8b=/srv/…`，一边说 `kev-0.8b needs weights`。共享函数不够，喂给它的输入
+  也得是同一份；守卫 `tests/test_status.py::test_doctor_asks_the_classifier_with_the_settings_it_resolved`）
 - ❌ 让“回退到镜像”变成一个**默认看不见**的行为：选源、原因、以及兑现不了的 revision 必须在
   传输任何字节**之前**打印出来（`decis download` 的源行 + 警告，`decis doctor` 的 `weight hub` 行），
   需要 pin 生效的部署用 `DECIS_HUB=huggingface` 把回退变成失败

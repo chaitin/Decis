@@ -375,13 +375,15 @@ def _doctor(args: argparse.Namespace) -> int:
         print(f"  proxy bypass     {name}: {before}{replacement}")
 
     # Engine availability, reported one by one: a single-engine image is the
-    # normal case, not a fault. Uses the same classifier as `decis models`, so the
-    # two commands can never disagree about what this server can actually run.
+    # normal case, not a fault. Uses the same classifier as `decis models`, and with the
+    # settings this run resolved -- a `--model-path`/`DECIS_MODEL_DIR` override has to move
+    # this line too, or `doctor` contradicts both its own `model paths` line above and
+    # `models` (`docs/design-review.md` §2-D34).
     print("\nengines")
     from .engines.registry import status
 
     for engine_id in sorted(SPECS):
-        state = status(engine_id)
+        state = status(engine_id, settings)
         print(f"  {engine_id:<24} {state.summary:<14} {state.remedy}")
 
     print("\nserver")

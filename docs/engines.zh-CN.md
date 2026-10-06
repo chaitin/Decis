@@ -28,8 +28,11 @@
 
 两个 Jeff 的参数量都不是 checkpoint 名字里那个数：前者是 852,985,920，后者是
 4,628,569,379，都取自 Hub 自己的 `safetensors.parameters`，而不是 `0.8B` / `E2B`。体积取自 Hub
-的文件清单，只算引擎真正需要的那些文件：`kev-0.8b` 是三个适配器文件（约 13 MB）加上它引用的
-Qwen3.5 基座（1.65 GiB），不是那个仓库完整的 43 MiB 清单。
+的文件清单，只算引擎真正需要的那些文件：`kev-0.8b` 是三个适配器文件（45,443,000 B，43.3 MiB）
+加上它引用的 Qwen3.5 基座（1.65 GiB），不是那个仓库完整的 62.5 MiB 清单（光 `tokenizer.json`
+就 19 MiB，而真正被加载的是基座那份）。`engines/kev.py` 里的 `expected_bytes` 就是这些数字，
+`tests/test_engines_kev.py::test_the_declared_size_is_the_sum_of_the_files_a_fetch_writes`
+让它永远等于那份文件清单。
 
 ```bash
 uv run decis models     # 本机注册了哪些引擎、每个是否真的能跑
@@ -123,12 +126,13 @@ Jeff 那两行是 vendored 加载器自己的规则（`cuda` 和 `mps` 上用 `b
 解析顺序见[配置](configuration.zh-CN.md#引擎选择与权重)。三条与引擎有关的说明：
 
 - **Laya** 的 checkpoint 自带容量，所以 `max_len` 不同的微调模型会自动按正确的预算提供服务。
-- **kev** 在适配器的 checkpoint 元数据里用 Hub repo id 引用它的 Qwen3.5 基座，所以另外挂载的
-  基座副本不会被采用。基座仓库声明在 `WeightSpec.bases` 里，`decis download` 两个都会取：
-  给了 `--dest`（或 `DECIS_MODEL_DIR`）时基座落在适配器旁边的 `<dir>/Qwen3.5-0.8B-Base/`，
-  一个目录就装下引擎要读的全部内容；两个都没给时它落在应答的那个 Hub 的缓存里
-  （`decis/hub.py`），加载器拿到的是那个目录——否则 `transformers` 根本看不到 ModelScope
-  下载下来的东西。
+- **kev** 需要第二个仓库：适配器训练时用的 Qwen3.5 基座，声明在 `WeightSpec.bases` 里。
+  `decis download` 两个都会取；给了 `--dest`（或 `DECIS_MODEL_DIR`）时基座落在适配器旁边的
+  `<dir>/Qwen3.5-0.8B-Base/`，一个目录就装下引擎要读的全部内容；两个都没给时它落在应答的那个
+  Hub 的缓存里（`decis/hub.py`）。**两个仓库都走这个选择**，而且都以目录的形式交给加载器：
+  vendored 的 checkpoint 代码拿到 repo id 时会自己用 `huggingface_hub` 去下，所以把适配器当
+  `repo@revision` 传进去就等于绕过 `DECIS_HUB`/`--hub`——反过来，`transformers` 也根本看不到
+  ModelScope 下载下来的东西。
 - **Jeff** 的 checkpoint 是全权重微调，所以 `decis download` 只取那一个目录，旁边没有基座要放。
   每个 checkpoint 都在 `decision_config.json` 里带着自己的答案词表和采样温度，而加载器在
   tokenizer 复现不出那份词表时拒绝启动——如果你自己重新导出微调模型，必须带上自己的

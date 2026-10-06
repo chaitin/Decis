@@ -7,7 +7,7 @@
 
 > **这份文档怎么读。** 已经修好、并且有测试守卫的问题，在 §2.2 里压缩成一小段（症状 / 怎么修的 /
 > 谁在守着它）；**现在仍然成立**的问题放在 §2.1 的最前面；方法论问题在 §4；还没修的清单在 §5。
-> 每条都有一个稳定的编号（`D1`…`D32`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
+> 每条都有一个稳定的编号（`D1`…`D35`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
 > 所以编号不会重排。逐条的事故复盘在 git 历史里（`git log -p docs/design-review.md`），这里不再重述。
 
 ---
@@ -347,7 +347,7 @@ merge 必然在所有 build 之后，于是读到的是最后完成的那个引�
 不存在"要内置权重却没装对应 extra"的构建任务）、
 `tests/test_compose.py`（compose 用的 image tag 正是那个内置权重的变体）。
 **代价（写下来）**：权重的 `RUN` 层在 `COPY src` 之后，所以每次源码改动这条构建线都要重新下载——laya 是 647 MiB，
-kev 是约 13 MB 的 adapter 加 1.65 GiB 的基座，乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里
+kev 是约 43 MiB 的 adapter 加 1.65 GiB 的基座，乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里
 让 `COPY --from` 命中缓存（`docs/design.md §12.2` 记了这条路，没有实现）。
 
 #### D21（高）挂在 `DECIS_MODEL_DIR` 上的卷会把镜像里内置的权重盖掉 — 已修正
@@ -533,6 +533,130 @@ revision，`decis doctor` 报告这台机器会走哪个源。要 pin 真正生�
 
 **教训**：当一个“可选参数”在上游属于**另一个命名空间**时，传错值可能连异常都没有。
 验收要问的是“加载器能不能读到”（`checkpoint_root`），不是“调用返回了吗”。
+
+**补测（2026-10-06，就在本机，`--hub modelscope` 真跑一次）**：回退路径此前只有单元测试走过，
+这一轮把它端到端跑了一遍（`decis download --engine kev-0.8b --hub modelscope --dest /tmp/ms-check`），
+顺手得到一个 D32 一直只是**推断**的结论的硬证据——镜像上的字节和 pin 的那份**不一样**：
+
+| 文件 | Hugging Face `54f4f87`（pin） | ModelScope `master`（当前 head `39278b1`） |
+|---|---|---|
+| `adapter_model.safetensors` | 43,338,624 B，sha256 `c81d5716…` | 43,338,624 B，sha256 `9b908623…`（**同样大小、不同字节**） |
+| `head.pt` | 2,103,103 B | 2,103,999 B |
+| `adapter_config.json` | 1,273 B | 1,273 B |
+
+也就是说 `hub.Selection.pinned=False` 不是保守的措辞，而是事实：**回退拿到的是另一个 commit 的
+权重**。这正是“回退必须打印出来、需要 pin 就用 `DECIS_HUB=huggingface`”的理由；反过来，客户端的
+“下载成功”什么都不能证明。
+
+#### D33（高）kev 的适配器绕过了 Hub 选择：`DECIS_HUB=modelscope` 也在从 Hugging Face 下 — 已修正
+
+D32 修完“选哪个源”，漏掉了**谁去取**。`kev.py` 把适配器交给上游加载器时是这样写的：
+
+```python
+target = str(source.path) if source.is_local else f"{source.repo_id}@{source.revision}"
+checkpoint = Checkpoint(target)
+```
+
+`_kev_vendor/checkpoint.py:29 resolve_run` 收到这个字符串后自己调
+`huggingface_hub.snapshot_download(repo, revision=…)`。于是：`DECIS_HUB=modelscope`、`--hub modelscope`
+对适配器**完全无效**，它照旧从 Hugging Face 取；反过来，一个从 ModelScope 或挂载目录取来的适配器
+也永远读不回来（`resolve_run` 只认“本地目录 or HF 仓库 id”两种输入）。实测确认（`DECIS_HUB=modelscope`，
+把 `huggingface_hub.snapshot_download` 换成记录器）：
+
+```
+vendored resolve_run returned /tmp/fake
+it downloaded through: [('jaredpalmer/kev-0.8b', '54f4f877…')]
+DECIS_HUB was modelscope; modelscope was never asked
+```
+
+这是 §2 那类缺陷的典型形态：**决定“权重从哪来”的代码出现在 `paths.py`/`hub.py` 之外**，而且
+它躲过了已有的守卫——`test_weight_location_is_decided_only_in_paths` 找的是 `snapshot_download` /
+`huggingface_hub` 这两个*字符串*，`kev.py` 里一个都没有；调 `snapshot_download` 的是 vendored 代码，
+而 vendored 代码按 §2 的豁免不参与这类检查。“把 repo id 交给别人”也是一种 fetch，字符串扫描看不见它。
+
+修法：适配器与基座一样走 `paths`。新增 `KevEngine._adapter_directory(settings, source)`，本地命中直接
+返回目录，否则 `paths.fetch_checkpoint`（和 `decis download` 同一个调用，于是下载与加载不可能对 pin 或
+源产生分歧），再把**目录**交给 vendored 加载器。`_base_directory` 早就是这条路（D32 修的），这轮把
+另一半补齐——同一个缺陷的两次出现，值得记一笔。
+
+守卫（两层，因为单看字符串已经证明不够）：
+
+- 行为守卫 `tests/test_engines_kev.py::test_the_vendored_loader_is_handed_a_directory_not_a_hub_id`：
+  假 `torch` + 假 `_kev_vendor`，让 `load()` 真的走到调用点，断言拿到的是 `paths` 给的目录、里面没有
+  `@`、`settings` 与 pin 都跟着走。**无权重套也跑**（这正是当年漏掉这条分支的原因），并且已确认在
+  回退成旧写法时失败，报出的正是 `jaredpalmer/kev-0.8b@54f4f877…`。
+- 形状守卫 `tests/test_conventions.py::test_engines_do_not_build_a_hub_id_string`：引擎层任何
+  f-string 都不许插值 `.repo_id`。它不是通用规则（“不许把 Hub id 交给加载器”没有一般的 AST 表达），
+  所以 docstring 里写明了它只钉住这个历史形状，真正的守卫是上面那条行为测试。同时把
+  `test_weight_location_is_decided_only_in_paths` 从字符串扫描改成 AST（import / 属性调用 / 裸调用）：
+  改之前它连 `kev.py` **解释**自己在躲哪个函数的那句 docstring 都会判成违规。
+
+**教训**：“唯一的 fetch 入口”不能只靠“这个文件里有没有出现客户端名字”来守。凡是把仓库 id 当**值**
+传出去的地方，都要问一句“接住它的那层会不会自己去联网”；vendored 代码是这个仓库里唯一能让这句话
+失效的角落（D10 的 `measure`、D30 的提示词都栽在“以为守卫盖住了、其实盖的是另一条路径”）。
+
+#### D34（中）`decis doctor` 的引擎清单问的不是它自己解析出来的配置 — 已修正
+
+`_doctor` 打印了 `model paths` 行（来自本次解析的 `Settings`），紧接着的引擎清单却是
+`status(engine_id)`——不传 settings，`registry.status` 就自己 `load_settings()` 一份默认配置。于是
+`decis doctor --model-path kev-0.8b=/srv/models/kev-0.8b` 会同时打印“你把 kev 指到了 /srv/…”，和
+“kev-0.8b needs weights  decis download --engine kev-0.8b”；`DECIS_MODEL_DIR` 同理。`decis models`
+是对的（它传了 settings），所以两个命令在**同一个终端里互相矛盾**——而 §2 表里那条“就绪判断只有一个家”
+想防的正是这个。
+
+修法：`status(engine_id, settings)`。守卫
+`tests/test_status.py::test_doctor_asks_the_classifier_with_the_settings_it_resolved` 不去比字符串，而是
+把 `registry.status` 换成一个记录参数的探针：`doctor` 必须调用共享的分类器，且必须把**它解析到的**
+settings 传进去。这样在任何环境（有没有 engine extra、有没有权重）都成立——比“印出来的词一样”更接近
+那条不许出现第二份判断的规则。
+
+**教训**：共享一个函数不够，还得共享**喂给它的输入**。“两个调用者问同一个分类器不同的问题”比
+“两个调用者各写一份判断”更难发现，因为它看起来已经合规了。
+
+#### D35（中）kev 的体积是一个手打猜测，小了 3.5 倍，还抄进了五份文档 — 已修正
+
+这一轮为了确认 D33 的修复真的在从 ModelScope 取字节，量了一次真实文件，于是发现体积数字是错的：
+
+```
+docs/design.md §7.2        adapter 三文件 = 13,000,000 B (12.4 MiB)      ← 错
+docs/design.md §7.3        “合计约 13 MB”                              ← 错
+docs/engines{,.zh-CN}.md    “约 13 MB …… 整个仓库共 43 MiB”             ← 两个数都错
+docs/feasibility.md         “仓库 ≈43 MiB，只取 3 个文件 ≈13 MB”        ← 错
+AGENTS.md §7               “约 13 MB（仓库共 43 MiB）”                  ← 错
+src/decis/engines/kev.py   expected_bytes=13_000_000                    ← 错，而且有功能影响
+实测（pin `54f4f87` 的 Hub 快照；`adapter_model.safetensors` sha256 `c81d5716…`、`head.pt` `39f4343c…`）
+    adapter_config.json 1,273 + adapter_model.safetensors 43,338,624 + head.pt 2,103,103
+                         = 45,443,000 B (43.3 MiB)；整个仓库 65,512,436 B (62.5 MiB)
+```
+
+根因不是算错，是**一个手打的数量级猜测被自己的格式化函数洗成了“实测值”**：
+`13_000_000` 是写死在 `kev.py` 里的整数，`human_bytes` 把它渲染成 `12.4 MiB`——
+于是 CLI 印的是 `downloading to … (12.4 MiB)`（本轮实测日志里还能看到这一行），文档里写的也是
+`12.4 MiB`，一个“看起来精确到小数”的猜测就这样在代码与五份文档之间互相引用了一整轮。
+`43.3 MiB` 那处更直接：那是 `adapter_model.safetensors` **单个文件**的大小，被当成了整个仓库的清单。
+
+`expected_bytes` 有功能影响，不只是文案：`decis download`
+用它打印体积并调用 `filesystem_has_room`，所以之前它按 13 MB 而不是 43 MiB 检查磁盘空间；
+更糟的是基座那半边（1.65 GiB，占一次 kev 下载的 98%）`BaseModel.expected_bytes` 是 **`None`**，
+于是 1.65 GiB 的落盘**完全没有检查**，而 `docs/design.md` 却为它写着一个没人能核对的
+`1,769,896,333`（比 pin 版本的真实总和少 776 B）。
+
+修法：
+1. `engines/kev.py` 里体积变成**导出量**：`_ADAPTER_MANIFEST`（文件名 → 实测字节）求和得
+   `expected_bytes`，不再是手打的整数；
+2. `_BASE_08B.expected_bytes = 1_769_897_109`（pin 版本 9 个文件之和，实测），基座的体积与
+   磁盘检查这才第一次存在；
+3. 五份文档改成实测值，并写明“整个仓库”是哪个数；
+4. 守卫 `tests/test_engines_kev.py`：
+   `test_the_declared_size_is_the_sum_of_the_files_a_fetch_writes`（清单键集合 == 下载清单 ==
+   `checkpoint_files`，且 `expected_bytes == sum(清单)`，另外断言它大于单个权重文件——这条能抓住
+   “比一个文件还小”的抄错）与 `test_the_base_model_declares_the_bytes_it_publishes`。
+
+**教训**：进度条是**传输量**，不是**体积**，两者在“已经缓存过”时差一个数量级。凡是要写进代码或
+文档的数字，都要问“这个数是哪台机器、哪次操作量出来的，包含什么”——这次的正确答案是“Hub 上那个
+revision 的文件清单”，而它恰好是**可以逐字节核对**的东西（文件名 + 大小 + sha256）。
+`docs/design.md §7.2` 要求“实测体积”已经很久了；这条缺陷说明**要求写下来不等于有人核对**，
+而唯一能自动核对的形态是把它变成代码里的求和 + 一条守卫。
 
 ---
 
@@ -749,7 +873,7 @@ CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是
 | 11 | 两个 Jeff 引擎镜像的构建、体积与容器内冷启动 | **构建与体积已测**（2026-09-30 工作流首次构建并推送；体积取自已发布 tag 的 registry manifest：Qwen amd64 5.9054 GB / arm64 6.0471 GB，Gemma amd64 17.7453 GB / arm64 17.8870 GB，已记入 `docs/deployment.md`）。**容器内冷启动仍未测**：这两个 tag 从来没被拉下来起过容器 |
 | 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。两个引擎各只有一次探针观测（三问题一批，而且当时 CPU 被并发的测试占着），要报就得先进 `benchmarks/results/` |
 | 13 | 挂载自定义**基座**（D11）与 `noul.criteria` 未知键的策略（D13） | **两条都未修，而且都没有测试守卫**——它们只有文档层的约定，改动前请先看 §2.1 |
-| 14 | ModelScope 回退在**真正访问不到 Hugging Face** 的机器上的端到端行为 | **本机已验，目标环境未验**。用 `modelscope 1.40.1` 在本机（能连 huggingface.co）验证过：镜像存在，`allow_file_pattern` 的子目录通配符（`multilingual/tokenizer/*`）落下的布局能通过 `paths.checkpoint_root`；`pyproject.toml` 的 extra 也已解析出这个依赖。**没有**在一台 huggingface.co 不可达的机器上真跑过一次 `decis download`，也没测过 3 s 探测超时在被墙网络里的真实表现（DNS 污染与连接挂死的耗时不一样） |
+| 14 | ModelScope 回退在**真正访问不到 Hugging Face** 的机器上的端到端行为 | **本机已验（含 kev），目标环境未验**。用 `modelscope 1.40.1` 在本机（能连 huggingface.co）验证过：镜像存在，`allow_file_pattern` 的子目录通配符（`multilingual/tokenizer/*`）落下的布局能通过 `paths.checkpoint_root`；`pyproject.toml` 的 extra 也已解析出这个依赖。2026-10-06 补跑 `decis download --engine kev-0.8b --hub modelscope --dest /tmp/ms-check`：适配器完整落盘（3 个文件、45,443,000 B），`paths.resolve` 判为 `local`——这是 D33 的直接验收；基座也开始从 ModelScope 下载（`model.safetensors` 1.75 GB，实测 100–500 kB/s，到 64 MB 时中断），**只验到一半**：中断后磁盘上是 `*.incomplete`，`paths.resolve` 因此判它 `hub` 而不是 `local`，即半个基座不会被当成可用（D29 的保证对 ModelScope 客户端同样成立，这是这次顺带确认的）。**没有**在一台 huggingface.co 不可达的机器上真跑过一次 `decis download`，也没测过 3 s 探测超时在被墙网络里的真实表现（DNS 污染与连接挂死的耗时不一样），而**这正是 D33 藏了整整一轮的原因**：`auto` 在本机永远选 Hugging Face，那条分支只有人工 `--hub modelscope` 才会走到 |
 
 ---
 
@@ -766,6 +890,8 @@ CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是
 "对外材料不许出现 QPS"这条纪律的**理由**消失了（数字已经有了），但**新的理由**接上了：
 现在能报的是一条明确的负结论和一个测得的单进程吞吐上界，**不是**"批处理带来的高 QPS"。
 
-**2026-09-30 复核的结论**：31 个设计缺陷里 29 个已修（各有守卫，少数只有文档修复），
-2 个仍未修（D11、D13）；6 个方法论问题里 4 个已修正，2 个仍未修正（M2、M6，都需要一台干净的机器或 GPU）。
+**2026-09-30 复核的结论**：34 个设计缺陷里 32 个已修（各有守卫，少数只有文档修复），
+2 个仍未修（D11、D13）。其中 D33 与 D35 都是这一轮“换源”功能上线后**为了验证它**才发现的：
+前者是新分支没被真跑过一次（守卫只盖住了旁边那条路），后者是量字节时顺手发现体积数字一直抄错——
+两条都不是新代码引入的，而是“原来就没人核对过”；6 个方法论问题里 4 个已修正，2 个仍未修正（M2、M6，都需要一台干净的机器或 GPU）。
 §5 是这些未验证项的完整清单——**它们是这份文档仍然有效的那一半**。

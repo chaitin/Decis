@@ -360,15 +360,49 @@ def test_weight_location_is_decided_only_in_paths() -> None:
     and silently not for another -- and the failure would appear as the model loader
     reporting a missing file, far from the actual cause.
     """
+    hub_clients = {"huggingface_hub", "modelscope"}
     offenders = []
     for path in _modules():
         if path.parent.name != "engines":
             continue
-        source = _source(path)
-        # A Hub repository id being read is fine; deciding *where* to read from is not.
-        if "snapshot_download" in source or "huggingface_hub" in source:
+        tree = _tree(path)
+        # Imports, attribute calls and bare calls -- the *code*, not a comment about the
+        # rule: `kev.py` explains in prose which function it is avoiding, and a text match
+        # would either fail on that explanation or have to be kept vague.
+        imported = {name.split(".")[0] for name in _imported_modules(path)}
+        if hub_clients & imported or _uses_attribute(tree, "snapshot_download") or _calls(tree, "snapshot_download"):
             offenders.append(str(path.relative_to(PACKAGE)))
     assert offenders == [], f"engines must not fetch weights themselves; use paths.resolve: {offenders}"
+
+
+def test_engines_do_not_build_a_hub_id_string() -> None:
+    """The other way to fetch from Hugging Face: hand an upstream loader a repository id.
+
+    `kev.py` built `f"{source.repo_id}@{source.revision}"` and passed it to the vendored
+    `Checkpoint`, whose `resolve_run` calls `huggingface_hub.snapshot_download` itself -- so
+    the string above never appears, the guard above stayed green, and `DECIS_HUB=modelscope`
+    silently did not apply to kev's adapter (`docs/design-review.md` §2-D33).
+
+    This catches the shape; `test_engines_kev.py::test_the_vendored_loader_is_handed_a_directory_not_a_hub_id`
+    is the behavioural guard for the call site. Engines hand `paths`/`hub` a `WeightSpec` and
+    pass the *directory* they get back, in every engine, including ones no test loads yet.
+    """
+    offenders = []
+    for path in _modules():
+        if path.parent.name != "engines":
+            continue
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            for part in node.values:
+                if not isinstance(part, ast.FormattedValue):
+                    continue
+                if any(isinstance(inner, ast.Attribute) and inner.attr == "repo_id" for inner in ast.walk(part.value)):
+                    offenders.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+    assert offenders == [], (
+        "an engine must not turn a repository id into a string for a loader -- that loader fetches "
+        f"from Hugging Face itself. Use paths.resolve/paths.fetch_checkpoint and pass the directory: {offenders}"
+    )
 
 
 def test_paths_does_not_import_the_engine_layer() -> None:

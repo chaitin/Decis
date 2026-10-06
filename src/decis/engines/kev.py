@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError, InvalidRequestError
-from ..paths import BaseModel, WeightSpec, fetch_checkpoint, resolve
+from ..paths import BaseModel, WeightSource, WeightSpec, fetch_checkpoint, resolve
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
 from .devices import best_device, requested_device
 from .registry import default_dtype, degraded_reason
@@ -72,7 +72,14 @@ _QWEN_BASE = "Qwen/Qwen3.5-0.8B-Base"
 
 #: A checkpoint's own repository holds only the adapter and the pointer head; the base
 #: is a separate published model. See `paths.BaseModel`.
-_BASE_08B = BaseModel(repo_id=_QWEN_BASE, revision="dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68")
+#: `expected_bytes` is the sum of every file that revision publishes (measured, see
+#: `docs/design.md §7.2`): it is what `decis download` reports and checks room for, and the
+#: base is 98% of what a kev fetch writes.
+_BASE_08B = BaseModel(
+    repo_id=_QWEN_BASE,
+    revision="dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68",
+    expected_bytes=1_769_897_109,
+)
 
 #: Fetched by `decis download`. `tokenizer.json` is deliberately absent: `DecisionModel`
 #: loads the tokenizer from the *base* (`checkpoint.py:132`), so pulling the adapter's
@@ -82,13 +89,26 @@ _ADAPTER_FILES = ("adapter_config.json", "adapter_model.safetensors", "head.pt")
 REVISION = "54f4f8777356cd5bbbb6c6919c657f26e6f2f6d8"
 CHECKPOINT_DATE = "2026-09-21"
 
+#: What those three files weigh at `REVISION`, byte for byte, measured on 2026-10-06 from the
+#: Hub's own snapshot of that commit (`adapter_model.safetensors` sha256 `c81d5716…`,
+#: `head.pt` sha256 `39f4343c…`). Kept per file rather than as one constant so
+#: `expected_bytes` is derived from measured sizes instead of typed in as a round number --
+#: the previous `13_000_000` was an order-of-magnitude guess that reached five documents.
+_ADAPTER_MANIFEST: dict[str, int] = {
+    "adapter_config.json": 1_273,
+    "adapter_model.safetensors": 43_338_624,
+    "head.pt": 2_103_103,
+}
+
+_ADAPTER_BYTES = sum(_ADAPTER_MANIFEST.values())
+
 WEIGHTS: dict[str, WeightSpec] = {
     "kev-0.8b": WeightSpec(
         engine_id="kev-0.8b",
         repo_id="jaredpalmer/kev-0.8b",
         revision=REVISION,
         marker="head.pt",
-        expected_bytes=13_000_000,
+        expected_bytes=_ADAPTER_BYTES,
         license_name="Apache-2.0",
         license_url="https://github.com/jaredpalmer/kev",
         requires=_REQUIRES,
@@ -223,9 +243,7 @@ class KevEngine(DecisionEngine):
         # `DECIS_DEVICE` pins; unset asks the machine (see `resolve_device`).
         device = resolve_device(settings.device)
         self._device = device
-        # The adapter is resolved by `paths.resolve`, so a mounted directory works with
-        # no network. Upstream's own `resolve_run` would reach for the Hub here.
-        target = str(source.path) if source.is_local else f"{source.repo_id}@{source.revision}"
+        target = self._adapter_directory(settings, source)
         _logger.info("loading %s from %s (device=%s)", self._id, source.describe(), device)
 
         checkpoint = Checkpoint(target)
@@ -293,6 +311,25 @@ class KevEngine(DecisionEngine):
             MAX_STATE,
             MAX_BRANCH,
         )
+
+    def _adapter_directory(self, settings: Settings, source: WeightSource) -> str:
+        """Where the vendored `Checkpoint` reads the adapter from: always a local directory.
+
+        `paths.resolve` already answered "does this machine have it" (`--model-path`,
+        `DECIS_MODEL_DIR`, or a baked image). When it does not, the bytes come from
+        `paths.fetch_checkpoint`, which asks `hub.py` which Hub to use and applies the
+        revision this build declares.
+
+        Handing the vendored loader a repository id instead would override both decisions
+        silently: its `resolve_run` calls `huggingface_hub.snapshot_download` itself
+        (`_kev_vendor/checkpoint.py:29`), so `DECIS_HUB=modelscope` would still fetch the
+        adapter from Hugging Face, and a ModelScope-obtained adapter directory would never be
+        read back (`docs/design-review.md` §2-D33). `hub.py`/`paths.py` are the only
+        layers allowed to name a Hub, so this takes a `WeightSource` and returns a path.
+        """
+        if source.is_local:
+            return str(source.path)
+        return str(fetch_checkpoint(self.weights(), settings))
 
     def _base_directory(self, settings: Settings, meta: Any) -> str | None:
         """A directory for the base this checkpoint adapts, or None to leave it alone.

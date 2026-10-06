@@ -31,8 +31,12 @@ the public API is unchanged, and `render.py` still owns which fields a question 
 Neither Jeff parameter count is the checkpoint's name: the first is 852,985,920 and the
 second 4,628,569,379, both from the Hub's own `safetensors.parameters` block rather than from
 `0.8B` / `E2B`. The weight figures are the Hub's file listing restricted to the files an
-engine needs: for `kev-0.8b` that is the three adapter files (~13 MB) plus the Qwen3.5 base
-it resolves through (1.65 GiB), not the adapter repository's full 43 MiB listing.
+engine needs: for `kev-0.8b` that is the three adapter files (45,443,000 B, 43.3 MiB) plus
+the Qwen3.5 base it resolves through (1.65 GiB), not the adapter repository's full 62.5 MiB
+listing (`tokenizer.json` alone is 19 MiB and the base's copy is the one that gets loaded).
+`expected_bytes` in `engines/kev.py` is those numbers, and
+`tests/test_engines_kev.py::test_the_declared_size_is_the_sum_of_the_files_a_fetch_writes`
+keeps them equal to the file list.
 
 ```bash
 uv run decis models     # what is registered, and what this machine can actually run
@@ -166,8 +170,11 @@ Resolution order is described in
   in `WeightSpec.bases`. `decis download` fetches both, and with `--dest` (or
   `DECIS_MODEL_DIR`) the base lands beside the adapter as `<dir>/Qwen3.5-0.8B-Base/`, so one
   directory holds everything the engine reads. With neither configured it goes to the cache
-  of whichever Hub answered (`decis/hub.py`), and the loader is handed that directory —
-  `transformers` cannot see a ModelScope download otherwise.
+  of whichever Hub answered (`decis/hub.py`). **Both repositories go through that choice**,
+  and both reach the loaders as directories: the vendored checkpoint code downloads a
+  repository id it is handed with `huggingface_hub` itself, so passing the adapter on as
+  `repo@revision` would ignore `DECIS_HUB`/`--hub` — and `transformers` cannot see a
+  ModelScope download otherwise either.
 - **Jeff** checkpoints are full-weight fine-tunes, so `decis download` fetches only the one
   directory and there is no base to place beside it. Each carries its answer vocabulary and
   its sampling temperature in `decision_config.json`, and the loader refuses to start if the

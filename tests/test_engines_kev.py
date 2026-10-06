@@ -271,6 +271,78 @@ def test_a_base_download_targets_the_hub_cache() -> None:
     assert "*.safetensors" in arguments["allow_patterns"]
 
 
+# --- the adapter reaches the loader as a directory (D33) ----------------------
+
+
+class _LoadedError(Exception):
+    """Raised by the fake vendored loader: `load()` has done the part under test by then."""
+
+
+def test_the_vendored_loader_is_handed_a_directory_not_a_hub_id(monkeypatch, tmp_path) -> None:
+    """D33: a repository id passed to `Checkpoint` is fetched from Hugging Face, not from `hub.py`.
+
+    `_kev_vendor/checkpoint.py: resolve_run` calls `huggingface_hub.snapshot_download` itself, so
+    `DECIS_HUB=modelscope` / `--hub modelscope` did not reach the adapter: the load still went to
+    Hugging Face, and an adapter directory fetched from ModelScope would never have been read
+    back. The engine hands the vendored loader a *path* from `paths`, which is the same layer
+    `decis download` uses, so the two cannot disagree about the Hub or the pin.
+
+    Both the fake torch and the fake `_kev_vendor` keep this in the weight-free suite (where
+    neither is installed), because this is exactly the branch that suite would otherwise miss.
+    """
+    import sys
+    import types
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.set_num_threads = lambda _count: None  # only reached if torch_threads is set
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    seen: dict[str, object] = {}
+
+    def fake_checkpoint(target):
+        seen["target"] = target
+        raise _LoadedError
+
+    fake_vendor = types.ModuleType("decis.engines._kev_vendor")
+    fake_vendor.Checkpoint = fake_checkpoint
+    monkeypatch.setitem(sys.modules, "decis.engines._kev_vendor", fake_vendor)
+
+    fetched = tmp_path / "kev-0.8b"
+    fetched.mkdir()
+
+    def fake_fetch(spec, settings):
+        seen["spec"] = spec
+        seen["settings"] = settings
+        return fetched
+
+    monkeypatch.setattr(kev_module, "fetch_checkpoint", fake_fetch)
+
+    settings = Settings(hub="modelscope", device="cpu")
+    with pytest.raises(_LoadedError):
+        KevEngine().load(settings)
+
+    assert seen["target"] == str(fetched)
+    assert "@" not in str(seen["target"]), "a `repo@revision` string is a Hub id in disguise"
+    assert seen["settings"] is settings, "the Hub choice travels with the call"
+    assert seen["spec"].repo_id == "jaredpalmer/kev-0.8b"
+    assert seen["spec"].revision, "the adapter keeps the pin this build declares"
+
+
+def test_a_local_adapter_is_used_as_is(monkeypatch, tmp_path) -> None:
+    """A mounted or baked adapter must not be re-fetched -- `paths.resolve` already answered."""
+    from decis.paths import WeightSource
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a local adapter must not be fetched")
+
+    monkeypatch.setattr(kev_module, "fetch_checkpoint", refuse)
+    engine_dir = tmp_path / "kev-0.8b"
+    engine_dir.mkdir()
+    source = WeightSource(engine_id="kev-0.8b", kind="local", path=engine_dir)
+
+    assert KevEngine()._adapter_directory(Settings(), source) == str(engine_dir)
+
+
 # --- the base reaches the loader as a directory (D32) -------------------------
 
 
@@ -507,3 +579,38 @@ def test_the_device_is_unknown_until_the_engine_has_loaded() -> None:
     reports `unloaded` while it is idle.
     """
     assert KevEngine().info().device == "unloaded"
+
+
+def test_the_declared_size_is_the_sum_of_the_files_a_fetch_writes() -> None:
+    """`expected_bytes` is what `decis download` prints and checks room for (§2-D35).
+
+    It used to be a round `13_000_000`, an order of magnitude below the three files it
+    describes; `human_bytes` then rendered that guess as `12.4 MiB`, which is how it came to
+    look like a measurement in five documents and in `decis download`'s own output. The
+    measured sizes live in `_ADAPTER_MANIFEST`, so
+    the declaration is a sum rather than a guess, and this test keeps the two file lists from
+    drifting apart.
+    """
+    spec = kev_module.WEIGHTS["kev-0.8b"]
+
+    assert set(kev_module._ADAPTER_MANIFEST) == set(kev_module._ADAPTER_FILES)
+    assert set(spec.checkpoint_files or ()) == set(kev_module._ADAPTER_FILES)
+    assert spec.expected_bytes == sum(kev_module._ADAPTER_MANIFEST.values())
+    assert spec.expected_bytes > kev_module._ADAPTER_MANIFEST["adapter_model.safetensors"], (
+        "the adapter weights alone are 43.3 MiB, so any smaller total is a miscount"
+    )
+
+
+def test_the_base_model_declares_the_bytes_it_publishes() -> None:
+    """The base is 98% of a kev fetch, so its size has to be declared, not documented.
+
+    `docs/design.md §7.2` carried `1_769_896_333` for it while `BaseModel.expected_bytes` was
+    unset: nobody checked room for the 1.65 GiB half of this engine and nothing could catch
+    the documented number drifting. Guarded here because a `None` is invisible in the CLI
+    output -- the base line simply prints without a size.
+    """
+    base = kev_module.WEIGHTS["kev-0.8b"].base_specs()[0]
+
+    assert base.repo_id == "Qwen/Qwen3.5-0.8B-Base"
+    assert base.expected_bytes == 1_769_897_109
+    assert base.expected_bytes > kev_module.WEIGHTS["kev-0.8b"].expected_bytes * 30

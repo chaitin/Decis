@@ -35,7 +35,7 @@
 | 契约偏差 | `/v1/models` 形状不符；`model` 有默认值；score 上限 255（文档称 10）；响应多 `latency_ms`；`HTTPException(422, str)` 错误体与 SDK 生成模型不符 | 见 [api-compatibility.md §7](api-compatibility.md) |
 | 并发 | **单请求串行**（一个 `threading.Lock`），无跨请求批处理 | `kev/serve.py:33,45` |
 | Docker | **无 Dockerfile，无镜像 CI**，无 ONNX/量化导出 | 全仓 grep |
-| 权重 | adapter 小（整个 0.8b 仓库 ≈43 MiB，`decis download` 只取其中 3 个文件 ≈13 MB），基座大（0.8B bf16 ≈1.6GB） | HF API |
+| 权重 | adapter 小（整个 0.8b 仓库 ≈62 MiB，`decis download` 只取其中 3 个文件 ≈43 MiB），基座大（0.8B bf16 ≈1.6GB） | HF API |
 
 **注意一个认知校正**：kev 不是"很小的 transformers 变种"。它是 **0.8B–9B** 的因果 LM 加 adapter。"轻量"只对 0.8B 成立；4B/9B 已经超出这个定位（4B bf16 服务需约 9GB 显存）。
 

@@ -275,11 +275,37 @@ def test_models_prints_the_command_that_fixes_each_gap(cli) -> None:
             assert f"decis download --engine {engine_id}" in line, line
 
 
-def test_doctor_reports_the_same_distinction(cli) -> None:
-    """`doctor` and `models` must not disagree about what is runnable."""
-    code, output = cli("doctor", "--env-file", "")
+def test_doctor_asks_the_classifier_with_the_settings_it_resolved(cli, tmp_path, monkeypatch) -> None:
+    """`doctor` and `models` must not disagree about what is runnable -- settings included.
+
+    `doctor` printed its per-engine list from a second `load_settings()`, so a `--model-path`
+    or `DECIS_MODEL_DIR` override moved its own `model paths` line and left the summaries
+    behind: an operator who pointed kev at a mounted directory read "needs weights" next to
+    their own path (`docs/design-review.md` §2-D34). Sharing the classifier is not enough if
+    the two callers ask it different questions.
+    """
+    from decis.engines import registry
+
+    seen: list[Settings | None] = []
+    real = registry.status
+
+    def spy(engine_id: str, settings: Settings | None = None) -> EngineStatus:
+        seen.append(settings)
+        return real(engine_id, settings)
+
+    monkeypatch.setattr(registry, "status", spy)
+    engine_dir = tmp_path / "kev-0.8b"
+    engine_dir.mkdir()
+
+    # `--hub huggingface` pins the source, so `doctor`'s hub line does not probe the network:
+    # this test is about which settings reach the classifier, not about reachability.
+    code, output = cli("doctor", "--env-file", "", "--model-path", f"kev-0.8b={engine_dir}", "--hub", "huggingface")
+
     assert code in (0, 1)
     assert "engines" in output
+    assert seen, "doctor must ask the shared classifier"
+    assert all(settings is not None for settings in seen), "and hand it the settings it resolved"
+    assert all(settings.model_paths.get("kev-0.8b") == engine_dir for settings in seen)
 
 
 def test_download_of_a_weightless_engine_is_not_reported_as_success(cli) -> None:

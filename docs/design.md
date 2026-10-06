@@ -560,7 +560,7 @@ resolve(spec, settings) →                                    src/decis/paths.p
 | `laya`（英文） | `convaiinnovations/laya`（根目录） | 807.0 MiB | 803.6 MiB | 421M 参数，ModernBERT-large |
 | `laya-multilingual` | 同上，`subfolder="multilingual"` | 646.8 MiB | 614.0 MiB | 322M 参数，mmBERT-base，~2.2× 快 |
 | `laya-typed-decisions` | 同上，`subfolder="typed-decisions"` | 807.0 MiB | 803.6 MiB | typed-decisions workflow 专用 |
-| `kev-0.8b` | adapter `jaredpalmer/kev-0.8b`（pin `54f4f87`）+ 基座 `Qwen/Qwen3.5-0.8B-Base`（pin `dc7cdfe`） | **13,000,000 B (12.4 MiB) + 1,769,896,333 B (1.65 GiB)** | adapter 三文件合计约 12.4 MiB + 1.63 GiB | `expected_bytes=13_000_000` 是 `decis download` 实际拉取的三个文件（`adapter_config.json` / `adapter_model.safetensors` / `head.pt`）之和；Hub 上整个 adapter 仓库共 43.3 MiB，多出的文件（如 `tokenizer.json`，基座那份会被用）不下载。**基座是大头** |
+| `kev-0.8b` | adapter `jaredpalmer/kev-0.8b`（pin `54f4f87`）+ 基座 `Qwen/Qwen3.5-0.8B-Base`（pin `dc7cdfe`） | **45,443,000 B (43.3 MiB) + 1,769,897,109 B (1.65 GiB)** | adapter 三文件合计 43.3 MiB + 1.65 GiB | 两个数字都是 `expected_bytes`，都是**实测**的：前者是 `_ADAPTER_MANIFEST` 里三个文件（`adapter_config.json` / `adapter_model.safetensors` / `head.pt`）之和，后者是基座那个 revision 发布的 9 个文件之和（`decis/engines/kev.py`；守卫 `tests/test_engines_kev.py`）。Hub 上整个 adapter 仓库共 62.5 MiB，多出的文件（`tokenizer.json` 19 MiB 等，基座那份会被用）不下载。**基座是大头** |
 | `jeff-qwen3.5-0.8b` | `mstrasser/Jeff-Qwen3.5-0.8B`（pin `0f212b3`） | **1,726,570,651 B (1.61 GiB)** | 1,706,027,688 B (1.59 GiB) | 全量微调 **无基座**（`bases=()`）；852,985,920 参数（Hub `safetensors.parameters`） |
 | `jeff-gemma4-e2b` | `mstrasser/Jeff-Gemma4-E2B`（pin `e3de3e9`） | **9,290,236,873 B (8.65 GiB)** | 9,257,198,246 B (8.62 GiB，两个分片) | 同上；4,628,569,379 参数。基座 `google/gemma-4-E2B-it` 的许可另算（`NOTICE`） |
 | `kev-4b` / `kev-9b` | 同上 | 未实测 | ≈582MB + 8GB / ≈392MB + 18GB | 超出"轻量"定位，只做可选镜像 |
@@ -603,7 +603,7 @@ Jeff 用的是同一套 `torch` / `transformers` / `safetensors`。额外的两�
 
 kev 是"小 adapter + 大基座"。因此：
 
-- adapter 的三个文件（`adapter_config.json` / `adapter_model.safetensors` / `head.pt`）合计约 13 MB，适合随镜像分发或挂载；
+- adapter 的三个文件（`adapter_config.json` / `adapter_model.safetensors` / `head.pt`）合计 45,443,000 B（43.3 MiB），适合随镜像分发或挂载；
 - 基座大，**建议在构建期写入镜像或预热到共享卷**；
 - `decis download` 会自动接着取基座（`cli._download_bases`），没有单独的 `--base-only` 开关：
   分开下载的唯一用处是"先下大的再下小的"，而两者都要、都无法在缺另一个时工作，
@@ -640,6 +640,12 @@ kev 是"小 adapter + 大基座"。因此：
   （同文件里 `meta.base_revision = None`，因为目录没有 revision 可言）。
   基座仓库仍来自适配器自己的元数据，只有"这份构建声明过的基座"才会被替换：
   没声明过的 `meta.base` 原样交给加载器，行为与加这条路径之前一致。
+- **kev 的适配器同样走 `paths`，理由一模一样**（`engines/kev.py: _adapter_directory`，
+  `design-review.md §2-D33`）。把 `repo@revision` 交给 vendored 的 `Checkpoint` 曾经是它的写法，
+  而 vendored 的 `resolve_run` 会自己调 `huggingface_hub.snapshot_download`：于是 `DECIS_HUB` /
+  `--hub` 对适配器无效，从 ModelScope（或挂载目录）取来的适配器也永远读不回来。
+  两个仓库现在是同一条路：`paths.resolve` 命中就用本地目录，否则 `paths.fetch_checkpoint`
+  （与 `decis download` 同一个调用），拿回的目录再交给加载器。
 
 ---
 

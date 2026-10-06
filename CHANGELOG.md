@@ -28,6 +28,28 @@ each engine will run.
   mounted model directory is therefore self-contained, and a base fetched from ModelScope is
   usable at all — `transformers` only ever looks in the Hugging Face cache.
 
+### Fixed
+
+- **`kev-0.8b` fetched its adapter from Hugging Face even when another source was
+  selected.** The engine handed the vendored checkpoint code a `repo@revision` string, and
+  that code calls `huggingface_hub.snapshot_download` itself — so `DECIS_HUB=modelscope` and
+  `--hub modelscope` did not apply to the adapter, and an adapter obtained from ModelScope (or
+  from a mounted directory) would never have been read back. The adapter now goes through
+  `paths.fetch_checkpoint` like the base model already did, and the loaders are handed
+  directories (`docs/design-review.md` §2-D33).
+- **`kev-0.8b`'s declared download size was 13 MB; the three files are 43.3 MiB.** The old
+  number was a written-down guess that `human_bytes` rendered as `12.4 MiB`, which is how it
+  passed for a measurement in five documents and in `decis download`'s own output. It is now
+  derived from a per-file measurement
+  (`_ADAPTER_MANIFEST`) with a guard that also rejects a total smaller than a single weight
+  file. The base model — 1.65 GiB, 98% of a kev fetch — had no declared size at all, so
+  `decis download` neither printed it nor checked room for it; `docs/design.md §7.2` carried a
+  figure nothing could verify. Both are measured now (§2-D35).
+- **`decis doctor` printed its engine list from a second, default `load_settings()`.** With
+  `--model-path` or `DECIS_MODEL_DIR` set, the command reported `model paths
+  kev-0.8b=/srv/…` and `kev-0.8b needs weights` on adjacent lines, while `decis models`
+  disagreed. The classifier is now asked with the settings this run resolved (§2-D34).
+
 ### Changed
 
 - **Weight-bearing images are built only at release.** A push to the default branch publishes
