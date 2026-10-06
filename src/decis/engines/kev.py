@@ -38,7 +38,7 @@ from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError, InvalidRequestError
 from ..paths import BaseModel, WeightSource, WeightSpec, fetch_checkpoint, resolve
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
-from .devices import best_device, requested_device
+from .devices import best_device, requested_device, warn_if_accelerator_is_idle
 from .registry import default_dtype, degraded_reason
 
 if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
@@ -245,6 +245,9 @@ class KevEngine(DecisionEngine):
         self._device = device
         target = self._adapter_directory(settings, source)
         _logger.info("loading %s from %s (device=%s)", self._id, source.describe(), device)
+        # Before the load, not after: this is the answer to "why is my GPU idle?", and a
+        # cold kev load is long enough that saying it at the end would be saying it late.
+        warn_if_accelerator_is_idle(device, pinned=settings.device is not None, logger=_logger)
 
         checkpoint = Checkpoint(target)
         meta = checkpoint.meta

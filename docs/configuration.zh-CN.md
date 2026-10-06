@@ -170,6 +170,13 @@ Laya 把它交给自己的 `Agent`。
 指定它们，但 `benchmarks/results/` 里没有任何一次覆盖它们的运行，而且它们会落到 dtype 表的默认
 值 `fp32`。
 
+一台有 NVIDIA 显卡的机器也可能落在 `cpu` 上，而 `torch.cuda.is_available()` 说不出原因：CPU-only 的
+PyTorch 构建（PyPI 上的 Windows wheel）报“没有 CUDA 设备”的方式，和一台没有 N 卡的机器完全一样。
+所以每个引擎都会记录它选中的设备；当它落在 `cpu` 且没有设 `DECIS_DEVICE` 时，还会去问 `nvidia-smi`：
+驱动是否看到了一张本可以使用的显卡——修复命令就在同一条消息里。`decis doctor` 在 `compute` 一节报告
+同样三件事（选中的设备、`torch` 构建、GPU），两者不一致时再加一行 `advice`。安装那一半见
+[快速开始](getting-started.zh-CN.md#使用-gpu)。
+
 dtype 按引擎**和**设备分别选择，因为同一个选择在不同硬件上可能差一个数量级。`kev-0.8b`
 在 CPU 上用 `bf16` 比 `fp32` 慢好几个数量级；实测表见
 [性能](performance.zh-CN.md#每种引擎每种设备的-dtype)——每种 dtype 只有一次观测，所以那个倍数是

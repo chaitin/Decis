@@ -7,7 +7,7 @@
 
 > **这份文档怎么读。** 已经修好、并且有测试守卫的问题，在 §2.2 里压缩成一小段（症状 / 怎么修的 /
 > 谁在守着它）；**现在仍然成立**的问题放在 §2.1 的最前面；方法论问题在 §4；还没修的清单在 §5。
-> 每条都有一个稳定的编号（`D1`…`D35`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
+> 每条都有一个稳定的编号（`D1`…`D36`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
 > 所以编号不会重排。逐条的事故复盘在 git 历史里（`git log -p docs/design-review.md`），这里不再重述。
 
 ---
@@ -664,6 +664,56 @@ revision 的文件清单”，而它恰好是**可以逐字节核对**的东西�
 `docs/design.md §7.2` 要求“实测体积”已经很久了；这条缺陷说明**要求写下来不等于有人核对**，
 而唯一能自动核对的形态是把它变成代码里的求和 + 一条守卫。
 
+#### D36（高）Windows 上 `uv sync` 装的是 CPU-only 的 torch，于是"自动探测设备"永远探测不到 GPU — 已修正
+
+来自一台 Windows 机器的实际报告：`uv sync --all-extras` + `decis download` + `decis serve` 之后，
+GPU 占用为零，而同一份代码在 Mac 上自动用了 Metal。
+
+根因不在 `devices.py`，也不在引擎：**PyPI 为 Windows 发布的是 CPU-only 的 torch wheel**。
+证据可以直接在**修之前的那份 `uv.lock` 里读出来**——`torch 2.14.0` 的依赖列表里，
+CUDA 那一串（`cuda-toolkit[cublas,…]`、`nvidia-cudnn-cu13`、`nvidia-nccl-cu13`、`triton`、
+`cuda-bindings`）**每一行的 marker 都带 `sys_platform == 'linux'`**，Windows 与 macOS 一个都没有；
+对比 PyTorch 自己的 index：`cu130` 的 win_amd64 wheel 是 1,990,604,486 B（自带 CUDA 运行库），
+PyPI 的那个 124,096,356 B。也就是说 Windows 上 `torch.cuda.is_available()` 恒为 `False`——
+**和一台根本没有 NVIDIA 显卡的机器完全无法区分**。这件事发生在任何 Decis 代码运行之前，
+所以"自动探测最可用的设备"这条逻辑再正确也无从发挥：`laya.Agent` 自己的顺序是 CUDA → Metal → CPU，
+它在 Windows 上只能落到 CPU。
+
+修法分两半，缺任何一半都还是坏的：
+
+1. **安装期**（`pyproject.toml`）：把 Windows 的 `torch`/`torchvision` 指向 PyTorch 的 CUDA index
+   （`[[tool.uv.index]]` + `[tool.uv.sources]` 带 `marker = "sys_platform == 'win32'"`，
+   `explicit = true` 免得它变成别的包的源）。于是 `uv.lock` 里出现两个 fork：
+   Windows 拿 `2.14.0+cu130`，Linux/macOS 继续从 PyPI 拿原来的 2.14.0（Linux 那份本来就带 CUDA，
+   macOS 那份是 Metal），镜像体积与 Docker 构建路径一个字节都没变。
+   `uv sync --no-sources` 是给"这台 Windows 没有 N 卡、不想要那 1.9 GiB 下载"的人的退路。
+2. **运行期**（`engines/devices.py`）：`torch.cuda.is_available()` 分不开"没有 GPU"和"这个 wheel 用不了 GPU"，
+   所以落到 `cpu` 且**没有** `DECIS_DEVICE` 时才去问驱动：`nvidia-smi --query-gpu=name,driver_version`
+   （Windows/Linux 随驱动安装，5 秒超时，任何失败都当"问不到"）。
+   `torch.version.cuda is None` + 驱动报出显卡 = 这一条的组合，日志里给出显卡型号、驱动版本、
+   原因和修复命令；`torch.version.cuda` 有值却看不到设备 = 驱动太老，给的是另一句话；
+   没有显卡 = 一个字都不说（那是正常的 CPU 机器，每次启动都警告等于没警告）。
+   这条逻辑三个引擎共用（`warn_if_accelerator_is_idle`），`decis doctor` 也用它输出一节 `compute`
+   （device / torch 构建 / nvidia-smi 看到的 GPU / advice）——用户真正会去看的地方。
+
+守卫：`tests/test_devices.py`（CPU-only wheel、CUDA wheel、坏掉的 backend、`nvidia-smi` 的解析/缺失/超时、
+四种建议组合）、`tests/test_cli_serve.py::test_doctor_names_the_gpu_the_installed_torch_cannot_use`、
+`tests/test_conventions.py::test_windows_installs_a_cuda_build_of_torch` 与
+`test_the_lock_gives_windows_a_cuda_wheel_and_nobody_else`（**从 `uv.lock` 里读**，所以"把 sources 删掉"
+或"三个平台一起挪到 CUDA index"都会红）、`test_the_idle_gpu_explanation_has_one_home`。
+
+**仍未验证**：本仓库没有一台带 NVIDIA 显卡的 Windows 机器，所以"Windows 上真的跑在 `cuda` 上"
+**没有实测过**——已验证的是"Windows 解析到 `+cu130` 的 wheel"（`uv.lock` 与守卫）、
+"CPU-only wheel + 有显卡时给出的诊断"（桩），以及 macOS/Linux 侧一字未改。
+`xpu`/`npu` 的"检测但未实测"状态不变（D24）。
+**代价（写下来）**：Windows 上的 `uv sync` 从约 124 MiB 的 torch 变成约 1.9 GiB（CUDA 运行库随 wheel 走），
+对没有 N 卡的 Windows 用户是纯亏，`--no-sources` 与这条说明就是为此写的。
+
+**教训**：一个"自动探测硬件"的设计里，**探测不到**的原因可能在依赖解析里，而不在探测代码里。
+`devices.py` 从一开始就写对了顺序，但它问的是 `torch` 自己的能力；当 wheel 本身没有那个能力时，
+所有探测都返回一个**诚实但无用**的 `False`。这类"配置决定了能力"的缺陷不会在 Mac/Linux 的 CI 上出现，
+只有"在真实用户的平台上跑一次"能发现——和 D20/D21/D22 那批容器缺陷是同一类。
+
 ---
 
 ## 3. 标准符合性对照
@@ -867,7 +917,7 @@ CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是
 | # | 问题 | 状态 |
 |---|---|---|
 | 1 | 跨请求批处理的收益 | **已测（M5），结论为否定**：CPU 上不提升吞吐，长度倾斜时慢 3–5 倍。`design.md §6` 的收益预期已被推翻 |
-| 2 | GPU 上的真实延迟、CUDA 镜像能否装成 | **未测**，需 GPU 机器 |
+| 2 | GPU 上的真实延迟、CUDA 镜像能否装成 | **未测**，需 GPU 机器。D36 之后补一句更窄的：Windows 上"解析到 `+cu130` 的 wheel"已由 `uv.lock` 与守卫钉住，但**在一台真实的 N 卡 Windows 机器上起服务、确认它跑在 `cuda` 上**仍然没做过 |
 | 3 | 429 / `Retry-After` 的真实行为 | **未观测**（无 API key，无法触发限流） |
 | 4 | 真实 200 响应体的取值 | **未观测**（无 key）。形状由 OpenAPI + SDK + kev 三方交叉确认，但取值没有对照样本 |
 | 5 | 性能测量的顺序效应与样本量 | **Laya 线程扫描未重做**（它的定位本就是可行性证据，M2）；M5 的攒批 harness 已按**交错轮次**跑，并报分布而不只是中位数 |
@@ -896,8 +946,10 @@ CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是
 "对外材料不许出现 QPS"这条纪律的**理由**消失了（数字已经有了），但**新的理由**接上了：
 现在能报的是一条明确的负结论和一个测得的单进程吞吐上界，**不是**"批处理带来的高 QPS"。
 
-**2026-09-30 复核的结论**：34 个设计缺陷里 32 个已修（各有守卫，少数只有文档修复），
-2 个仍未修（D11、D13）。其中 D33 与 D35 都是这一轮“换源”功能上线后**为了验证它**才发现的：
-前者是新分支没被真跑过一次（守卫只盖住了旁边那条路），后者是量字节时顺手发现体积数字一直抄错——
-两条都不是新代码引入的，而是“原来就没人核对过”；6 个方法论问题里 4 个已修正，2 个仍未修正（M2、M6，都需要一台干净的机器或 GPU）。
+**2026-10-06 复核的结论**：35 个设计缺陷里 33 个已修（各有守卫，少数只有文档修复），
+2 个仍未修（D11、D13）。D36 是这一轮由一台 Windows 机器的报告发现的：同一份代码在 Mac 上自动用了
+Metal，在 Windows 上一路 CPU——根因在 `uv.lock` 解析到的 wheel 里，不在设备探测代码里。D33 与 D35
+是上一轮“换源”功能上线后**为了验证它**才发现的：前者是新分支没被真跑过一次（守卫只盖住了旁边那条路），
+后者是量字节时顺手发现体积数字一直抄错——三条都不是新代码引入的，而是“原来就没人核对过”；
+6 个方法论问题里 4 个已修正，2 个仍未修正（M2、M6，都需要一台干净的机器或 GPU）。
 §5 是这些未验证项的完整清单——**它们是这份文档仍然有效的那一半**。

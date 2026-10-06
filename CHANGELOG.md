@@ -27,6 +27,15 @@ each engine will run.
   (`<dir>/Qwen3.5-0.8B-Base/`), and `engines/kev.py` hands `transformers` that directory. A
   mounted model directory is therefore self-contained, and a base fetched from ModelScope is
   usable at all — `transformers` only ever looks in the Hugging Face cache.
+- **`decis doctor` reports which device this host will serve from, and an idle GPU is no
+  longer silent.** A new `compute` section prints the device the engines would pick (`auto`
+  or a `DECIS_DEVICE` pin), the installed `torch` build (`2.14.0, CUDA 13.0, 1 CUDA
+  device(s), 0: NVIDIA GeForce RTX 4070`), every GPU `nvidia-smi` reports, and an `advice`
+  line when those disagree. The same check runs at load time in all three engines
+  (`engines/devices.py: warn_if_accelerator_is_idle`): an engine that lands on `cpu` with no
+  pinned device now says whether the machine has a GPU it could have used, and which command
+  fixes it (§2-D36). A machine with no GPU gets no line at all — that is a normal CPU host,
+  and a warning printed on every start is a warning nobody reads.
 
 ### Fixed
 
@@ -52,6 +61,20 @@ each engine will run.
   `--model-path` or `DECIS_MODEL_DIR` set, the command reported `model paths
   kev-0.8b=/srv/…` and `kev-0.8b needs weights` on adjacent lines, while `decis models`
   disagreed. The classifier is now asked with the settings this run resolved (§2-D34).
+- **On Windows, `uv sync --all-extras` installed a CPU-only `torch`, so the GPU was
+  unreachable before any Decis code ran.** PyPI publishes Windows `torch` wheels without CUDA
+  — the dependency list in the previous `uv.lock` carried `cuda-toolkit`, `nvidia-cudnn-cu13`,
+  `nvidia-nccl-cu13`, `triton` and `cuda-bindings` under `sys_platform == 'linux'` only — so
+  `torch.cuda.is_available()` was `False` on a machine with an RTX card in it, and no device
+  detection could have found the GPU. `pyproject.toml` now resolves `torch` and `torchvision`
+  from the PyTorch CUDA index on Windows (`[[tool.uv.index]]` + `[tool.uv.sources]` with a
+  `sys_platform == 'win32'` marker, `explicit = true`), and `uv.lock` carries two forks:
+  `2.14.0+cu130` for Windows and the unchanged PyPI `2.14.0` for Linux and macOS. The CUDA
+  wheel is about 1.9 GiB against 124 MiB, so a Windows host with no NVIDIA GPU — or a driver
+  older than the CUDA 13.0 generation — should take the small one back with
+  `uv sync --all-extras --no-sources` (§2-D36). **Not verified on real Windows hardware**:
+  what is asserted is that Windows resolves to the `+cu130` wheel (from `uv.lock`, with
+  guards) and that the diagnosis above is what a CPU-only build produces.
 
 ### Changed
 

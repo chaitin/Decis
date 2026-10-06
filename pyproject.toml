@@ -124,6 +124,28 @@ decis = "decis.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/decis"]
 
+# PyTorch is the one dependency whose *wheel* decides which accelerator exists. PyPI's
+# Windows build has no CUDA support at all, while the Linux wheels bundle their CUDA
+# runtime and the macOS wheels are the Metal build — so on Windows `uv sync` installed a
+# `torch` that cannot see a GPU, and every engine served from the CPU no matter what the
+# machine had. It was silent by construction: a CPU-only build reports
+# `torch.cuda.is_available() == False` exactly like a machine with no NVIDIA GPU, so no
+# amount of runtime detection could tell the two apart (docs/design-review.md §2-D36).
+# Only Windows is redirected; Linux and macOS already get the build they want.
+#
+# `pytorch-cu130` is the channel the rest of this lock is pinned to (torch 2.14.x,
+# torchvision 0.29.x). A Windows host whose NVIDIA driver predates CUDA 13.0 needs an
+# older channel, and a Windows host with no NVIDIA GPU at all wants the small CPU wheel
+# back: `uv sync --no-sources` does that. Both are in docs/getting-started.md.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"

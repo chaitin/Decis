@@ -350,6 +350,45 @@ def _models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_compute(settings: Settings, problems: list[str]) -> None:
+    """Which device this machine would serve from, and what the installed torch can do.
+
+    The device is the same answer an engine will get (`engines/devices.py`), so `doctor`
+    and a load cannot disagree. The two lines under it are the pair that was missing when
+    a Windows host served every request from the CPU with an idle RTX card in the box:
+    `torch.version.cuda` is the only field that says whether the installed wheel can use a
+    GPU at all, and a CPU-only wheel is invisible to every check above it
+    (`docs/design-review.md` §2-D36).
+    """
+    from .engines import devices
+    from .errors import EngineUnavailableError
+
+    print("\ncompute")
+    try:
+        pinned = devices.requested_device(settings.device)
+    except EngineUnavailableError as exc:
+        # A typo here is why a service will not load, so `doctor` reports it as a problem
+        # instead of letting it surface as a traceback on the next `serve`.
+        problems.append(str(exc))
+        print(f"  device           INVALID -- {exc}")
+        return
+    chosen = pinned or devices.best_device()
+    print(f"  device           {chosen} ({'DECIS_DEVICE' if pinned else 'auto'})")
+    build = devices.torch_build()
+    if build is None:
+        print("  torch            not installed (no engine extra is synced in this environment)")
+    else:
+        print(f"  torch            {build.describe()}")
+    gpus = devices.nvidia_gpus()
+    for gpu in gpus:
+        print(f"  gpu              {gpu.describe()}")
+    if not gpus:
+        print("  gpu              none reported by nvidia-smi")
+    advice = devices.accelerator_advice(chosen, pinned=pinned is not None, build=build, gpus=gpus)
+    if advice:
+        print(f"  advice           {advice}")
+
+
 def _doctor(args: argparse.Namespace) -> int:
     settings = _load(args)
     problems: list[str] = []
@@ -373,6 +412,8 @@ def _doctor(args: argparse.Namespace) -> int:
     for name, before, after in settings.proxy_rewrites:
         replacement = f" -> {after}" if after else " dropped (not expressible as a proxy bypass)"
         print(f"  proxy bypass     {name}: {before}{replacement}")
+
+    _report_compute(settings, problems)
 
     # Engine availability, reported one by one: a single-engine image is the
     # normal case, not a fault. Uses the same classifier as `decis models`, and with the

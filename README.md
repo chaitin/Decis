@@ -100,6 +100,13 @@ Engine dependencies live in extras, so `--all-extras` installs all three engine 
 removes what an earlier sync added. To install one engine only, name its extra:
 `uv sync --extra dev --extra kev`. The extras are in [Engines](docs/engines.md).
 
+A GPU is detected and used automatically. On Windows this repository resolves `torch` from
+the PyTorch CUDA index, because PyPI's Windows wheel has no CUDA support at all — that wheel
+is about 1.9 GiB, and `uv sync --all-extras --no-sources` goes back to the small one. An
+engine that lands on `cpu` says whether it saw a GPU it could not use, and `decis doctor`
+prints the device, the `torch` build and every GPU the driver reports
+([Using a GPU](docs/getting-started.md#using-a-gpu)).
+
 [Getting started](docs/getting-started.md) covers readiness, the raw `curl` form, and
 `decis models` / `decis doctor`.
 

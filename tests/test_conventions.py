@@ -506,6 +506,74 @@ def test_device_choice_has_one_home() -> None:
         assert 'or "cpu"' not in source, f"{engine} picks a device fallback itself"
 
 
+def test_the_idle_gpu_explanation_has_one_home() -> None:
+    """`devices.py` answers "why is a GPU sitting idle?" too, and answers it once.
+
+    The failure this guards is the one reported from Windows: an RTX host served every
+    request from the CPU and nothing in the process said why. The explanation needs three
+    facts together -- what the wheel was built with, what the driver reports, and whether
+    the operator pinned the CPU -- and a second implementation would drift exactly like
+    the readiness classifier did (`docs/design-review.md` §2-D36).
+    """
+    for helper in (
+        "def torch_build(",
+        "def nvidia_gpus(",
+        "def accelerator_advice(",
+        "def warn_if_accelerator_is_idle(",
+    ):
+        definitions = [str(path.relative_to(PACKAGE)) for path in _modules() if helper in _source(path)]
+        assert definitions == ["engines/devices.py"], (helper, definitions)
+
+    # The driver query is a subprocess, and the only shape of it that has been reasoned
+    # about is the one there. Spelled anywhere else it is a second, unchecked way to ask;
+    # naming the tool in a report line (`decis doctor`) is prose, not a query.
+    naming = [str(path.relative_to(PACKAGE)) for path in _modules() if "--query-gpu=" in _source(path)]
+    assert naming == ["engines/devices.py"], naming
+
+    # And every engine that chooses a device has to ask for the explanation, or a load
+    # lands on the CPU in silence -- which is the defect, not the CPU.
+    for engine in ("engines/kev.py", "engines/laya.py", "engines/jeff.py"):
+        tree = _tree(PACKAGE / engine)
+        assert _calls(tree, "warn_if_accelerator_is_idle"), f"{engine} loads without asking why"
+
+
+def test_windows_installs_a_cuda_build_of_torch() -> None:
+    """The install half of D36, which no amount of runtime detection can substitute for.
+
+    PyPI publishes CPU-only `torch` wheels for Windows, so `uv sync` on that platform used
+    to make the GPU unreachable *before any Decis code ran*. The redirect lives in
+    `pyproject.toml` and is only meaningful if it points at an index that is `explicit`
+    (never a source for anything but the PyTorch packages) and platform-gated (macOS must
+    keep the PyPI wheel, which is the Metal build).
+    """
+    configured = _pyproject()["tool"]["uv"]
+    assert configured["sources"]["torch"] == [{"index": "pytorch-cu130", "marker": "sys_platform == 'win32'"}]
+    index = {entry["name"]: entry for entry in configured["index"]}
+    assert index["pytorch-cu130"]["url"] == "https://download.pytorch.org/whl/cu130"
+    assert index["pytorch-cu130"]["explicit"] is True, "an implicit index would serve every other package too"
+
+
+def test_the_lock_gives_windows_a_cuda_wheel_and_nobody_else() -> None:
+    """The redirect above, carried through to the artifact that is actually installed.
+
+    Two forks of one package is the point: Windows takes the CUDA build, and Linux and
+    macOS keep the PyPI wheel they already had (CUDA on Linux, Metal on macOS). A change
+    that quietly moved all three platforms to the CUDA index would show up as a much
+    larger image, and this is the cheapest place to notice.
+    """
+    import tomllib
+
+    lock = tomllib.loads((REPO / "uv.lock").read_text(encoding="utf-8"))
+    torches = [package for package in lock["package"] if package["name"] == "torch"]
+    cuda = [package for package in torches if "+cu" in package["version"]]
+    assert len(cuda) == 1, f"expected one CUDA fork, got {[p['version'] for p in torches]}"
+    assert any("win32" in marker for marker in cuda[0]["resolution-markers"]), cuda[0]["resolution-markers"]
+    assert cuda[0]["source"]["registry"] == "https://download.pytorch.org/whl/cu130"
+    others = [package for package in torches if package not in cuda]
+    assert others, "the non-Windows fork disappeared, so macOS and Linux would take the CUDA index"
+    assert all(package["source"]["registry"] == "https://pypi.org/simple" for package in others)
+
+
 def test_the_reported_version_is_the_packaged_version() -> None:
     """`/healthz` and the release tag must not be able to disagree.
 

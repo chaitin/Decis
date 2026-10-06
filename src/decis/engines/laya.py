@@ -40,7 +40,7 @@ from ..errors import EngineUnavailableError, InvalidRequestError
 from ..paths import WeightSpec, fetch_checkpoint, human_bytes, resolve
 from ..render import noul_options
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
-from .devices import requested_device
+from .devices import requested_device, warn_if_accelerator_is_idle
 
 if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
     from ..config import Settings
@@ -300,6 +300,11 @@ class LayaEngine(DecisionEngine):
                 self._id,
                 self._agent.device.type,
             )
+        # `chosen` is upstream's answer, not ours: Laya picks its own device when
+        # `DECIS_DEVICE` names none and only reveals it once the `Agent` exists, so unlike
+        # the other two engines this warning lands at the end of the load instead of the
+        # start. The `DECIS_DEVICE` typo warning above is early because it is ours to check.
+        warn_if_accelerator_is_idle(self._agent.device.type, pinned=device is not None, logger=_logger)
         config = self._agent.cfg
         self._max_len = int(config.get("max_len", DEFAULT_MAX_LEN))
         self._head_max_len = int(config.get("head_max_len", DEFAULT_HEAD_MAX_LEN))

@@ -95,6 +95,11 @@ uv run decis serve --host 127.0.0.1 --port 8000
 工具一起装上；裸 `uv sync` 一个都不装，而且会删掉上一次 sync 装上的东西。只装一个引擎就点名
 它的 extra：`uv sync --extra dev --extra kev`。各引擎的 extra 见[引擎](docs/engines.zh-CN.md)。
 
+GPU 会被自动探测并使用。Windows 上本仓库把 `torch` 指向 PyTorch 的 CUDA index，因为 PyPI
+的 Windows wheel 完全没有 CUDA 支持——那个 wheel 约 1.9 GiB，`uv sync --all-extras --no-sources`
+可以换回小的那个。落在 `cpu` 上的引擎会说明它是否看到了一张用不了的显卡，`decis doctor` 则打印
+设备、`torch` 构建和驱动报告的全部 GPU（见[使用 GPU](docs/getting-started.zh-CN.md#使用-gpu)）。
+
 就绪语义、裸 `curl` 写法，以及 `decis models` / `decis doctor`，见
 [快速开始](docs/getting-started.zh-CN.md)。
 

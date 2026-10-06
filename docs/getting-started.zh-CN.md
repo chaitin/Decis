@@ -14,7 +14,7 @@ clone 仓库走到第一个答案。部署见[部署](deployment.zh-CN.md)；线
 | Python | 3.11 或更高版本，以及 [uv](https://docs.astral.sh/uv/)。两个 Jeff 引擎需要 3.12+；`decis models` 会直接这么说，而不是报成缺依赖。 |
 | 磁盘 | 默认引擎的权重约 650 MiB，另加 Python 环境 |
 | 内存 | 加载后常驻几个 GiB，峰值 RSS 是权重文件的数倍。容器要按[性能](performance.zh-CN.md)里的实测数字来定，而不是按下载体积。 |
-| GPU | 可选；本文的一切都在 CPU 上跑 |
+| GPU | 可选；有 GPU 会自动探测并使用，见[使用 GPU](#使用-gpu) |
 
 Docker 是源码 checkout 之外的另一条路——已发布的镜像里已经带了权重。如果你不想装 Python，
 见[部署](deployment.zh-CN.md)。
@@ -41,6 +41,33 @@ token；第一次运行就该用它。要在网络上暴露服务，先设 `DECI
 
 当 `DECIS_MODEL_DIR` 未设置、权重也还没缓存时，`decis download` 是可选的——但先跑一次能把
 “下载慢”和“加载慢”分开，第一次启动的日志会好读得多。
+
+### 使用 GPU
+
+不需要配置：加载时引擎会问机器能用哪个设备，顺序是 `cuda`、`xpu`、`npu`、`mps`、`cpu`，取第一个可用的。
+`decis doctor` 会打印它查到的结果。还有两件事会让 GPU 闲着，它两件都会点名。
+
+**wheel 本身。** PyTorch 为每种加速器发布不同的构建，而 PyPI 上的 Windows wheel 完全没有 CUDA 支持——
+这是 wheel 的属性，不是你硬件的属性。CPU-only 构建报“没有 CUDA 设备”的方式，和一台没有 N 卡的机器
+一模一样，所以进程里没有任何东西能把两者分开。因此本仓库在 Windows 上把 `torch` 指向 PyTorch 的 CUDA
+index（`pyproject.toml` 的 `[tool.uv.sources]`），`uv sync --all-extras` 在那里装到的就是 CUDA 构建；
+Linux 从 PyPI 拿到的本来就带 CUDA，macOS 拿到的是 Metal 版。代价是真实的：那个 wheel 约 1.9 GiB，
+而 CPU-only 那个是 124 MiB。在一台没有 N 卡的 Windows 上，把小 wheel 换回来：
+
+```bash
+uv sync --all-extras --no-sources     # 忽略 tool.uv.sources：回到原来的 PyPI wheel
+```
+
+**驱动。** 这里 pin 的通道是 CUDA 13.0，需要同一代的 NVIDIA 驱动。驱动更老时 `torch` 会报没有可用设备；
+`decis doctor` 会把这种情况和“CPU-only wheel”分开，并打印它看到的驱动版本。uv 能自己按驱动挑通道，
+但只作用于它的 `uv pip` 接口，所以之后的一次 `uv sync` 或 `uv run` 会把 pin 住的构建装回来：
+
+```bash
+uv pip install --torch-backend=auto --reinstall torch
+```
+
+`DECIS_DEVICE=cuda`（或 `mps`、`xpu`、`npu`、`cpu`）用来钉住某个设备，而不是取最可用的那个——
+当一次比较必须固定设备时就是它。机器给不出被钉住的设备时，日志会说明并回退。
 
 ### 等待就绪
 
@@ -164,7 +191,8 @@ curl -s localhost:8000/v1/systemone \
 
 ```bash
 uv run decis models     # 本机注册了哪些引擎、每个是否可用
-uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数，以及本机下载权重会走哪个 Hub
+uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数、本机下载权重会走哪个 Hub，
+                        # 以及 compute 一节：选中的设备、torch 构建、驱动报告的 GPU
 ```
 
 `decis models` 对每个引擎回答一个问题——本机能不能跑它——答案是 `ready`、`deps missing`、
@@ -173,6 +201,10 @@ uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数，
 指到的目录不是合法 checkpoint、解释器低于某个引擎的下限，都是各不相同的答案，哪一个都不会被报成
 引擎坏了。引擎能接受的容量上限不在这里打印，而在
 [`GET /v1/models`](api.zh-CN.md#get-v1models)。
+
+`decis doctor` 管的是另一半：它讲机器而不是引擎。它的 `compute` 一节打印本机会用哪个设备、
+装的是哪个 `torch` 构建、`nvidia-smi` 报出了什么——当这三者互相矛盾时（正是
+[使用 GPU](#使用-gpu) 描述的那种情况），再多打一行 `advice`。
 
 ## 下一步
 

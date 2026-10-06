@@ -197,6 +197,14 @@ Only `cpu`, `cuda` and `mps` have been measured here. `xpu` and `npu` are detect
 accepted) so that they can be pinned explicitly, but no run in `benchmarks/results/` covers
 them, and they fall back to `fp32` through the dtype table's default.
 
+A machine with an NVIDIA GPU can still land on `cpu`, and `torch.cuda.is_available()` cannot
+say why: a CPU-only PyTorch build (PyPI's Windows wheel) reports no CUDA device in exactly the
+same way as a machine with no NVIDIA card. So every engine logs the device it chose, and when
+that is `cpu` with no `DECIS_DEVICE` set it also asks `nvidia-smi` whether a driver sees a GPU
+it could have used — the fix is in the same message. `decis doctor` reports the same facts
+(chosen device, `torch` build, GPUs) under `compute`, plus an `advice` line when the two
+disagree. The install side is in [Getting started](getting-started.md#using-a-gpu).
+
 dtype is chosen per engine **and** device, because the same choice can be an order of
 magnitude apart on different hardware. `kev-0.8b` on CPU in `bf16` is orders of magnitude
 slower than `fp32`; the measured table is in

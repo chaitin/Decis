@@ -112,7 +112,7 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 「网络取权重时问哪个 Hub、pin 能不能兑现」 | `src/decis/hub.py`: `choose` / `Selection.pinned` / `download` | 引擎或 CLI 自己判断『连得上吗』再挑客户端；把 `WeightSpec.revision` 转交给不支持 commit 的客户端（ModelScope 收到 sha 会**静默成功且一个文件都不下**，`design-review.md §2-D32`）；在 `hub.py` 之外提 `snapshot_download` / `huggingface_hub` / `modelscope`（守卫 `tests/test_conventions.py::test_only_hub_names_a_hub_client`）；把 repo id（尤其 `f"{repo_id}@{revision}"` 这种字串）交给**会自己联网**的上游 loader——vendored 的 `resolve_run` 拿到它就自己调 Hugging Face 客户端，于是 `DECIS_HUB`/`--hub` 被绕过（`design-review.md §2-D33`；守卫 `tests/test_engines_kev.py::test_the_vendored_loader_is_handed_a_directory_not_a_hub_id` 与 `test_conventions.py::test_engines_do_not_build_a_hub_id_string`） |
 | 「本机有没有装某个模块」 | `src/decis/paths.py: module_available` | 在别处再写一遍 `importlib.util.find_spec`（少写那个 `except` 就会把『父包不存在』报成已安装；守卫 `test_module_presence_has_one_home`） |
 | `(引擎, 设备) → dtype`、以及"能跑但性能已知很差"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
-| `DECIS_DEVICE` 的合法取值、「这台机器能用哪个设备」、「不设时用哪个」 | `src/decis/engines/devices.py: DEVICES` / `ACCELERATOR_ORDER` / `available_devices` / `best_device` / `requested_device` | 引擎自己写设备回退（`settings.device or "cpu"` 曾让 kev 在 Apple 芯片上跑 CPU，实测慢 15 倍）；在别处再判断一次"CUDA/MPS 可用吗" |
+| `DECIS_DEVICE` 的合法取值、「这台机器能用哪个设备」、「不设时用哪个」，以及「明明有 GPU 为什么在 CPU 上服务」 | `src/decis/engines/devices.py: DEVICES` / `ACCELERATOR_ORDER` / `available_devices` / `best_device` / `requested_device` / `torch_build` / `nvidia_gpus` / `accelerator_advice` / `warn_if_accelerator_is_idle` | 引擎自己写设备回退（`settings.device or "cpu"` 曾让 kev 在 Apple 芯片上跑 CPU，实测慢 15 倍）；在别处再判断一次"CUDA/MPS 可用吗"；或在 `devices.py` 之外再拼一次 `nvidia-smi` 查询——PyPI 的 Windows torch 是 CPU-only 构建，`torch.cuda.is_available()` 分不开"没有 GPU"和"这个 wheel 用不了 GPU"，所以这一问只能有一处（`design-review.md §2-D36`） |
 | 「某个 primitive 的选项在提示里长什么样」 | 各引擎自己的 record 构造 | 让 `render.py` 决定——kev 的 noul 是 `no`/`yes`、score 是裸层级文本，与 Decis 的 `Option.name` 不同（`design-review.md §2-D9`） |
 | 「这个引擎**现在**能不能跑」的分类（依赖 + 权重） | `src/decis/engines/registry.py: status` | 在 CLI 或路由里各写一份"就绪"判断；把"注册了"当成"能跑"报给用户 |
 | 引擎 id → 实现的映射 | `src/decis/engines/registry.py` | `if engine == "..."` 散落在业务代码里 |
@@ -244,6 +244,9 @@ uv sync --extra dev                  # 开发环境（含 pytest / ruff / typesa
 uv sync --all-extras                 # 全部引擎依赖 + dev（本地 checkout 一把装齐）
 #   引擎依赖只在 extras 里，所以裸 `uv sync` 一个都不装，而且会删掉上一次 sync 装上的引擎依赖；
 #   只服务一个引擎就点名它的 extra（`uv sync --extra dev --extra kev`）。
+#   Windows 上这条命令从 PyTorch 的 CUDA index 取 torch/vision（PyPI 的 Windows wheel 是 CPU-only
+#   构建，装了也永远探测不到 GPU，见 §2-D36）；没有 N 卡、或驱动老到跑不了那个 CUDA 通道时，
+#   `uv sync --all-extras --no-sources` 拿回 PyPI 的小 wheel。
 cp .env.example .env                 # 至少要改 DECIS_API_KEY
 uv run pytest -q                     # 无权重测试（CI 跑这个：不需要权重，也不联网）
 uv run ruff check && uv run ruff format --check
@@ -251,7 +254,8 @@ uv run ruff check && uv run ruff format --check
 uv run decis serve --host 0.0.0.0 --port 8000   # 加载默认引擎 laya-multilingual（需要它的依赖与权重）
 uv run decis serve --host 127.0.0.1  # 本地开发：回环地址允许不带 token；同样需要引擎就绪
 uv run decis models                  # 列出已注册引擎及其在本机是否可用
-uv run decis doctor                  # 环境自检：依赖、配置安全性、绑定地址、线程数（不报设备/dtype）
+uv run decis doctor                  # 环境自检：依赖、配置安全性、绑定地址、线程数，
+                                     #   以及 compute 一节（选中的设备、torch 构建、nvidia-smi 看到的 GPU；不报 dtype）
 ```
 
 服务行为相关的配置（都有默认值，`decis doctor` 会报告实际取值）：
@@ -488,6 +492,13 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 对"引擎永久加载失败"报 `retry-after`（等于让 SDK 永远重试一个不会恢复的服务）
 - ❌ 让引擎自己写设备回退（`settings.device or "cpu"` 曾让 `kev-0.8b` 在 Apple 芯片上默认跑 CPU，
   `design-review.md §2-D24`）。设备由 `src/decis/engines/devices.py` 决定，引擎只问它
+- ❌ 在 `devices.py` 之外再判断一次"有没有 GPU / 驱动看到了什么"（`design-review.md §2-D36`：
+  PyPI 的 Windows torch 是 CPU-only 构建，`torch.cuda.is_available()` 把"没有显卡"和"这个 wheel
+  用不了显卡"报成同一个 `False`，于是"为什么在 CPU 上"只能由一处回答——`torch_build` /
+  `nvidia_gpus` / `accelerator_advice`，引擎调 `warn_if_accelerator_is_idle`，
+  `decis doctor` 打 `compute` 一节；守卫
+  `tests/test_conventions.py::test_the_idle_gpu_explanation_has_one_home`）。也**不要**用"装没装 torch"
+  之类的方式绕开它：诊断要走这一处，否则又会多出第二份判断
 - ❌ 在 `render.py` 里决定某个模型的选项文本（kev 的 `no`/`yes` 与裸层级文本必须由引擎决定，搞错会无提示地降低答案质量）
 - ❌ 改动 `src/decis/engines/_kev_vendor/` 里的任何字节（要更新就整体 re-vendor 并改 `VENDOR.md`/`NOTICE`）
 - ❌ 改动 `src/decis/engines/_jeff_vendor/` 里的任何字节（同一条规则：整体 re-vendor，并一起改

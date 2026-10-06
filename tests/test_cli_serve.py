@@ -179,3 +179,63 @@ def test_doctor_is_quiet_about_a_bypass_list_it_did_not_touch(monkeypatch: pytes
     code, output = run_cli("doctor", "--env-file", "")
     assert code == 0
     assert "proxy bypass" not in output
+
+
+def test_doctor_names_the_gpu_the_installed_torch_cannot_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D36 on screen: an idle RTX card, a CPU-only wheel, and the command that fixes it.
+
+    Both probes are faked, so this asserts the *report* rather than the host the suite
+    happens to run on. The Windows case is the one that matters: `torch.version.cuda` is
+    the only field that separates "no NVIDIA GPU" from "a wheel with no CUDA support", and
+    before this block `decis doctor` printed neither.
+    """
+    from decis.engines import devices
+
+    monkeypatch.setenv("DECIS_API_KEY", "doctor-test-key")
+    monkeypatch.setattr(devices, "best_device", lambda *args, **kwargs: "cpu")
+    monkeypatch.setattr(
+        devices,
+        "torch_build",
+        lambda: devices.TorchBuild(version="2.14.0", cuda=None, hip=None, cuda_devices=0, cuda_device_name=None),
+    )
+    monkeypatch.setattr(
+        devices, "nvidia_gpus", lambda *args, **kwargs: (devices.Gpu("NVIDIA GeForce RTX 4070", "552.22"),)
+    )
+
+    code, output = run_cli("doctor", "--env-file", "")
+    assert code == 0
+    assert "  device           cpu (auto)" in output
+    assert "  torch            2.14.0, built without CUDA support" in output
+    assert "  gpu              NVIDIA GeForce RTX 4070 (driver 552.22)" in output
+    assert "  advice           " in output
+    assert "uv sync --all-extras" in output
+
+
+def test_doctor_says_nothing_about_a_gpu_that_is_working(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other half of the report: a machine with no GPU is not a machine with a fault."""
+    from decis.engines import devices
+
+    monkeypatch.setenv("DECIS_API_KEY", "doctor-test-key")
+    monkeypatch.setattr(devices, "best_device", lambda *args, **kwargs: "mps")
+    monkeypatch.setattr(
+        devices,
+        "torch_build",
+        lambda: devices.TorchBuild(version="2.14.0", cuda=None, hip=None, cuda_devices=0, cuda_device_name=None),
+    )
+    monkeypatch.setattr(devices, "nvidia_gpus", lambda *args, **kwargs: ())
+
+    code, output = run_cli("doctor", "--env-file", "")
+    assert code == 0
+    assert "  device           mps (auto)" in output
+    assert "  gpu              none reported by nvidia-smi" in output
+    assert "advice" not in output
+
+
+def test_doctor_refuses_a_misspelled_device_instead_of_tracebacking(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`DECIS_DEVICE=gpu` fails every load; `doctor` is where it should be legible."""
+    monkeypatch.setenv("DECIS_API_KEY", "doctor-test-key")
+    monkeypatch.setenv("DECIS_DEVICE", "gpu")
+
+    code, output = run_cli("doctor", "--env-file", "")
+    assert code == 1
+    assert "device           INVALID -- DECIS_DEVICE='gpu' is not a device" in output

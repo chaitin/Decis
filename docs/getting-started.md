@@ -15,7 +15,7 @@ decision model. This page takes you from a clone to a first answer. For deployme
 | Python | 3.11 or newer, with [uv](https://docs.astral.sh/uv/). The two Jeff engines need 3.12+; `decis models` says so instead of blaming a missing dependency. |
 | Disk | ~650 MiB of weights for the default engine, plus the Python environment |
 | Memory | A few GiB resident once loaded, and peak RSS is several times the weight files. Size a container from the measured figures in [Performance](performance.md), not from the download size. |
-| GPU | optional; everything here runs on CPU |
+| GPU | optional; a GPU is detected and used automatically, see [Using a GPU](#using-a-gpu) |
 
 Docker is an alternative to a source checkout — the published images already carry the
 weights. See [Deployment](deployment.md) if you would rather not install Python.
@@ -45,6 +45,39 @@ To expose it on a network, set `DECIS_API_KEY` and read
 `decis download` is optional when `DECIS_MODEL_DIR` is unset and the weights are not cached
 yet — but doing it up front separates a slow download from a slow model load, which makes
 the first start much easier to read.
+
+### Using a GPU
+
+There is nothing to configure: at load time an engine asks the machine which device it can
+serve from, in the order `cuda`, `xpu`, `npu`, `mps`, `cpu`, and uses the first one it can.
+`decis doctor` prints what it found. Two things can still leave a GPU idle, and it names both.
+
+**The wheel.** PyTorch publishes a different build per accelerator, and PyPI's Windows wheel
+has no CUDA support at all — a property of the wheel, not of your hardware. A CPU-only build
+reports no CUDA device in exactly the same way as a machine with no NVIDIA card, so nothing
+in the process can tell the two apart. This repository therefore resolves `torch` from the
+PyTorch CUDA index on Windows (`pyproject.toml`, `[tool.uv.sources]`), so
+`uv sync --all-extras` installs a CUDA build there; Linux already gets one from PyPI, and
+macOS gets Metal from PyPI. The cost is real: that wheel is about 1.9 GiB against 124 MiB for
+the CPU-only one. On a Windows machine with no NVIDIA GPU, take the small wheel back:
+
+```bash
+uv sync --all-extras --no-sources     # ignore tool.uv.sources: the PyPI wheel, as before
+```
+
+**The driver.** The pinned channel is CUDA 13.0, which needs an NVIDIA driver from that
+generation. On an older driver `torch` reports no usable device; `decis doctor` distinguishes
+that from a CPU-only wheel and prints the driver version it saw. uv can choose the channel
+from the driver itself, but only through its `uv pip` interface, so a later `uv sync` or
+`uv run` puts the pinned build back:
+
+```bash
+uv pip install --torch-backend=auto --reinstall torch
+```
+
+`DECIS_DEVICE=cuda` (or `mps`, `xpu`, `npu`, `cpu`) pins a device instead of taking the best
+one — that is the switch to reach for when a comparison has to hold the device fixed. A
+pinned device the machine cannot provide is reported in the log, and the load falls back.
 
 ### Wait for readiness
 
@@ -175,7 +208,8 @@ question primitives, and CI executes every command in it.
 ```bash
 uv run decis models     # registered engines, and whether each is usable here
 uv run decis doctor     # dependencies, configuration safety, bind address, thread count,
-                        # and which Hub a weight download would use on this host
+                        # which Hub a weight download would use, and the compute section:
+                        # the device it picked, the torch build, any GPU the driver reports
 ```
 
 `decis models` answers one question per engine — can this machine run it — with `ready`,
@@ -186,6 +220,11 @@ checkpoint and an interpreter below an engine's floor are all different answers,
 them is reported as if the engine were broken. The capacities an engine can accept are not
 printed here; they are in
 [`GET /v1/models`](api.md#get-v1models).
+
+`decis doctor` is the other half: it is about the machine rather than the engines. Its
+`compute` section prints the device this host would serve from, the `torch` build that is
+installed, and whatever `nvidia-smi` reports — with an `advice` line when the first two
+disagree with the third, which is the case [Using a GPU](#using-a-gpu) describes.
 
 ## Next
 

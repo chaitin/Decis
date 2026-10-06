@@ -60,7 +60,7 @@ from ..domain import MeasuredTokens, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError
 from ..paths import WeightSpec, fetch_checkpoint, resolve
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
-from .devices import best_device, requested_device
+from .devices import best_device, requested_device, warn_if_accelerator_is_idle
 
 if TYPE_CHECKING:  # pragma: no cover - types only, never imported at runtime
     from ..config import Settings
@@ -300,6 +300,9 @@ class JeffEngine(DecisionEngine):
         # `requested_device` is `DECIS_DEVICE` when set and legal; unset asks the machine.
         device = requested_device(settings.device) or best_device()
         self._device = device
+        # Before the load: the answer to "why is my GPU idle?" is worth more at the start
+        # of a multi-second checkpoint load than after it.
+        warn_if_accelerator_is_idle(device, pinned=settings.device is not None, logger=_logger)
 
         loader = getattr(_jeff_vendor, self.loader)
         # Upstream calls `torch.set_num_threads(cpu_threads)` in its constructor, so pass
