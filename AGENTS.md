@@ -30,7 +30,9 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > 不带权重的 `-runtime` 变体（默认分支用移动名 `<engine>-runtime`，其他分支用
 > `<engine>-runtime-sha-<7>`）；release 额外把不带后缀的 `<engine>` / `<engine>-runtime` 指向刚发布的
 > 镜像，`laya-multilingual` 的 baked 变体另外拿裸 `latest`（随 release 移动，绝不给别的引擎或
-> `-runtime` 镜像）。任何分支推送都不下载权重。
+> `-runtime` 镜像）；`variants: baked|both` 的手动 dispatch 在默认分支上同样会移动这些别名与 `latest`
+> ——它是 release 的手动替身，于是 `:latest` 与 `:laya-multilingual` 不会各自漂移。任何分支推送都不
+> 下载权重。
 > `playground` 是唯一的非引擎镜像（release 为 `playground-<version>`）。多架构（amd64 + arm64 原生
 > runner）、带 SBOM 与 provenance；只有 Docker Hub 一个 registry，**GHCR 不再推送**。
 > tag 全表在 `docs/deployment.md`，规则的理由在工作流的注释里。
@@ -543,7 +545,11 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
   并且有一条测试盯住这一点
 - ❌ 让**引擎名那个 tag** 指向不带权重的镜像（`design-review.md §2-D20`：一个引擎的镜像存在的
   意义就是"拿到就能用"，而 README 曾把它写成"需要网络或挂卷"，同时真正的内置权重变体叫 `-offline`
-  并且从没构建成功过）。默认变体必须是内置权重那个，瘦身变体只能带后缀；同一个东西不给两个名字
+  并且从没构建成功过）。默认变体必须是内置权重那个，瘦身变体只能带后缀。裸 `<engine>` 与
+  `<engine>-v<version>` 是这条规则的**唯一例外**，而且是有意的：前者是随 release 移动的别名
+  （`docker-compose.yml`、README、`make pull` 都按这个名字拉），后者钉住一次发布；两者永远指向
+  同一个 manifest，由 merge 任务从同一组 per-arch digest 一次创建（工作流里的 `alias_tag`）。
+  **不许再有第三种叫法**——`-offline` 那种"同一个东西两个名字、其中一个还不存在"仍然禁止
 - ❌ 在测试里**重建**被测系统会拼的东西，尤其是引擎的提示词文本
   （`design-review.md §2-D30`：weights 套里的 `prompt_of()` 用 `decision_messages` +
   `processor.apply_chat_template` 拼了一份提示词，而 Gemma 那个 loader 走的是
