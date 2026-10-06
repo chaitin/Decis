@@ -33,8 +33,11 @@ each engine will run.
 - **`kev-0.8b` fetched its adapter from Hugging Face even when another source was
   selected.** The engine handed the vendored checkpoint code a `repo@revision` string, and
   that code calls `huggingface_hub.snapshot_download` itself — so `DECIS_HUB=modelscope` and
-  `--hub modelscope` did not apply to the adapter, and an adapter obtained from ModelScope (or
-  from a mounted directory) would never have been read back. The adapter now goes through
+  `--hub modelscope` did not apply to the adapter: with no `--dest`/`DECIS_MODEL_DIR` the
+  engine went back to Hugging Face every time, so on a network where only ModelScope answers
+  `kev-0.8b` could not load at all -- not even after `decis download` had put the adapter in
+  ModelScope's cache, because `paths.resolve` has no candidate directory there. A local hit
+  (the `--dest` case) passed the directory through, which is why this was invisible here. The adapter now goes through
   `paths.fetch_checkpoint` like the base model already did, and the loaders are handed
   directories (`docs/design-review.md` §2-D33).
 - **`kev-0.8b`'s declared download size was 13 MB; the three files are 43.3 MiB.** The old

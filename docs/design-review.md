@@ -558,10 +558,16 @@ checkpoint = Checkpoint(target)
 ```
 
 `_kev_vendor/checkpoint.py:29 resolve_run` 收到这个字符串后自己调
-`huggingface_hub.snapshot_download(repo, revision=…)`。于是：`DECIS_HUB=modelscope`、`--hub modelscope`
-对适配器**完全无效**，它照旧从 Hugging Face 取；反过来，一个从 ModelScope 或挂载目录取来的适配器
-也永远读不回来（`resolve_run` 只认“本地目录 or HF 仓库 id”两种输入）。实测确认（`DECIS_HUB=modelscope`，
-把 `huggingface_hub.snapshot_download` 换成记录器）：
+`huggingface_hub.snapshot_download(repo, revision=…)`。于是 `load()` 手里的适配器**只能**来自
+Hugging Face：`DECIS_HUB=modelscope`、`--hub modelscope` 对这条分支完全无效。
+
+影响范围要说准（这条第一次写成“从 ModelScope 取来的适配器永远读不回来”，说过头了，这里按 `paths.candidate_directories` 的实际行为改准；`--dest` 那条路旧代码是好的）：`--dest` / `DECIS_MODEL_DIR`
+下适配器是**本地命中**（`source.is_local`），旧代码把目录原样转交，那条路是好的；坏掉的是**默认配置**
+（什么都不设）——`paths.resolve` 对 kev 只会给出 `hub`，因为 `candidate_directories` 里没有
+`~/.cache/modelscope/hub/...` 这种 ModelScope 缓存的布局。所以在**Hugging Face 不可达**的机器上
+（也就是这个功能存在的理由），旧代码里 kev **加载不起来**：`decis download --engine kev-0.8b` 明明
+已经通过 `hub.py` 从 ModelScope 落好了缓存，`load()` 却又自己回到 Hugging Face，`auto` 的回退对它
+一次都没生效。实测确认（`DECIS_HUB=modelscope`，把 `huggingface_hub.snapshot_download` 换成记录器）：
 
 ```
 vendored resolve_run returned /tmp/fake

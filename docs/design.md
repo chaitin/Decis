@@ -643,7 +643,9 @@ kev 是"小 adapter + 大基座"。因此：
 - **kev 的适配器同样走 `paths`，理由一模一样**（`engines/kev.py: _adapter_directory`，
   `design-review.md §2-D33`）。把 `repo@revision` 交给 vendored 的 `Checkpoint` 曾经是它的写法，
   而 vendored 的 `resolve_run` 会自己调 `huggingface_hub.snapshot_download`：于是 `DECIS_HUB` /
-  `--hub` 对适配器无效，从 ModelScope（或挂载目录）取来的适配器也永远读不回来。
+  `--hub` 对适配器无效：默认配置（没有 `--dest`/`DECIS_MODEL_DIR`）下 `paths.resolve` 只能给出
+  `hub`，于是那条分支永远回 Hugging Face 取，`auto` 的回退对 kev 的加载一次都没生效过（本地命中时
+  旧代码转交的就是目录，所以 `--dest` 那条路不受影响）。
   两个仓库现在是同一条路：`paths.resolve` 命中就用本地目录，否则 `paths.fetch_checkpoint`
   （与 `decis download` 同一个调用），拿回的目录再交给加载器。
 

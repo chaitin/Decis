@@ -471,8 +471,9 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 把 repo id 交给**会自己联网**的上游 loader（`design-review.md §2-D33`：`kev.py` 把
   `jaredpalmer/kev-0.8b@<sha>` 交给 vendored 的 `Checkpoint`，而它的 `resolve_run` 自己调
   `huggingface_hub.snapshot_download`——于是 `DECIS_HUB=modelscope` / `--hub modelscope` 对适配器
-  完全无效，从 ModelScope 取来的适配器也永远读不回来；已有的字符串守卫看不见它，因为那个客户端
-  名字在 vendored 代码里）。引擎只做两件事：把 `WeightSpec` 交给 `paths.resolve` /
+  完全无效——默认配置下 `paths.resolve` 只给得出 `hub`，于是这条分支永远回 Hugging Face 取，
+  `auto` 的回退对 kev 的加载一次都没生效过（本地命中那条路旧代码是好的）；已有的字符串守卫看不见它，
+  因为那个客户端名字在 vendored 代码里）。引擎只做两件事：把 `WeightSpec` 交给 `paths.resolve` /
   `paths.fetch_checkpoint`，把拿回来的**目录**转交出去
 - ❌ 调用共享的分类器/解析函数时不把**本次解析到的**配置传进去（`design-review.md §2-D34`：
   `decis doctor` 的引擎清单用默认配置调 `registry.status`，于是同一个终端里它一边打印

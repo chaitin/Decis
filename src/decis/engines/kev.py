@@ -322,10 +322,12 @@ class KevEngine(DecisionEngine):
 
         Handing the vendored loader a repository id instead would override both decisions
         silently: its `resolve_run` calls `huggingface_hub.snapshot_download` itself
-        (`_kev_vendor/checkpoint.py:29`), so `DECIS_HUB=modelscope` would still fetch the
-        adapter from Hugging Face, and a ModelScope-obtained adapter directory would never be
-        read back (`docs/design-review.md` §2-D33). `hub.py`/`paths.py` are the only
-        layers allowed to name a Hub, so this takes a `WeightSource` and returns a path.
+        (`_kev_vendor/checkpoint.py:29`), so with no local hit -- the default, since
+        `paths.resolve` has no candidate directory in ModelScope's cache -- the adapter came
+        from Hugging Face no matter what `DECIS_HUB` said, and the `auto` fallback never
+        applied to loading kev at all (`docs/design-review.md` §2-D33). `hub.py`/`paths.py`
+        are the only layers allowed to name a Hub, so this takes a `WeightSource` and
+        returns a path.
         """
         if source.is_local:
             return str(source.path)
