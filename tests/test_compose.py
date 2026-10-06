@@ -53,7 +53,13 @@ def override() -> dict:
 
 @pytest.fixture(scope="module")
 def planned(tmp_path_factory: pytest.TempPathFactory) -> dict:
-    """Everything the workflow builds on a master push and on a release tag."""
+    """Everything the workflow builds on a master push and on a release tag.
+
+    The two legs are complementary now: the master push publishes the weightless moving
+    names, and the release is what moves the unsuffixed `<engine>` names `docker-compose.yml`
+    pulls (plus `latest`). Both have to be in the union, or a compose image that the workflow
+    does publish would look like a tag nothing creates.
+    """
     script = plan_script_of(load_workflow())
     tags: set[str] = set()
     extras: dict[str, str] = {}
@@ -67,9 +73,13 @@ def planned(tmp_path_factory: pytest.TempPathFactory) -> dict:
     ):
         plan = run_plan(script, tmp_path_factory.mktemp(name), EVENT=event, REF=ref, REF_NAME=name)
         tags |= {build["image_tag"] for build in plan["builds"]}
+        # The unsuffixed names are what a release moves on top of the versioned tags; they
+        # are where `docker-compose.yml`'s bare engine tags come from now.
+        tags |= {merge["alias_tag"] for merge in plan["merges"] if merge["alias_tag"]}
+        if any(merge["promote_latest"] for merge in plan["merges"]):
+            tags.add("latest")
         tags.add(plan["playground_tag"])
         if plan["tag"] == "latest":
-            tags.add("latest")
             playground_tag = plan["playground_tag"]
         extras.update({build["engine"]: build["extra"] for build in plan["builds"]})
         bakes.update({(build["engine"], build["variant"]): build["bake"] for build in plan["builds"]})

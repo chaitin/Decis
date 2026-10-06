@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from decis.config import Settings
 from decis.domain import MeasuredTokens, Option, PreparedQuestion, PreparedRequest
 from decis.engines.laya import (
     CHECKPOINT_DATE,
@@ -364,14 +365,14 @@ def test_a_pinned_device_is_handed_to_laya() -> None:
     ignored value looks exactly like a working one -- until the latency says otherwise.
     """
     laya = _RecordingLaya()
-    LayaEngine()._instantiate(laya, _LocalSource(), "cpu")
+    LayaEngine()._instantiate(laya, _LocalSource(), "cpu", Settings())
     assert laya.calls == [(("/models/laya-multilingual/multilingual",), {"device": "cpu"})]
 
 
 def test_an_unset_device_is_left_to_laya() -> None:
     """`None` is upstream's own default, so "unset" and "best available" stay one path."""
     laya = _RecordingLaya()
-    LayaEngine()._instantiate(laya, _LocalSource(), None)
+    LayaEngine()._instantiate(laya, _LocalSource(), None, Settings())
     assert laya.calls == [(("/models/laya-multilingual/multilingual",), {"device": None})]
 
 
@@ -389,9 +390,9 @@ def test_the_hub_branch_fetches_through_paths_and_hands_over_a_directory(
 
     from decis.engines import laya as laya_module
 
-    monkeypatch.setattr(laya_module, "fetch_checkpoint", lambda spec: Path("/cache/laya/snap"))
+    monkeypatch.setattr(laya_module, "fetch_checkpoint", lambda spec, settings: Path("/cache/laya/snap"))
     laya = _RecordingLaya()
-    LayaEngine()._instantiate(laya, _HubSource(), "cpu")
+    LayaEngine()._instantiate(laya, _HubSource(), "cpu", Settings(hub="huggingface"))
     assert laya.calls == [(("/cache/laya/snap",), {"device": "cpu"})]
 
 

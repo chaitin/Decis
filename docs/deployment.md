@@ -4,10 +4,11 @@
 
 [Documentation index](../README.md#documentation) · [Configuration](configuration.md) · [Getting started](getting-started.md)
 
-Decis ships **one image per engine**, because engine dependencies conflict and are large.
-Every engine-tagged image carries its checkpoint, so a container needs no network, no volume
-and no second service on first start. The `-runtime` variant and the `playground` image are
-the deliberate exceptions, and are named as such below.
+Decis ships **one image per engine**, because engine dependencies conflict and are large. The
+image whose tag is the engine's bare name carries its checkpoint, so a container needs no
+network, no volume and no second service on first start; it is built on a release tag or on a
+manual dispatch that asks for it. The weightless `-runtime` variant and the `playground` image
+are the deliberate exceptions, and are named as such below.
 
 ## Published images
 
@@ -52,8 +53,15 @@ repository, and those are not multi-arch. The registered `laya` (English) and
 A release publishes versioned tags, and those do not move: pushing a `v*` git tag creates
 `<engine>-v<version>` for every engine in the matrix — `laya-multilingual-v0.4.0` and
 `kev-0.8b-v0.4.0` for the current release — plus the weightless `-runtime-v<version>`
-variants described below, and the GitHub Release for that tag. The engine-named tags are the
-opposite — they keep moving with every push to `master`, so a versioned tag is the one to pin.
+variants described below, and the GitHub Release for that tag. A release is also where the
+unsuffixed names move: `<engine>` and `<engine>-runtime` are pointed at the images it just
+built, so they keep meaning "the newest released image of that variant" — which is what
+`docker-compose.yml`, the README and `make pull` use. A push to `master` publishes the
+weightless `<engine>-runtime` images only and moves no unsuffixed name, so a versioned tag is
+the one to pin. The baked `<engine>` images come only from a release tag or from a manual
+dispatch that asks for them; such a dispatch on the default branch republishes `<engine>`
+(and `latest`, for the default engine) exactly as a release does, and no branch push downloads
+a checkpoint.
 
 ### Bringing your own weights
 
@@ -73,9 +81,10 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaiti
 ### Weightless images
 
 For a deployment that keeps one copy of the weights on a shared volume, or must keep every
-node's image small, releases also publish a weightless variant named
-`<engine>-runtime-v<version>` (3.2 GB amd64 / 3.3 GB arm64). It carries no weights, so fill the
-volume once and mount it from then on:
+node's image small, `chaitin/decis:laya-multilingual-runtime` is the moving weightless name
+(every push to `master` republishes it) and `<engine>-runtime-v<version>` pins a release
+(3.2 GB amd64 / 3.3 GB arm64). It carries no weights, so fill the volume once and mount it from
+then on:
 
 ```bash
 docker pull chaitin/decis:laya-multilingual-runtime-v0.4.0

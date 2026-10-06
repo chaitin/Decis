@@ -520,7 +520,7 @@ resolve(spec, settings) →                                    src/decis/paths.p
   0. --model-path <engine>=<dir> 指向本引擎的一个完整 checkpoint → 用它（你自己的权重）
   1. $DECIS_MODEL_DIR/<engine-id>/ 是完整 checkpoint           → 用它（挂载模式）
   2. $DECIS_MODEL_DIR/<engine-id>/<subfolder>/ 是完整 checkpoint → 用它（仓库布局的挂载）
-  3. 有 repo_id → 交给调用方去 snapshot_download（decis download）→ 再回到上面的判断
+  3. 有 repo_id → 交给调用方去取（`decis download` / `fetch_checkpoint`，走 `hub.py` 选源）→ 再回到上面的判断
   4. 否则 → 报错，错误信息里给出确切的下载命令
 ```
 
@@ -605,7 +605,41 @@ kev 是"小 adapter + 大基座"。因此：
 
 - adapter 的三个文件（`adapter_config.json` / `adapter_model.safetensors` / `head.pt`）合计约 13 MB，适合随镜像分发或挂载；
 - 基座大，**建议在构建期写入镜像或预热到共享卷**；
-- 提供 `decis download kev-0.8b --base-only` 之类的能力，让 CI 可以分离"下载基座"和"下载 adapter"。
+- `decis download` 会自动接着取基座（`cli._download_bases`），没有单独的 `--base-only` 开关：
+  分开下载的唯一用处是"先下大的再下小的"，而两者都要、都无法在缺另一个时工作，
+  所以多一个开关只会多一个"用户只下了一半"的状态。基座按 `paths.BaseModel` 解析，
+  落点跟 checkpoint 一样（`--dest` 下写在 `<dir>/<基座名>/`，否则进所选用 Hub 的缓存）。
+
+### 7.4 从哪个 Hub 取权重 — ✅ Stage 2 已实现（`src/decis/hub.py`）
+
+`paths.py` 决定**权重从哪来**（本地目录，还是网络），`hub.py` 只决定**网络取的时候问哪个 Hub**、
+以及把清单翻译成哪个客户端的参数。这是两个问题：前者对上层的语义是"这条路能不能离线"，
+后者只影响一次传输。分工的边界是 `paths.download_arguments(spec)` —— 文件清单的唯一住处 ——
+和 `paths.checkpoint_root(dir, spec)` —— "这份东西加载器能不能读"的唯一判据。
+
+- **探一次，而且探 endpoint 而不是仓库**：`GET <endpoint>/api/models?limit=1`，
+  超时 3 s。任何 HTTP 状态码都算"可达"（401/404 恰恰证明主机答了话），只有传输层失败
+  （DNS、连接被拒、超时）才算不可达。探某个仓库会把"仓库改名/转私有"读成"被墙"，
+  从而在一个能连网的地方静默换源、换掉 pin。
+- **`HF_ENDPOINT` 既是 `huggingface_hub` 用的，也是探测问的**，所以内部镜像（或
+  `hf-mirror.com`）不会被误判成"被墙的 Hugging Face"。这也是为什么没有加
+  "ModelScope 优先"的开关：换源要治的是"连不上"，而"连得上但慢"属于 `HF_ENDPOINT`。
+- **`DECIS_HUB` 写死时不探测、不替换**。默认 `auto`，因为"能连上的地方行为不该有任何变化"；
+  需要 pin 真正生效的部署显式写 `huggingface`，那时连不上就是失败，而不是换一份权重。
+- **pin 的 commit sha 永不交给 ModelScope**（`design-review.md §2-D32`）。ModelScope 的
+  `revision` 是分支名/tag 名，这些仓库的镜像只有 `master`；把 sha 传过去**不报错**，
+  打一行 `No files to download` 然后**成功返回一个空目录**。于是 `hub._from_modelscope`
+  不带 `revision`，`Selection.pinned=False` 把这件事变成值而不是注释，
+  `decis download` 在传输前警告一次，`decis doctor` 报告这台机器会走哪个源、为什么。
+- **同一个清单，两种拼写**：Hugging Face 用 `allow_patterns`，ModelScope 用
+  `allow_file_pattern`，`hub.py` 只做名字翻译，不重新推导要下哪些文件。
+- **kev 的基座按"第二个 checkpoint"解析，而不是交给 `transformers` 按 repo id 去找**
+  （`engines/kev.py: _base_directory`）。理由有两条：`--dest` 出来的卷要自足（否则卷里只有
+  adapter），以及 ModelScope 下载下来的基座 `transformers` **根本看不到** —— 它只认
+  Hugging Face 缓存。做法是把解析/下载后的**目录**写回适配器元数据的 `meta.base`
+  （同文件里 `meta.base_revision = None`，因为目录没有 revision 可言）。
+  基座仓库仍来自适配器自己的元数据，只有"这份构建声明过的基座"才会被替换：
+  没声明过的 `meta.base` 原样交给加载器，行为与加这条路径之前一致。
 
 ---
 
@@ -648,10 +682,10 @@ kev 是"小 adapter + 大基座"。因此：
 test  ──►  build (matrix: engine × variant × arch, 推 per-arch tag)  ──►  merge (imagetools create)
 ```
 
-- **matrix**：`engine ∈ {laya-multilingual, kev-0.8b, jeff-qwen3.5-0.8b, jeff-gemma4-e2b}` × `variant ∈ {baked, runtime}`（`runtime` 只在 release 或手动 dispatch 时构建）× `arch ∈ {amd64(ubuntu-latest), arm64(ubuntu-24.04-arm)}`，`fail-fast: false`。
+- **matrix**：`engine ∈ {laya-multilingual, kev-0.8b, jeff-qwen3.5-0.8b, jeff-gemma4-e2b}` × `variant ∈ {baked, runtime}`（`baked` 只在 release tag 或手动 dispatch 要求时构建；默认分支与其他分支推送只构建 `runtime`）× `arch ∈ {amd64(ubuntu-latest), arm64(ubuntu-24.04-arm)}`，`fail-fast: false`。
 - build 阶段给每个平台推**两条 tag**：`<image>:<tag>-<arch>`（人读的）与 `<image>:<tag>-sha-<short>-<arch>`（merge 读的 provenance tag）。**没有 `upload-artifact`，也没有 `push-by-digest`**：跨平台靠 per-arch tag 传递，初版设计里的 digest artifact 没有实现。两条 tag 都必须带上 artifact 名（引擎），否则各构建任务会互相覆盖（`design-review.md §2-D16`）。
 - merge 阶段 `docker buildx imagetools create --tag <image>:<tag> <per-arch refs>` 合成 multi-arch manifest；只合并真跑过的那条 arch，合并了什么会打印出来。
-- tag 规范：默认分支只给引擎名（引擎名本身就是"当前镜像"）、只有 release tag 追加 `-<version>`（`<engine>-v1.2.0`）、其他 ref 用 `-sha-<7>`；不带权重的变体加 `-runtime` 后缀，且只在 release 或手动 dispatch 时构建。`laya-multilingual` 的 baked 变体另外拿裸 `latest`，以 `docs/deployment.md` 与工作流 `plan` 为准。
+- tag 规范：默认分支与 feature 分支只发不带权重的 `-runtime` 变体（默认分支用移动名 `<engine>-runtime`，其他 ref 用 `<engine>-runtime-sha-<7>`）；只有 release tag 追加 `-<version>`（`<engine>-v1.2.0`、`<engine>-runtime-v1.2.0`），并把不带后缀的 `<engine>` / `<engine>-runtime` 指向刚发布的镜像，保持"该变体最新发布的镜像"这个含义（`docker-compose.yml`、README 与 `make pull` 拉的就是它们）；`baked` 变体只在 release tag 或手动 dispatch 要求时构建，`laya-multilingual` 的 baked 变体另外拿裸 `latest`，且随 release 移动、绝不给别的引擎或 `-runtime` 镜像。以 `docs/deployment.md` 与工作流 `plan` 为准。
   **这一节记的是最初的设计**（`<engine>-latest` / `<engine>-<semver>` / `<engine>-<sha7>`），差异见 §12.1；`tests/test_docker_workflow.py` 会把文档里的每个 tag 与 `plan` 真跑出来的矩阵对照。
 - 在此之上打开 `provenance: mode=max` + SBOM（供应链）。（原设计写"digest artifact 保留 7 天"，实际没有 artifact 可保留；原设计写"同时推 GHCR 与 Docker Hub"，实际只推 Docker Hub —— 见 §12.1。）
 

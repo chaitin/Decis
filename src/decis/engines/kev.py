@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..domain import MeasuredTokens, PreparedQuestion, PreparedRequest, ProbDist
 from ..errors import EngineUnavailableError, InvalidRequestError
-from ..paths import BaseModel, WeightSpec, resolve
+from ..paths import BaseModel, WeightSpec, fetch_checkpoint, resolve
 from .base import DecisionEngine, EngineInfo, Prediction, WorkItem, validate_distribution
 from .devices import best_device, requested_device
 from .registry import default_dtype, degraded_reason
@@ -238,6 +238,7 @@ class KevEngine(DecisionEngine):
                 f"mask provides and a hybrid backbone cannot. This checkpoint cannot be served "
                 f"by this engine."
             )
+
         _logger.info(
             "%s: base=%s@%s head_dim=%d temperature=%.4f lora=%d",
             self._id,
@@ -247,6 +248,20 @@ class KevEngine(DecisionEngine):
             meta.temperature,
             meta.lora,
         )
+
+        # The base is resolved like the adapter, and the loader is handed a *directory*.
+        # The vendored `Checkpoint.load` reads the base by repository id through
+        # `transformers.from_pretrained`, which understands one source only: the Hugging
+        # Face cache. That makes "the base came from ModelScope" a download the loader
+        # cannot see, and makes a base sitting in `DECIS_MODEL_DIR` invisible too. So the
+        # directory comes from `paths.resolve` (a mounted or baked copy) or from
+        # `paths.fetch_checkpoint` (whichever Hub answers), and the revision pin is the one
+        # this build declares in `WeightSpec.bases` -- the same one `decis download` used
+        # (`docs/design-review.md` §2-D32). Done after the log line above so the line
+        # reports the checkpoint's own declaration, not this substitution.
+        base = self._base_directory(settings, meta)
+        if base is not None:
+            meta.base, meta.base_revision = base, None
 
         # dtype comes from Decis's own table rather than the environment: bf16 on CPU
         # measured ~83x slower for kev (docs/feasibility.md §4). An explicit
@@ -278,6 +293,45 @@ class KevEngine(DecisionEngine):
             MAX_STATE,
             MAX_BRANCH,
         )
+
+    def _base_directory(self, settings: Settings, meta: Any) -> str | None:
+        """A directory for the base this checkpoint adapts, or None to leave it alone.
+
+        Which repositories a checkpoint needs is declared once, in `WeightSpec.bases`, and
+        this only *looks up* the one the checkpoint's own metadata names -- it never
+        decides a repository, and it never downloads anything itself: `paths.resolve` and
+        `paths.fetch_checkpoint` own both decisions (AGENTS.md §2).
+
+        Returning a directory rather than a repository id is the point: `transformers` and
+        `peft` accept a local path for `from_pretrained`, and that is the only way a base
+        that came from ModelScope -- or from a mounted `DECIS_MODEL_DIR` -- reaches a loader
+        that would otherwise insist on the Hugging Face cache.
+        """
+        spec = self.weights()
+        if not spec.bases:
+            return None
+        declared = next((base for base in spec.bases if base.repo_id == meta.base), None)
+        if declared is None:
+            # The checkpoint was retrained over some other base. Its own metadata wins:
+            # substituting a different repository would silently serve the wrong model.
+            _logger.warning(
+                "%s adapts %s, which this build does not declare (it declares %s); leaving the base "
+                "to the loader, which resolves it through the Hugging Face cache.",
+                self._id,
+                meta.base,
+                ", ".join(base.repo_id for base in spec.bases),
+            )
+            return None
+
+        for base_spec in spec.base_specs():
+            if base_spec.repo_id != declared.repo_id:
+                continue
+            source = resolve(base_spec, settings)
+            if source.is_local:
+                return str(source.path)
+            _logger.info("fetching base model %s (pinned at %s)", base_spec.repo_id, base_spec.revision)
+            return str(fetch_checkpoint(base_spec, settings))
+        return None
 
     def _vendor_load_options(self, dtype: Any) -> Any:
         """A `LoadOptions` built explicitly rather than from `KEV_*` environment variables.

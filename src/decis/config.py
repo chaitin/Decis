@@ -172,6 +172,19 @@ def ensure_loopback_bypass(environ: MutableMapping[str, str] | None = None) -> N
         env[name] = ",".join(entries)
 
 
+#: Where weights can be fetched from. `auto` probes Hugging Face and falls back to
+#: ModelScope when it cannot be reached at all; the other two values pin one source, which
+#: is what a reproducible build or an air-gapped host wants (`decis/hub.py`).
+HUBS = ("auto", "huggingface", "modelscope")
+
+
+def _hub(name: str) -> str:
+    raw = _str(name, "auto").lower()
+    if raw not in HUBS:
+        raise ConfigError(f"{name} must be one of {', '.join(HUBS)}, got {raw!r}")
+    return raw
+
+
 @dataclass(frozen=True)
 class Settings:
     """Resolved configuration. Immutable, and safe to pass anywhere."""
@@ -208,6 +221,15 @@ class Settings:
     #: `registry.DTYPE_DEFAULTS`. Mainly for re-measuring a dtype on your own hardware --
     #: the defaults exist because some combinations are far worse than others.
     dtype: str | None = None
+    #: Which weight hub `decis download` and the loaders fetch from: `auto` (probe Hugging
+    #: Face, fall back to ModelScope when it does not answer), or one of the two pinned.
+    #: Kept here rather than in the downloader because it is configuration, and because
+    #: "which hub" must be answerable before anything is imported (AGENTS.md §2).
+    hub: str = "auto"
+    #: `HF_ENDPOINT`, if the host set it. Read here so the reachability probe asks the same
+    #: endpoint `huggingface_hub` will use (an internal mirror, `hf-mirror.com`, ...); the
+    #: variable itself belongs to `huggingface_hub`, so an empty value means "its default".
+    hf_endpoint: str = ""
     log_level: str = "info"
     env_file: str = DEFAULT_ENV_FILE
     # Names of the DECIS_* variables that were actually set, for `decis doctor`.
@@ -273,6 +295,8 @@ def load_settings(env_file: str | None = None) -> Settings:
         torch_threads=int(torch_threads) if torch_threads else None,
         device=_str("DECIS_DEVICE") or None,
         dtype=_str("DECIS_DTYPE") or None,
+        hub=_hub("DECIS_HUB"),
+        hf_endpoint=_str("HF_ENDPOINT"),
         log_level=_str("DECIS_LOG_LEVEL", "info"),
         env_file=path,
         sources=tuple(sorted(name for name in os.environ if name.startswith("DECIS_"))),

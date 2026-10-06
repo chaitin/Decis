@@ -278,8 +278,8 @@ def download_arguments(spec: WeightSpec) -> dict[str, object]:
     }
 
 
-def fetch_checkpoint(spec: WeightSpec) -> Path:
-    """Fetch `spec` from the Hub and return the directory a loader can read.
+def fetch_checkpoint(spec: WeightSpec, settings: Settings) -> Path:
+    """Fetch `spec` from a Hub and return the directory a loader can read.
 
     The one place an engine gets weights over the network, and the reason it is here
     rather than in an engine (AGENTS.md §2): the pin and the file list are properties
@@ -288,17 +288,26 @@ def fetch_checkpoint(spec: WeightSpec) -> Path:
     that -- upstream has no `revision` parameter, so the loader read `main` while the
     log line promised the pinned commit (`docs/design-review.md` §2-D26).
 
-    Answers from the Hub cache when it is there, so calling it on every start costs a
-    couple of HEAD requests, not a download. Validated with `checkpoint_root` -- the
+    *Which* Hub is `decis/hub.py`'s decision, not this function's: Hugging Face when it
+    answers, ModelScope when the network cannot reach it and the operator has not pinned a
+    source. Answers from that client's cache when it is there, so calling it on every start
+    costs a couple of HEAD requests, not a download. Validated with `checkpoint_root` -- the
     same predicate a mounted directory goes through -- because "the download finished"
     and "the loader will find a checkpoint" are different claims (D17).
-    """
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:  # pragma: no cover - every engine extra requires it
-        raise FileNotFoundError(f"{spec.engine_id} needs `huggingface_hub` to fetch {spec.repo_id}: {exc}") from exc
 
-    downloaded = Path(snapshot_download(**download_arguments(spec)))  # type: ignore[arg-type]
+    A Hub that cannot be used here -- no client installed for the selected source -- is raised
+    as `FileNotFoundError`, the type the engines already translate into
+    `EngineUnavailableError` with this message ("the weights are not where I can reach them",
+    which is exactly what it is).
+    """
+    from .hub import HubUnavailableError, choose
+    from .hub import download as hub_download
+
+    selection = choose(settings)
+    try:
+        downloaded = hub_download(spec, selection=selection)
+    except HubUnavailableError as exc:
+        raise FileNotFoundError(str(exc)) from exc
     root = checkpoint_root(downloaded, spec)
     if root is None:
         raise FileNotFoundError(
@@ -326,6 +335,24 @@ def human_bytes(count: int | float) -> str:
     return f"{size:.1f} GiB"
 
 
+def module_available(name: str) -> bool:
+    """Whether the module `name` can be imported here, without importing it.
+
+    The one answer to "is it installed on this machine", shared by the engine-dependency
+    check below, the Hub clients (`hub.client_installed`) and the CLI, because the three
+    used to each do their own `find_spec` -- and the two that skipped the `except` reported a
+    broken namespace or missing parent package as an installed module.
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        # The parent package is itself missing, or the module is a broken namespace:
+        # either way it cannot be imported.
+        return False
+
+
 def missing_requirements(spec: WeightSpec) -> list[str]:
     """Which of `spec.requires` cannot be imported here.
 
@@ -333,19 +360,7 @@ def missing_requirements(spec: WeightSpec) -> list[str]:
     (AGENTS.md §6), so `registry.describe()` succeeding says nothing about whether
     `load()` would work. This is the missing half of that answer.
     """
-    import importlib.util
-
-    missing = []
-    for module in spec.requires:
-        try:
-            found = importlib.util.find_spec(module) is not None
-        except (ImportError, ValueError):
-            # The parent package is itself missing, or the module is a broken
-            # namespace: either way it cannot be imported.
-            found = False
-        if not found:
-            missing.append(module)
-    return missing
+    return [module for module in spec.requires if not module_available(module)]
 
 
 def filesystem_has_room(directory: Path, needed_bytes: int | None) -> bool | None:

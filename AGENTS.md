@@ -5,8 +5,8 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 本文件是**在这个仓库里工作的契约**。它写给 AI agent，也写给人类。规则不是建议，是约束；违反约束的改动即使"能跑"也不接受。
 
 > **当前状态**：契约层（`schema.py` / `render.py` / `answers.py` / `errors.py` / `auth.py`）、引擎抽象、
-> `paths.py` 权重解析、`scheduler.py`、`config.py`、`cli.py`（含 `decis download`）、`docker/Dockerfile`
-> 与 CI 都已实现，三个真实模型家族跑在同一个契约后面：
+> `paths.py` 权重解析、`hub.py`（Hub 选择与 ModelScope 回退）、`scheduler.py`、`config.py`、`cli.py`
+> （含 `decis download`）、`docker/Dockerfile` 与 CI 都已实现，三个真实模型家族跑在同一个契约后面：
 > `uv sync --extra laya && uv run decis serve --engine laya-multilingual`、
 > `uv sync --extra kev && uv run decis serve --engine kev-0.8b`、
 > `uv sync --extra jeff && uv run decis serve --engine jeff-qwen3.5-0.8b`。
@@ -25,9 +25,12 @@ Decis 是"一个 API 跑所有轻量决策模型"的推理服务框架。它把 
 > **镜像**：`.github/workflows/docker-build.yml` 按引擎构建、推送到 Docker Hub 的**一个**仓库
 > `chaitin/decis`，**引擎就是 tag**（`chaitin/decis:laya-multilingual`）。命名空间来自工作流的
 > `IMAGE_NAMESPACE`（默认 `chaitin`，仓库变量 `DOCKERHUB_NAMESPACE` 可覆盖），**不从
-> `DOCKERHUB_USERNAME` 推导**——那是登录身份，不是发布目标。tag 规则：默认分支只给引擎名，其中
-> `laya-multilingual` 的内置权重变体另外拿裸 `latest`；**只有 release tag 追加版本**（`<engine>-v1.2.0`）；
-> 不带权重的变体带后缀 `-runtime`，只在 release 或手动 dispatch 时发布，且**没有第二个名字**。
+> `DOCKERHUB_USERNAME` 推导**——那是登录身份，不是发布目标。tag 规则：**内置权重的 baked 变体只在
+> release tag（`<engine>-v1.2.0`）或明确要求它的手动 dispatch 时构建**，默认分支与 feature 分支只发
+> 不带权重的 `-runtime` 变体（默认分支用移动名 `<engine>-runtime`，其他分支用
+> `<engine>-runtime-sha-<7>`）；release 额外把不带后缀的 `<engine>` / `<engine>-runtime` 指向刚发布的
+> 镜像，`laya-multilingual` 的 baked 变体另外拿裸 `latest`（随 release 移动，绝不给别的引擎或
+> `-runtime` 镜像）。任何分支推送都不下载权重。
 > `playground` 是唯一的非引擎镜像（release 为 `playground-<version>`）。多架构（amd64 + arm64 原生
 > runner）、带 SBOM 与 provenance；只有 Docker Hub 一个 registry，**GHCR 不再推送**。
 > tag 全表在 `docs/deployment.md`，规则的理由在工作流的注释里。
@@ -104,6 +107,8 @@ CPU，约 1.2 项/秒，只有 16 个生成项、合成批的串行路径），*
 | 引擎加载状态（idle/loading/ready/failed 与失败原因） | `src/decis/scheduler.py: LoadStatus` | 在 CLI/路由里各写一份"就绪"判断；用 `ready` 一个布尔表示"为什么不能服务" |
 | 权重路径解析、完整性判定、下载清单、"本机缺哪个模块" | `src/decis/paths.py` | 引擎自己决定去哪找权重；引擎自己调 `snapshot_download` |
 | 「一个 checkpoint 需要哪些仓库」（适配器 + 它适配的基座） | `src/decis/paths.py: BaseModel` / `WeightSpec.bases` | 引擎自己下载基座；把基座写成引擎里第二个硬编码 repo id |
+| 「网络取权重时问哪个 Hub、pin 能不能兑现」 | `src/decis/hub.py`: `choose` / `Selection.pinned` / `download` | 引擎或 CLI 自己判断『连得上吗』再挑客户端；把 `WeightSpec.revision` 转交给不支持 commit 的客户端（ModelScope 收到 sha 会**静默成功且一个文件都不下**，`design-review.md §2-D32`）；在 `hub.py` 之外提 `snapshot_download` / `huggingface_hub` / `modelscope`（守卫 `tests/test_conventions.py::test_only_hub_names_a_hub_client`） |
+| 「本机有没有装某个模块」 | `src/decis/paths.py: module_available` | 在别处再写一遍 `importlib.util.find_spec`（少写那个 `except` 就会把『父包不存在』报成已安装；守卫 `test_module_presence_has_one_home`） |
 | `(引擎, 设备) → dtype`、以及"能跑但性能已知很差"的组合 | `src/decis/engines/registry.py: DTYPE_DEFAULTS` / `DEGRADED` | 引擎自己判断 dtype；全局统一一个 dtype（kev 在 CPU 上 bf16 比 fp32 慢 83 倍） |
 | `DECIS_DEVICE` 的合法取值、「这台机器能用哪个设备」、「不设时用哪个」 | `src/decis/engines/devices.py: DEVICES` / `ACCELERATOR_ORDER` / `available_devices` / `best_device` / `requested_device` | 引擎自己写设备回退（`settings.device or "cpu"` 曾让 kev 在 Apple 芯片上跑 CPU，实测慢 15 倍）；在别处再判断一次"CUDA/MPS 可用吗" |
 | 「某个 primitive 的选项在提示里长什么样」 | 各引擎自己的 record 构造 | 让 `render.py` 决定——kev 的 noul 是 `no`/`yes`、score 是裸层级文本，与 Decis 的 `Option.name` 不同（`design-review.md §2-D9`） |
@@ -266,6 +271,10 @@ DECIS_DTYPE=bf16                     # 强制精度；不设则查 registry.DTYP
 ```bash
 uv sync --extra laya
 uv run decis download --engine laya-multilingual                    # 约 647 MiB，进 Hub 缓存（零配置时 serve 读这里）
+#   连不上 huggingface.co 时自动改用 ModelScope（DECIS_HUB=auto，探测失败才回退，探测打的是
+#   <endpoint>/api/models?limit=1，任何 HTTP 状态码都算『连得上』）；写死源用
+#   `--hub huggingface|modelscope`。这些仓库在 ModelScope 上只有 master，所以回退时 pin 的
+#   commit 兑现不了，命令会在传输前警告一次（§2-D32）
 uv run decis serve --engine laya-multilingual --host 127.0.0.1     # 冷启动实测见 docs/performance.md 的延迟表
 #   想落到挂载目录：`--dest ./models` 写成 ./models/laya-multilingual/，再用 DECIS_MODEL_DIR=./models 服务
 #   冷启动期间 /healthz 立即可用，/readyz 报 {"status":"loading"}；加载失败则报 "failed"
@@ -308,8 +317,9 @@ uv run decis models --model-path jeff=/srv/jeff-qwen        # 别名在这里也
 docker run --rm -p 8000:8000 chaitin/decis:laya-multilingual   # 权重在镜像里，不需要网络也不需要挂卷
 docker run --rm -p 8000:8000 chaitin/decis:kev-0.8b
 #   想换成自己的权重目录：-v /srv/models:/models，但那个目录里必须已经有 <engine-id>/
-#   ——挂在 /models 上会盖掉镜像里已有的权重（§2-D21）。要"权重放卷"就用 release 的
-#   <engine>-runtime-<version> 镜像先 `decis download` 填一次卷。
+#   ——挂在 /models 上会盖掉镜像里已有的权重（§2-D21）。要"权重放卷"就用 `<engine>-runtime`
+#   （每次推送到 master 都会重新发布）或 release 的 `<engine>-runtime-<version>` 镜像先
+#   `decis download` 填一次卷。
 ```
 
 本地编排（发布镜像；profile 决定起哪个引擎，选择写在 `.env` 的 `COMPOSE_PROFILES` 里）：
@@ -444,6 +454,18 @@ exec 的每个程序都放进去**：GNU make 对不含元字符的整行会绕�
 - ❌ 未经许可与署名就复制第三方代码进仓库
 - ❌ 让引擎在超预算时静默截断输入（上游这么干，Decis 不能跟着干）
 - ❌ 在 `paths.py` 之外决定权重从哪来，或让"本地有权重"输给网络请求
+- ❌ 把 pin 的 revision 交给一个**没有 commit 语义**的客户端（`design-review.md §2-D32`：
+  ModelScope 的 `revision` 是分支名 / tag 名，收到 Hugging Face 的 commit sha 不报错、
+  打一行 `No files to download`、**成功返回一个空目录**，于是“换源”悄悄变成“换权重”）。
+  pin 只有 Hugging Face 能兑现：`hub._from_modelscope` 不带 `revision`，`Selection.pinned`
+  把这件事变成值，每个显示源的地方都要说清楚；**探测要探 endpoint**
+  （`<endpoint>/api/models?limit=1`），不要探某个仓库——那会把“仓库改名 / 转私有”读成“被墙”
+- ❌ 在 `hub.py` 之外挑 Hub 或调 `snapshot_download`（§2；守卫
+  `tests/test_conventions.py::test_only_hub_names_a_hub_client`），或在 `paths.module_available`
+  之外再写一遍 `find_spec`（守卫 `test_module_presence_has_one_home`）
+- ❌ 让“回退到镜像”变成一个**默认看不见**的行为：选源、原因、以及兑现不了的 revision 必须在
+  传输任何字节**之前**打印出来（`decis download` 的源行 + 警告，`decis doctor` 的 `weight hub` 行），
+  需要 pin 生效的部署用 `DECIS_HUB=huggingface` 把回退变成失败
 - ❌ 用 `len(text) // 4` 给一个会截断的引擎做容量校验
 - ❌ 把调用阻塞函数的路径写成 `async def` 路由（会堵死事件循环，连探针一起堵）
 - ❌ 在请求路径上无限期等引擎（取锁必须有 `DECIS_REQUEST_TIMEOUT_MS` 上限）

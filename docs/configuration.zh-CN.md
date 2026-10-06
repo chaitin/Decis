@@ -67,21 +67,50 @@ decis serve --preload
 | `DECIS_DEFAULT_ENGINE` | `laya-multilingual` | `decis serve` 加载的引擎，也是回答 `model` 为“你的默认值”这类名字（如 `jev-latest`）的请求所用的引擎。`--engine` 会覆盖它。 |
 | `DECIS_ACCEPT_FOREIGN_DEFAULTS` | `1` | 用已加载的引擎回答 `jev-latest`（官方 SDK 的默认值），而不是 422。正是它让只换 `base_url` 就够了。这个替换会记在 `decis.requested_model` 里。 |
 | `DECIS_MODEL_DIR` | 未设置 | 预先下载好的权重目录。期望布局：`<DECIS_MODEL_DIR>/<engine-id>/`。 |
+| `DECIS_HUB` | `auto` | 从哪个 Hub 取权重：`auto`、`huggingface` 或 `modelscope`。见[权重从哪个 Hub 来](#权重从哪个-hub-来)。`--hub` 在 `serve`、`models`、`doctor`、`download` 上覆盖它。 |
 
 权重解析的顺序是固定的；第一个命中的生效，本地目录优先于网络：
 
 1. 用 `--model-path` 为这个引擎指定的目录（见下）。
 2. `DECIS_MODEL_DIR/<engine-id>/`。
-3. Hugging Face 缓存，必要时下载。
+3. Hub 缓存——Hugging Face，或 Hugging Face 不应答时的 ModelScope——必要时下载。
 
 一个候选目录只有在是**完整** checkpoint 时才算数：引擎 `WeightSpec.marker` 指名的那个文件要
 在，分片 checkpoint 还要满足 `*.safetensors.index.json` 里列出的每个文件都在。任何一条不满足
 就当作"这里没有"，于是下到一半的目录会落到第 3 步，而不是先被拿去服务、再在加载时失败。
 
 ```bash
-uv run decis download --engine laya-multilingual                  # 下载进 HF 缓存
-uv run decis download --engine laya-multilingual --dest ./models  # 下载进 ./models/laya-multilingual/
+uv run decis download --engine laya-multilingual                  # 进它选中的那个源的缓存
+uv run decis download --engine laya-multilingual --dest ./models  # 进 ./models/laya-multilingual/
 DECIS_MODEL_DIR=./models uv run decis serve
+```
+
+### 权重从哪个 Hub 来
+
+取权重时先试 Hugging Face，只有当它的 endpoint **完全**连不上时才退回
+[ModelScope](https://modelscope.cn)：DNS 失败、连接被拒或超时。HTTP 错误状态不算"连不上"——
+401 或 404 恰恰证明主机答了话——所以私有或需要鉴权的镜像不会被误判成"被墙"。这条退路是给
+Hugging Face 不可达的网络准备的；能连上时行为完全不变。
+
+| 变量 | 默认值 | 含义 |
+|---|---|---|
+| `DECIS_HUB` | `auto` | `auto`、`huggingface` 或 `modelscope`。`auto` 会探测并回退；写死一个值则既不探测也不替换，所以在 `auto` 会换源的情况下 `huggingface` 会直接失败。 |
+| `HF_ENDPOINT` | `https://huggingface.co` | `huggingface_hub` 使用的 endpoint，**也是**探测时问的那个，于是内部镜像（或 `https://hf-mirror.com`）会被当作可达，而不是当作被墙的 Hugging Face。 |
+
+**ModelScope 上无法兑现 pin 住的 revision。** 它的 revision 是分支名和 tag 名，而这些仓库的镜像
+只有 `master`。把 Hugging Face 的 commit sha 交给它并不会报错：它会打一行 `No files to download`
+然后返回成功，留下一个空目录，于是 pin 住的 revision 变成了静默的空操作。所以 Decis 从不把 sha
+发给它。取而代之的是：`decis download` 在传输任何东西之前打印将要使用的源、原因，以及一条警告，
+点名那个源兑现不了的 revision；`decis doctor` 报告在这台机器上取权重会发生什么。需要 pin 真正
+生效的部署应该设 `DECIS_HUB=huggingface`，把这件事直接变成失败。
+
+`uv sync --extra download` 会装上两个客户端；每个引擎 extra 都已经把它带了进来，缺哪个
+`decis doctor` 会指出来。
+
+```bash
+uv run decis doctor                                        # 会探测一次 endpoint，有超时上限
+uv run decis download --engine laya-multilingual           # 传输前先打印源
+uv run decis download --engine kev-0.8b --hub modelscope   # 跳过探测，直接用 ModelScope
 ```
 
 ### 让单个引擎读你自己的目录
@@ -101,10 +130,12 @@ uv run decis serve --model-path laya-multilingual=/srv/mine --model-path jeff=/s
 命令行上出现未知引擎 id 是配置错误，而不是什么都不做。
 
 > **`kev-0.8b` 有一个注意点。** 你指过去的那个目录是**适配器**（LoRA 加 pointer head），也正是
-> 你会去微调的部分；Qwen3.5 **基座**模型在适配器的 checkpoint 元数据里是以 Hub repo id 的形式
-> 被引用的，所以单独挂载一份基座不会被读到。`decis download` 会把基座放进 Hugging Face 缓存，
-> 之后引擎就能离线运行。两个 Jeff 引擎不一样：它们各自都是全权重微调，所以一个目录里就是全部，
-> 不会再额外取别的东西。
+> 你会去微调的部分；Qwen3.5 **基座**模型是第二个仓库，声明在 `WeightSpec.bases` 里。
+> `decis download` 两个都会取，引擎两个也都会解析。给了 `--dest`（或 `DECIS_MODEL_DIR`）时基座
+> 落在适配器旁边，即 `<dir>/Qwen3.5-0.8B-Base/`；两个都没给时它落在应答的那个 Hub 的缓存里，
+> 之后从那里读回来。基座仓库来自适配器自己的元数据，而这份构建没有声明的基座会交给加载器，
+> 不会被替换掉。两个 Jeff 引擎不一样：它们各自都是全权重微调，所以一个目录里就是全部，不会再
+> 额外取别的东西。
 
 ## 计算
 

@@ -7,7 +7,7 @@
 
 > **这份文档怎么读。** 已经修好、并且有测试守卫的问题，在 §2.2 里压缩成一小段（症状 / 怎么修的 /
 > 谁在守着它）；**现在仍然成立**的问题放在 §2.1 的最前面；方法论问题在 §4；还没修的清单在 §5。
-> 每条都有一个稳定的编号（`D1`…`D31`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
+> 每条都有一个稳定的编号（`D1`…`D32`、`M1`…`M6`），`AGENTS.md`、代码注释与测试都按编号引用它，
 > 所以编号不会重排。逐条的事故复盘在 git 历史里（`git log -p docs/design-review.md`），这里不再重述。
 
 ---
@@ -340,9 +340,11 @@ merge 必然在所有 build 之后，于是读到的是最后完成的那个引�
 容器首次启动时下载。**唯一发现它的方式是把镜像拉下来跑一遍**：六条构建任务全绿、SBOM 和 provenance 都在，
 没有一条测试说过"这个 tag 里有权重"。
 
-修法：翻转变体——内置权重成为**默认**，引擎名那个 tag 就是它；不带权重的变体带后缀 `-runtime`，
-只在 release tag 或手动 dispatch 时构建；`-offline` 这个名字删掉（默认已经内置权重时它就是同一个东西的第二个名字）。
-守卫：`tests/test_docker_workflow.py`（默认 tag 的 `bake` 等于引擎名、不存在"要内置权重却没装对应 extra"的构建任务）、
+修法：翻转变体——内置权重成为**默认**，引擎名那个 tag 就是它；它只在 release tag 或手动 dispatch
+要求时构建，分支推送只发布不带权重的 `-runtime` 变体（引擎名那个 tag 没有权重就不能被移动）；
+`-offline` 这个名字删掉（默认已经内置权重时它就是同一个东西的第二个名字）。
+守卫：`tests/test_docker_workflow.py`（release 的 baked tag `bake` 等于引擎名、分支推送只发 `-runtime`、
+不存在"要内置权重却没装对应 extra"的构建任务）、
 `tests/test_compose.py`（compose 用的 image tag 正是那个内置权重的变体）。
 **代价（写下来）**：权重的 `RUN` 层在 `COPY src` 之后，所以每次源码改动这条构建线都要重新下载——laya 是 647 MiB，
 kev 是约 13 MB 的 adapter 加 1.65 GiB 的基座，乘两个架构。想省这笔钱就得把权重挪到单独发布的"模型层"镜像里
@@ -502,6 +504,35 @@ marker（3.11 上根本不装那几个 GB 的依赖）。
 所以它在 3.14 上也能红，而不是等某个老解释器自己撞上。
 **教训**："两个环境都跑过"必须带上**解释器版本**这一维：本地两个环境都是 3.14，CI 有 3.11/3.12/3.13，
 于是这个缺陷是推送后才发现。如果 CI 只跑最新解释器，它会直接进 release。
+
+#### D32（高）把 pin 住的 commit 交给 ModelScope，不报错，而是“成功”地什么都不下 — 已修正
+
+ModelScope 的 `snapshot_download` 有 `revision` 参数，但它的 revision 是**分支名 / tag 名**。
+用 `modelscope 1.40.1` 对 `convaiinnovations/laya` 传 Hugging Face 的 commit sha 实测：不抛异常，
+日志打一行 `No files to download for convaiinnovations/laya@<sha>`，**返回成功**，目录是空的。
+这三件事正好凑成这个仓库最忌讳的组合——在错误的分支上“成功”、错误在很远的下游才浮现、
+而用户以为自己拿到了 pin 住的那份权重。加回退路径时如果只是“把同样的参数转发给另一个客户端”，
+这就是必然结果。
+
+同一轮实测的另外两条事实，决定了方案的边界：
+
+- 这些仓库在 ModelScope 上**只有 `master`**（revisions 接口只返回 Branches，没有 Tags）；
+- `mstrasser/Jeff-Qwen3.5-0.8B` 与 `Jeff-Gemma4-E2B` 在 ModelScope 上**不存在**
+  （404 `{"Code":10010205001,...,"record not found"}`）。所以“回退”只能救有镜像的仓库，
+  没有镜像时必须让客户端自己的错误原样冒出来，而不是被翻译成“下载成功”。
+
+修法：`hub._from_modelscope` **不带** `revision`（`Selection.pinned=False` 把“这份不是 pin 的那份”
+变成结构化的事实，而不是注释），`decis download` 在传输前打印源与原因、并单独警告一次兑现不了的
+revision，`decis doctor` 报告这台机器会走哪个源。要 pin 真正生效就 `DECIS_HUB=huggingface`：
+那时连不上是失败，而不是换一份字节下载。
+
+守卫：`tests/test_hub.py::test_the_modelscope_path_never_receives_the_pinned_commit` 断言
+`"revision" not in kwargs`，并且**让假客户端真的写出布局、再交给 `paths.checkpoint_root` 去读**——
+只断言参数会把“写”和“读”剪断还宣称它们连着（D17 的教训）；`tests/test_cli_download.py` 三条覆盖
+选源、措辞与缺客户端时的退出码。
+
+**教训**：当一个“可选参数”在上游属于**另一个命名空间**时，传错值可能连异常都没有。
+验收要问的是“加载器能不能读到”（`checkpoint_root`），不是“调用返回了吗”。
 
 ---
 
@@ -718,6 +749,7 @@ CUDA 镜像体积估算、`flash-linear-attention` 的可用性）。**这些是
 | 11 | 两个 Jeff 引擎镜像的构建、体积与容器内冷启动 | **构建与体积已测**（2026-09-30 工作流首次构建并推送；体积取自已发布 tag 的 registry manifest：Qwen amd64 5.9054 GB / arm64 6.0471 GB，Gemma amd64 17.7453 GB / arm64 17.8870 GB，已记入 `docs/deployment.md`）。**容器内冷启动仍未测**：这两个 tag 从来没被拉下来起过容器 |
 | 12 | Jeff 的吞吐/延迟数字 | **未测**（§8：没有 checked-in 的原始 JSON 就不许写数字；`docs/engines.md` 只报**内存占用**，那是"这个模型能不能在这台机器上跑起来"的事实，不是性能数字）。两个引擎各只有一次探针观测（三问题一批，而且当时 CPU 被并发的测试占着），要报就得先进 `benchmarks/results/` |
 | 13 | 挂载自定义**基座**（D11）与 `noul.criteria` 未知键的策略（D13） | **两条都未修，而且都没有测试守卫**——它们只有文档层的约定，改动前请先看 §2.1 |
+| 14 | ModelScope 回退在**真正访问不到 Hugging Face** 的机器上的端到端行为 | **本机已验，目标环境未验**。用 `modelscope 1.40.1` 在本机（能连 huggingface.co）验证过：镜像存在，`allow_file_pattern` 的子目录通配符（`multilingual/tokenizer/*`）落下的布局能通过 `paths.checkpoint_root`；`pyproject.toml` 的 extra 也已解析出这个依赖。**没有**在一台 huggingface.co 不可达的机器上真跑过一次 `decis download`，也没测过 3 s 探测超时在被墙网络里的真实表现（DNS 污染与连接挂死的耗时不一样） |
 
 ---
 

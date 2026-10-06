@@ -8,11 +8,14 @@ after a 40-second load. The numerical claims live in `test_kev_inference.py`
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import subprocess
 import sys
 
 import pytest
 
+from decis.config import Settings
 from decis.domain import Option, PreparedQuestion
 from decis.engines import kev as kev_module
 from decis.engines.base import EngineInfo
@@ -251,8 +254,14 @@ def test_a_base_becomes_a_resolvable_spec() -> None:
 
 
 def test_a_base_download_targets_the_hub_cache() -> None:
-    """No `local_dir`: `Checkpoint.load` resolves the base by repo id, so a local_dir
-    download would land where the loader never looks and be fetched again."""
+    """`download_arguments` names no destination; the caller decides where the copy lands.
+
+    It must not: the same arguments serve `decis download --dest` (which passes
+    `local_dir=<DECIS_MODEL_DIR>/Qwen3.5-0.8B-Base` through `hub.download`) and a plain
+    load-time fetch (the client's own cache). Both are read back by `paths.resolve`, and
+    the base is handed to the loader as a *directory*, not as this repository id -- see
+    `test_a_local_base_is_handed_to_the_loader_as_a_directory` below.
+    """
     from decis.paths import download_arguments
 
     arguments = download_arguments(KevEngine().weights().base_specs()[0])
@@ -260,6 +269,83 @@ def test_a_base_download_targets_the_hub_cache() -> None:
     assert arguments["repo_id"] == "Qwen/Qwen3.5-0.8B-Base"
     assert arguments["revision"]
     assert "*.safetensors" in arguments["allow_patterns"]
+
+
+# --- the base reaches the loader as a directory (D32) -------------------------
+
+
+def _meta(base: str) -> object:
+    """The `Checkpoint.meta` shape `_base_directory` reads. Only `base` matters here."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(base=base)
+
+
+def test_a_local_base_is_handed_to_the_loader_as_a_directory(tmp_path) -> None:
+    """Without this, `transformers.from_pretrained` never sees a mounted base.
+
+    The vendored loader reads the base by repository id, which resolves through the Hugging
+    Face cache alone. A base that `decis download --dest` wrote, or that a baked image
+    carries in `DECIS_MODEL_DIR`, is therefore invisible to it -- and the container would go
+    to the network for a checkpoint it already has.
+    """
+    base_dir = tmp_path / "Qwen3.5-0.8B-Base"
+    base_dir.mkdir()
+    (base_dir / "config.json").write_text("{}")
+
+    settings = dataclasses.replace(Settings(), model_dir=tmp_path)
+    resolved = KevEngine()._base_directory(settings, _meta("Qwen/Qwen3.5-0.8B-Base"))
+
+    assert resolved == str(base_dir)
+
+
+def test_a_base_this_build_does_not_declare_is_left_to_the_loader(monkeypatch, caplog) -> None:
+    """The checkpoint's own metadata wins: substituting another repository serves another model.
+
+    A retrained checkpoint names the base it was actually trained over; quietly handing it the
+    base this build declares would load a mismatched pair that still runs. It says so instead,
+    and leaves the resolution to the loader.
+    """
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("an undeclared base must not be substituted or fetched")
+
+    monkeypatch.setattr(kev_module, "fetch_checkpoint", refuse)
+    with caplog.at_level(logging.WARNING, logger="decis.engines.kev"):
+        resolved = KevEngine()._base_directory(Settings(), _meta("acme/retrained-base"))
+
+    assert resolved is None
+    assert "acme/retrained-base" in caplog.text
+    assert "Qwen/Qwen3.5-0.8B-Base" in caplog.text
+
+
+def test_a_declared_base_is_fetched_through_paths_not_by_the_engine(monkeypatch, tmp_path) -> None:
+    """Which Hub, which revision and where it lands are `paths`/`hub` decisions (AGENTS.md §2).
+
+    The engine only looks up the repository its own checkpoint names; the fetch goes through
+    `paths.fetch_checkpoint`, which is the same call `decis download` makes, so a load and a
+    download cannot disagree about the pin.
+    """
+    from decis.engines import kev as kev_module
+    from decis.paths import download_arguments
+
+    seen: dict[str, object] = {}
+
+    def fake_fetch(spec, settings):
+        seen["spec"] = spec
+        seen["settings"] = settings
+        seen["arguments"] = download_arguments(spec)
+        return tmp_path / "fetched-base"
+
+    monkeypatch.setattr(kev_module, "fetch_checkpoint", fake_fetch)
+    settings = Settings(hub="huggingface")
+    resolved = KevEngine()._base_directory(settings, _meta("Qwen/Qwen3.5-0.8B-Base"))
+
+    assert resolved == str(tmp_path / "fetched-base")
+    assert seen["settings"] is settings, "the Hub choice travels with the call"
+    assert seen["spec"].repo_id == "Qwen/Qwen3.5-0.8B-Base"
+    assert seen["spec"].revision, "the base keeps the pin this build declares"
+    assert "local_dir" not in seen["arguments"]
 
 
 def test_laya_weights_are_unaffected_by_the_base_model_addition() -> None:

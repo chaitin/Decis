@@ -289,7 +289,7 @@ class LayaEngine(DecisionEngine):
                 f" ({human_bytes(expected)})" if expected else "",
             )
         _logger.info("loading %s from %s (device=%s)", self._id, source.describe(), device or "auto")
-        self._agent = self._instantiate(laya, source, device)
+        self._agent = self._instantiate(laya, source, device, settings)
         if device and self._agent.device.type != device:
             # Upstream falls back on its own, with a `print` that a server's log may not
             # keep. Say it where an operator will actually see it.
@@ -315,7 +315,7 @@ class LayaEngine(DecisionEngine):
             self._head_max_len,
         )
 
-    def _instantiate(self, laya: Any, source: Any, device: str | None) -> Any:
+    def _instantiate(self, laya: Any, source: Any, device: str | None, settings: Settings) -> Any:
         """Build the Agent against whatever `paths.resolve` decided.
 
         `laya.load` would re-derive all of this from a repository id and reach for the
@@ -328,7 +328,8 @@ class LayaEngine(DecisionEngine):
         repository id downloaded whatever `main` pointed at while the line above
         promised this build's pinned commit (`docs/design-review.md` §2-D26). It also
         keeps the file list in one place -- `paths.download_arguments` -- instead of
-        upstream's own copy of it.
+        upstream's own copy of it. `settings` travels with the call because *which* Hub
+        to fetch from is configuration (`decis/hub.py`); an engine must not decide it.
 
         `device=None` is upstream's own signature default, so "no `DECIS_DEVICE`" and
         "asked for the best available" stay one code path.
@@ -338,7 +339,7 @@ class LayaEngine(DecisionEngine):
                 # `checkpoint_root` already resolved the subfolder, so passing it
                 # again here would look for `<path>/<subfolder>/<subfolder>`.
                 return laya.Agent(str(source.path), device=device)
-            return laya.Agent(str(fetch_checkpoint(self.weights())), device=device)
+            return laya.Agent(str(fetch_checkpoint(self.weights(), settings)), device=device)
         except FileNotFoundError as exc:
             raise EngineUnavailableError(f"Could not load {self._id} from {source.describe()}: {exc}") from exc
 

@@ -53,6 +53,19 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(_source(path), filename=str(path))
 
 
+def _calls(tree: ast.Module, name: str) -> bool:
+    """Whether the module *calls* a bare `name(...)` anywhere, lazily or not."""
+    return any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
+        for node in ast.walk(tree)
+    )
+
+
+def _uses_attribute(tree: ast.Module, name: str) -> bool:
+    """Whether the module touches `something.name` -- code, not prose about the rule."""
+    return any(isinstance(node, ast.Attribute) and node.attr == name for node in ast.walk(tree))
+
+
 def _module_scope_imports(tree: ast.Module) -> list[str]:
     """Imports that run when the module is imported.
 
@@ -362,6 +375,32 @@ def test_paths_does_not_import_the_engine_layer() -> None:
     """`paths.py` sits below `engines/` in the layering (AGENTS.md §4)."""
     imported = _imported_modules(PACKAGE / "paths.py")
     assert not any(name.startswith("decis.engines") for name in imported), imported
+
+
+def test_only_hub_names_a_hub_client() -> None:
+    """Which Hub client fetches has one home: `hub.py` (AGENTS.md §2).
+
+    `paths.fetch_checkpoint` used to call `huggingface_hub.snapshot_download` itself, which
+    meant the module that owns completeness and layout also owned the choice of source. The
+    call moved; this keeps it from drifting back, and it is the guard that would have caught
+    the half-migrated state where `paths.py` and `hub.py` both fetched from a Hub.
+    """
+    callers = [str(path.relative_to(PACKAGE)) for path in _modules() if _calls(_tree(path), "snapshot_download")]
+    # Positive control: the guard has to be able to see the real call.
+    assert "hub.py" in callers, callers
+    assert callers == ["hub.py"], callers
+
+
+def test_module_presence_has_one_home() -> None:
+    """`find_spec` answers "is it installed here", and it lives in `paths.py`.
+
+    The copies this replaced drifted in a way that matters: without the `except`, a module
+    whose parent package is missing raises `ImportError` and a namespace without a spec
+    raises `ValueError`, so "not installed" was reported as an installed module. Checked as an
+    attribute rather than as text, because prose about the rule is not a violation of it.
+    """
+    askers = [str(path.relative_to(PACKAGE)) for path in _modules() if _uses_attribute(_tree(path), "find_spec")]
+    assert askers == ["paths.py"], askers
 
 
 def test_the_laya_engine_does_not_import_torch_at_module_scope() -> None:

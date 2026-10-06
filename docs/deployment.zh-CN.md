@@ -4,9 +4,10 @@
 
 [文档索引](../README.zh-CN.md#文档) · [配置](configuration.zh-CN.md) · [快速开始](getting-started.zh-CN.md)
 
-Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而且体积很大。每个以引擎为 tag 的镜像都
-带着自己的 checkpoint，所以容器首次启动不需要网络、不需要卷，也不需要第二个服务。`-runtime`
-变体与 `playground` 镜像是刻意的例外，下面会分别说明。
+Decis **一个引擎一个镜像**，因为各引擎的依赖互相冲突，而且体积很大。tag 就是引擎裸名那个镜像
+带着自己的 checkpoint，所以容器首次启动不需要网络、不需要卷，也不需要第二个服务；它只在 release
+tag 或明确要求它的手动 dispatch 时构建。不带权重的 `-runtime` 变体与 `playground` 镜像是刻意的
+例外，下面会分别说明。
 
 ## 已发布的镜像
 
@@ -47,8 +48,12 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me chaitin/decis:laya-multilingu
 release 会发布带版本的 tag，这些 tag 不会移动：推送一个 `v*` git tag 会为矩阵里的每个引擎生成
 `<engine>-v<version>`——当前 release 是 `laya-multilingual-v0.4.0` 与 `kev-0.8b-v0.4.0`——以及
 下面说的不带权重的 `-runtime-v<version>` 变体，还有该 tag
-对应的 GitHub Release。引擎名那些 tag 正好相反——它们随每次推送到 `master` 移动，所以要钉住的
-是带版本的 tag。
+对应的 GitHub Release。不带后缀的名字也是在 release 上移动的：`<engine>` 与 `<engine>-runtime`
+被指向它刚构建出的镜像，所以它们始终表示“该变体最新发布的镜像”——`docker-compose.yml`、README 与
+`make pull` 用的就是这些名字。推送到 `master` 只发布不带权重的 `<engine>-runtime` 镜像，不移动任何
+不带后缀的名字，所以要钉住的是带版本的 tag。内置权重的 `<engine>` 镜像只来自 release tag 或明确
+点名它的手动 dispatch；在默认分支上这样的 dispatch 会像 release 一样重新发布 `<engine>`（默认引擎
+还会重新发布 `latest`），而任何分支推送都不下载 checkpoint。
 
 ### 自带权重
 
@@ -65,9 +70,10 @@ docker run -p 8000:8000 -e DECIS_API_KEY=change-me -v /srv/models:/models chaiti
 
 ### 不带权重的镜像
 
-如果部署要把权重只留一份放在共享卷上，或者必须让每个节点的镜像尽量小，release 还会发布不带
-权重的变体，名为 `<engine>-runtime-v<version>`（3.2 GB amd64 / 3.3 GB arm64）。先把卷填一次，
-然后运行：
+如果部署要把权重只留一份放在共享卷上，或者必须让每个节点的镜像尽量小，
+`chaitin/decis:laya-multilingual-runtime` 就是会移动的不带权重名字（每次推送到 `master` 都会
+重新发布它），而 `<engine>-runtime-v<version>` 钉住某次 release（3.2 GB amd64 / 3.3 GB arm64）。
+它不带权重，所以先把卷填一次，然后运行：
 
 ```bash
 docker pull chaitin/decis:laya-multilingual-runtime-v0.4.0

@@ -12,15 +12,15 @@ cross-request batching needs the Stage 3 scheduler, and the raw JSON says so.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import sys
 from pathlib import Path
 
 from . import __version__
 from .app import create_app
-from .config import ConfigError, Settings, load_settings
+from .config import HUBS, ConfigError, Settings, load_settings
 from .engines.registry import SPECS, canonical, known_names
+from .hub import Selection
 from .observability import configure_logging
 from .paths import WeightSpec
 
@@ -58,16 +58,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--env-file", default=None, help="path to a .env file (default: ./.env)")
     _add_model_path(serve)
+    _add_hub(serve)
     serve.set_defaults(handler=_serve)
 
     models = sub.add_parser("models", help="list registered engines and whether they are usable here")
     models.add_argument("--env-file", default=None)
     _add_model_path(models)
+    _add_hub(models)
     models.set_defaults(handler=_models)
 
     doctor = sub.add_parser("doctor", help="check the environment before you deploy")
     doctor.add_argument("--env-file", default=None)
     _add_model_path(doctor)
+    _add_hub(doctor)
     doctor.set_defaults(handler=_doctor)
 
     download = sub.add_parser("download", help="fetch model weights ahead of time")
@@ -75,9 +78,10 @@ def _build_parser() -> argparse.ArgumentParser:
     download.add_argument(
         "--dest",
         default=None,
-        help="model directory; weights land in <dest>/<engine id>/ (default: DECIS_MODEL_DIR, else the Hugging Face cache)",
+        help="model directory; weights land in <dest>/<engine id>/ (default: DECIS_MODEL_DIR, else the hub's cache)",
     )
     download.add_argument("--env-file", default=None)
+    _add_hub(download)
     download.set_defaults(handler=_download)
 
     bench = sub.add_parser("bench", help="measure latency and write raw JSON (see AGENTS.md §8)")
@@ -102,6 +106,25 @@ def _build_parser() -> argparse.ArgumentParser:
     bench.set_defaults(handler=_bench)
 
     return parser
+
+
+def _add_hub(parser: argparse.ArgumentParser) -> None:
+    """`--hub auto|huggingface|modelscope`, overriding `DECIS_HUB`.
+
+    The same option on every command that can fetch, rather than only on `download`: the
+    server fetches too (a cold cache, or a mounted directory that turned out to be
+    incomplete), and debugging that with an environment variable but no flag is how the two
+    paths come to disagree about which Hub they use.
+    """
+    parser.add_argument(
+        "--hub",
+        choices=HUBS,
+        default=None,
+        help=(
+            "where to fetch weights from: auto probes Hugging Face and falls back to ModelScope when it "
+            "cannot be reached (default: DECIS_HUB, auto)"
+        ),
+    )
 
 
 def _add_model_path(parser: argparse.ArgumentParser) -> None:
@@ -232,7 +255,8 @@ def startup_banner(settings: Settings, host: str, port: int, *, preload: bool = 
         lines.append(f"  weights   {source.describe()}")
         if source.kind == "hub":
             size = human_bytes(spec.expected_bytes) if spec.expected_bytes else "size unknown"
-            lines.append(f"            read from the Hugging Face cache; {size} on a cold cache")
+            lines.append("            fetched on first use -- from Hugging Face, or from ModelScope when that")
+            lines.append(f"            cannot be reached; {size} on a cold cache")
         elif source.kind == "none":
             lines.append("            not a checkpoint, and this engine has nothing to fetch: it will not load")
     lines.append(f"  bind      {host}:{port}")
@@ -339,6 +363,7 @@ def _doctor(args: argparse.Namespace) -> int:
     print(f"  torch threads    {settings.torch_threads if settings.torch_threads else 'auto'}")
     paths = ", ".join(f"{engine}={path}" for engine, path in sorted(settings.model_paths.items()))
     print(f"  model paths      {paths if paths else '(none; DECIS_MODEL_DIR and the Hub cache only)'}")
+    _report_hub(settings)
     print(f"  DECIS_* set      {', '.join(settings.sources) if settings.sources else '(none)'}")
     # Only when something was actually changed: a silent rewrite of the environment is
     # the kind of thing an operator should be able to see, and a "no changes" line on
@@ -385,12 +410,18 @@ def _download(args: argparse.Namespace) -> int:
     container starts. Both destinations are ones `paths.resolve` reads: an explicit
     model directory (`<dir>/<engine id>/`) or, with none configured, the Hub cache.
     So this cannot fetch somewhere the server will not later look.
+
+    Which Hub is decided by `decis/hub.py` and printed before anything is transferred: on a
+    network that cannot reach Hugging Face the fallback fetches from ModelScope, and a
+    user has to be told that before 647 MiB arrive -- especially since the pinned commit
+    cannot be honored there (`docs/design-review.md` §2-D32).
     """
     from .engines.registry import canonical
+    from .hub import HubUnavailableError, choose, client_installed
+    from .hub import download as hub_download
     from .paths import (
         checkpoint_root,
         describe_local,
-        download_arguments,
         filesystem_has_room,
         human_bytes,
         resolve,
@@ -421,7 +452,7 @@ def _download(args: argparse.Namespace) -> int:
     #
     #   * a model directory (`--dest`, else `DECIS_MODEL_DIR`) -> `<dir>/<engine id>/`,
     #     which is what a mounted volume serves and what an offline image bakes;
-    #   * neither configured -> the Hugging Face cache, which is where `serve` looks
+    #   * neither configured -> the Hub client's cache, which is where `serve` looks
     #     when no model directory is set. That is the default because it is the only
     #     destination the server finds again without being told where to look.
     base = Path(args.dest) if args.dest else settings.model_dir
@@ -430,21 +461,36 @@ def _download(args: argparse.Namespace) -> int:
     existing = resolve(spec, configured)
     if existing.is_local:
         print(f"{engine_id}: already present at {existing.path} ({describe_local(existing.path)})")
-        return _download_bases(spec)
-    if not has_module("huggingface_hub"):
+        # The adapter can be here while the base it adapts is not, so this is not a no-op
+        # yet. The Hub is only probed if something actually has to be fetched.
+        return _download_bases(spec, configured)
+
+    selection = choose(settings)
+    print(f"{engine_id}: source {selection.describe()}")
+    if not client_installed(selection.name):
         print(
-            "error: `huggingface_hub` is not installed. It arrives with any engine extra:\n"
-            f"  uv sync --extra {SPECS[engine_id].extra or 'laya'}",
+            f"error: fetching from {selection.name} needs the `{selection.module}` package, which is not "
+            f"installed here.\n  uv sync --extra {SPECS[engine_id].extra or 'download'}",
             file=sys.stderr,
         )
         return _EXIT_CONFIG_ERROR
+    if spec.revision and not selection.pinned:
+        print(
+            f"warning: {engine_id} pins the revision {spec.revision[:12]}, which {selection.name} cannot "
+            f"address; the mirror's current revision is fetched instead. DECIS_HUB=huggingface fails "
+            f"loudly rather than substituting.",
+            file=sys.stderr,
+        )
 
     expected = spec.expected_bytes or 0
-    from huggingface_hub import snapshot_download
 
     if base is None:
-        print(f"{engine_id}: downloading to the Hugging Face cache ({human_bytes(expected)}) ...")
-        cached = Path(snapshot_download(**download_arguments(spec)))  # type: ignore[arg-type]
+        print(f"{engine_id}: downloading to the {selection.name} cache ({human_bytes(expected)}) ...")
+        try:
+            cached = hub_download(spec, selection=selection)
+        except HubUnavailableError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return _EXIT_CONFIG_ERROR
         if checkpoint_root(cached, spec) is None:
             print(
                 f"error: download finished but {cached} still has no usable checkpoint. "
@@ -452,8 +498,8 @@ def _download(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"{engine_id}: ready in the cache at {cached}")
-        return _download_bases(spec)
+        print(f"{engine_id}: ready in the {selection.name} cache at {cached}")
+        return _download_bases(spec, configured, selection)
 
     # `snapshot_download(local_dir=...)` replicates the *repository's* own layout, so the
     # checkpoint keeps the subfolder it lives in upstream. Landing it under
@@ -470,7 +516,11 @@ def _download(args: argparse.Namespace) -> int:
 
     destination.mkdir(parents=True, exist_ok=True)
     print(f"{engine_id}: downloading to {destination} ({human_bytes(expected)}) ...")
-    snapshot_download(local_dir=str(destination), **download_arguments(spec))  # type: ignore[arg-type]
+    try:
+        hub_download(spec, selection=selection, destination=destination)
+    except HubUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return _EXIT_CONFIG_ERROR
 
     resolved = resolve(spec, configured)
     if not resolved.is_local:
@@ -484,7 +534,26 @@ def _download(args: argparse.Namespace) -> int:
         )
         return 1
     print(f"{engine_id}: ready at {resolved.path} ({describe_local(resolved.path)})")
-    return _download_bases(spec)
+    return _download_bases(spec, configured, selection)
+
+
+def _report_hub(settings: Settings) -> None:
+    """Which Hub this host would fetch from, and why.
+
+    Probed rather than restated: "which Hub answers from here" is the fact that decides
+    whether a `download` works, it is invisible from the configuration alone, and the
+    fallback's cost (no commit pin) is exactly what a deployment needs to know *before* it
+    relies on it. The probe is bounded by `hub.PROBE_TIMEOUT_S`; pinning `DECIS_HUB` skips
+    it entirely.
+    """
+    from .hub import choose, client_installed
+
+    selection = choose(settings)
+    print(f"  weight hub       {settings.hub} -> {selection.name}: {selection.reason}")
+    if not selection.pinned:
+        print(f"  hub pin          {selection.name} has no commit revisions; DECIS_HUB=huggingface fails instead")
+    if not client_installed(selection.name):
+        print(f"  hub client       {selection.module} is NOT installed (uv sync --extra download)")
 
 
 def _why_unusable(directory: Path, marker: str | None) -> str:
@@ -508,37 +577,58 @@ def _why_unusable(directory: Path, marker: str | None) -> str:
     return f"Expected to find {marker} there."
 
 
-def _download_bases(spec: object) -> int:
-    """Fetch the base models a checkpoint adapts, into the Hub cache.
+def _download_bases(spec: WeightSpec, configured: Settings, selection: Selection | None = None) -> int:
+    """Fetch the base models a checkpoint adapts.
 
     kev's adapter is useless on its own (see `paths.BaseModel`), so a `download` that
     fetched only the adapter would report success and leave `serve` unable to load.
 
-    The base goes to the **Hub cache**, not to `DECIS_MODEL_DIR`: it is a stock
-    transformers model, and the vendored `Checkpoint.load` resolves it by repository id
-    and revision. Downloading it with `local_dir` would put it somewhere the loader
-    never looks, and the load would silently re-fetch it.
+    A base is a normal transformers model, but it is resolved exactly like a checkpoint --
+    `paths.resolve`, then the same Hub choice -- because that is what the loader now does
+    with it: `engines/kev.py` hands `transformers` a *directory*, so a base that lives in
+    `DECIS_MODEL_DIR/<base name>/` is found offline, and one that does not is fetched from
+    whichever Hub answers and lands in that Hub's cache. Writing it next to the checkpoint
+    under `--dest` is what makes a mounted model directory self-contained: leaving it in the
+    Hugging Face cache meant an air-gapped volume held the adapter and not its base.
     """
-    from .paths import download_arguments, human_bytes
+    from .hub import HubUnavailableError, choose
+    from .hub import download as hub_download
+    from .paths import checkpoint_root, filesystem_has_room, human_bytes, resolve
 
-    bases = spec.base_specs()  # type: ignore[attr-defined]
+    bases = spec.base_specs()
     if not bases:
         return 0
-    if not has_module("huggingface_hub"):
-        print(
-            "error: `huggingface_hub` is not installed, so this checkpoint's base model cannot be fetched.",
-            file=sys.stderr,
-        )
-        return _EXIT_CONFIG_ERROR
-
-    from huggingface_hub import snapshot_download
 
     for base in bases:
+        # Local first, and the Hub probe only when something has to be fetched: re-running
+        # `download` on a complete directory must not need the network at all.
+        if resolve(base, configured).is_local:
+            print(f"{spec.engine_id}: base model {base.repo_id} is already present")
+            continue
+        if selection is None:
+            selection = choose(configured)
+        destination = configured.model_dir / base.directory_name() if configured.model_dir is not None else None
         size = f" ({human_bytes(base.expected_bytes)})" if base.expected_bytes else ""
-        print(f"{spec.engine_id}: base model {base.repo_id}{size} ...")  # type: ignore[attr-defined]
-        # No `local_dir`: an already-cached base is a no-op, and a pinned revision
-        # means this is reproducible rather than whatever `main` points at today.
-        snapshot_download(**download_arguments(base))  # type: ignore[arg-type]
+        where = str(destination) if destination is not None else f"the {selection.name} cache"
+        print(f"{spec.engine_id}: base model {base.repo_id}{size} -> {where} ...")
+        if destination is not None:
+            if filesystem_has_room(destination, base.expected_bytes) is False:
+                print(f"warning: {destination} may not have room for {size.strip(' ()')}.", file=sys.stderr)
+            destination.mkdir(parents=True, exist_ok=True)
+        try:
+            landed = hub_download(base, selection=selection, destination=destination)
+        except HubUnavailableError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return _EXIT_CONFIG_ERROR
+        # The same predicate the loader will apply, so "downloaded" and "loadable" cannot
+        # drift apart (docs/design-review.md §2-D17).
+        if checkpoint_root(landed, base) is None:
+            print(
+                f"error: the base model finished downloading but {landed} has no usable checkpoint. "
+                f"{_why_unusable(landed, base.marker)}",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 
@@ -561,6 +651,11 @@ def _load(args: argparse.Namespace) -> Settings:
     overrides = _parse_model_paths(getattr(args, "model_path", None) or [])
     if overrides:
         settings = _with(settings, model_paths={**settings.model_paths, **overrides})
+    # `--hub` is the flag for `DECIS_HUB`; argparse has already restricted it to
+    # `config.HUBS`, so this cannot put an unusable value into `Settings`.
+    hub = getattr(args, "hub", None)
+    if hub:
+        settings = _with(settings, hub=hub)
     return settings
 
 
@@ -591,10 +686,6 @@ def _with(settings: Settings, **changes: object) -> Settings:
     import dataclasses
 
     return dataclasses.replace(settings, **changes)  # type: ignore[arg-type]
-
-
-def has_module(name: str) -> bool:
-    return importlib.util.find_spec(name) is not None
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -60,7 +60,8 @@ is **not ready** yet:
 decis 0.4.0
   engine    laya-multilingual
   weights   convaiinnovations/laya/multilingual@1c5edc17a7acd8701df6fc341c0d179f1c62c982
-            read from the Hugging Face cache; 646.8 MiB on a cold cache
+            fetched on first use -- from Hugging Face, or from ModelScope when that
+            cannot be reached; 646.8 MiB on a cold cache
   bind      127.0.0.1:8000
   startup   the socket opens first, so a probe can tell "starting" from "crashed":
             /readyz returns 503 and every /v1/* request is refused until the log says
@@ -173,7 +174,8 @@ question primitives, and CI executes every command in it.
 
 ```bash
 uv run decis models     # registered engines, and whether each is usable here
-uv run decis doctor     # dependencies, configuration safety, bind address, thread count
+uv run decis doctor     # dependencies, configuration safety, bind address, thread count,
+                        # and which Hub a weight download would use on this host
 ```
 
 `decis models` answers one question per engine — can this machine run it — with `ready`,

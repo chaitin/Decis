@@ -124,7 +124,11 @@ Jeff 那两行是 vendored 加载器自己的规则（`cuda` 和 `mps` 上用 `b
 
 - **Laya** 的 checkpoint 自带容量，所以 `max_len` 不同的微调模型会自动按正确的预算提供服务。
 - **kev** 在适配器的 checkpoint 元数据里用 Hub repo id 引用它的 Qwen3.5 基座，所以另外挂载的
-  基座副本不会被采用。`decis download` 把基座放进 Hugging Face 缓存，引擎从那里离线运行。
+  基座副本不会被采用。基座仓库声明在 `WeightSpec.bases` 里，`decis download` 两个都会取：
+  给了 `--dest`（或 `DECIS_MODEL_DIR`）时基座落在适配器旁边的 `<dir>/Qwen3.5-0.8B-Base/`，
+  一个目录就装下引擎要读的全部内容；两个都没给时它落在应答的那个 Hub 的缓存里
+  （`decis/hub.py`），加载器拿到的是那个目录——否则 `transformers` 根本看不到 ModelScope
+  下载下来的东西。
 - **Jeff** 的 checkpoint 是全权重微调，所以 `decis download` 只取那一个目录，旁边没有基座要放。
   每个 checkpoint 都在 `decision_config.json` 里带着自己的答案词表和采样温度，而加载器在
   tokenizer 复现不出那份词表时拒绝启动——如果你自己重新导出微调模型，必须带上自己的

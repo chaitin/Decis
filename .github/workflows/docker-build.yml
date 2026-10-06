@@ -9,11 +9,17 @@ name: Docker images
 #
 # The image that carries the engine's name carries its *weights*: `docker pull
 # chaitin/decis:laya-multilingual && docker run` has to work with no network, no volume and
-# no download step, or the tag is not doing the one thing a per-engine image is for. A
-# release tag also publishes the weightless variant as `<engine>-runtime-<version>`, for
+# no download step, or the tag is not doing the one thing a per-engine image is for. Baking
+# that image costs a full checkpoint download per architecture, so it is built only where a
+# *published* baked image is the point: a release tag, or a manual dispatch that asks for
+# `variants: baked` or `both`. A push to the default branch publishes the weightless
+# `<engine>-runtime` images instead -- no weights are downloaded on any branch push -- for
 # deployments that keep one copy of the weights on a shared volume or that must keep every
-# node's image small. There is no `-offline` suffix: with the weights baked into the
-# default, `-offline` would be a second name for the same thing.
+# node's image small. A release additionally moves the unsuffixed `<engine>` and
+# `<engine>-runtime` names, so they keep meaning "the newest released image of that
+# variant"; `latest` is the baked `laya-multilingual` image of the newest release, never a
+# `-runtime` image and never another engine. There is no `-offline` suffix: with the weights
+# baked into the default, `-offline` would be a second name for the same thing.
 #
 # Why one image per engine rather than one image with everything: the engine extras
 # conflict and are large (`AGENTS.md §6`), and a `kev` image that also carried Laya's
@@ -45,10 +51,14 @@ on:
       engines:
         description: Space-separated engine ids to build
         default: "laya-multilingual kev-0.8b jeff-qwen3.5-0.8b jeff-gemma4-e2b"
-      runtime_variants:
-        description: Also build the weightless `-runtime` variants
-        type: boolean
-        default: false
+      variants:
+        description: Which variants to build; `baked` downloads the engine's weights
+        type: choice
+        options:
+          - runtime
+          - baked
+          - both
+        default: runtime
       push:
         description: Push to Docker Hub (off by default so a dry run cannot publish)
         type: boolean
@@ -130,7 +140,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           GITHUB_SHA: ${{ github.sha }}
           INPUT_ENGINES: ${{ inputs.engines }}
-          INPUT_RUNTIME: ${{ inputs.runtime_variants }}
+          INPUT_VARIANTS: ${{ inputs.variants }}
           INPUT_PUSH: ${{ inputs.push }}
           # Present so the guard below can fail fast. Configuration, not a secret used
           # here: the value only has to be *non-empty* for the publish to be possible.
@@ -143,13 +153,13 @@ jobs:
           # registry), so a base image with no extras is a build-time check, not a
           # thing to publish.
           #
-          # `jeff-gemma4-e2b` bakes ~8.65 GiB of weights, so its image is the largest
+          # `jeff-gemma4-e2b` bakes ~8.65 GiB of weights, so its baked image is the largest
           # thing this workflow produces by a wide margin. It is still in the default
           # list: `AGENTS.md` §2-D20 says the tag that carries an engine's name carries
           # its weights, and a `jeff-gemma4-e2b` image that has to download 8.65 GiB
           # before it answers would be exactly the mislabelling that entry records. Use
-          # the `jeff-gemma4-e2b-runtime-*` variant (release builds) when the weights
-          # belong on a volume instead.
+          # the weightless `jeff-gemma4-e2b-runtime` variant, which every branch push
+          # publishes, when the weights belong on a volume instead.
           all_engines=(laya-multilingual kev-0.8b jeff-qwen3.5-0.8b jeff-gemma4-e2b)
           # Engines whose weights can be baked in.
           bakeable=(laya-multilingual kev-0.8b jeff-qwen3.5-0.8b jeff-gemma4-e2b)
@@ -158,6 +168,12 @@ jobs:
           # An engine-free image is the cheapest way to prove the install path still
           # works, and it is why a PR does not have to pull torch.
           base_only=false
+
+          # Which variants this run publishes. `runtime` is the weightless `-runtime`
+          # variant; `baked` is the engine-named image that carries the checkpoint; `both`
+          # is a release. Only a release tag and a dispatch that asks for weights may bake,
+          # because baking downloads the checkpoint once per architecture.
+          variant_mode=runtime
 
           case "$EVENT" in
             pull_request)
@@ -174,11 +190,30 @@ jobs:
               engines=($INPUT_ENGINES)
               platforms=("linux/amd64 ubuntu-latest" "linux/arm64 ubuntu-24.04-arm")
               push=$INPUT_PUSH
+              # The dispatch default is the weightless variant: a manual run has to ask for
+              # weights explicitly (`variants: baked` or `both`), because they are the
+              # expensive part of the build.
+              variant_mode="${INPUT_VARIANTS:-runtime}"
+              case "$variant_mode" in
+                runtime|baked|both) ;;
+                *)
+                  echo "error: variants must be one of runtime, baked, both; got '$variant_mode'." >&2
+                  exit 1
+                  ;;
+              esac
               ;;
             *)
               engines=("${all_engines[@]}")
               platforms=("linux/amd64 ubuntu-latest" "linux/arm64 ubuntu-24.04-arm")
               push=true
+              # A release is the only *push* that bakes: every other ref -- the default
+              # branch and a feature branch alike -- publishes the weightless variant, so a
+              # branch push can never move a name that promises offline weights.
+              if [[ "$REF" == refs/tags/v* ]]; then
+                variant_mode=both
+              else
+                variant_mode=runtime
+              fi
               ;;
           esac
 
@@ -189,16 +224,6 @@ jobs:
             echo "error: this run would publish, but DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set." >&2
             echo "       Add both as repository secrets, or run this workflow with push=false." >&2
             exit 1
-          fi
-
-          # The default image for an engine bakes that engine's weights in, so
-          # `docker run` needs no network and no volume. The weightless variant is the
-          # exception and carries a suffix: `-runtime`.
-          runtime_variants=false
-          if [ "$EVENT" = "workflow_dispatch" ] && [ "$INPUT_RUNTIME" = "true" ]; then
-            runtime_variants=true
-          elif [ "$EVENT" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
-            runtime_variants=true
           fi
 
           # Which pip extra provides an engine's dependencies. The matrix carries this
@@ -223,12 +248,19 @@ jobs:
             esac
           }
 
-          # The moving tag. A branch push must not move `latest`, and `latest` is not part
-          # of an image's name: `chaitin/decis:laya-multilingual` IS the current Laya image,
-          # the way `:latest` is the current image of a single-purpose repository. Only a
-          # release tag appends something, and then it pins: `laya-multilingual-v1.2.0`.
+          # A release tag is the only ref whose images are pinned: it appends the version to
+          # both variants and moves the unsuffixed names on top of that, so those keep
+          # meaning "the newest released image of that variant". Every other ref either
+          # moves the bare name (the default branch) or pins a commit (`-sha-<7>`).
+          # `latest` is not part of an image's name and is not moved here either: it is the
+          # release's baked `laya-multilingual` image, and the merge job is what points it.
+          release=""
           if [[ "$REF" == refs/tags/v* ]]; then
-            moving="$REF_NAME"
+            release="$REF_NAME"
+          fi
+
+          if [ -n "$release" ]; then
+            moving="$release"
           elif [ "$REF_NAME" = "master" ] || [ "$REF_NAME" = "main" ]; then
             moving=latest
           else
@@ -259,9 +291,13 @@ jobs:
           # One build per engine x variant x platform, and one merge per engine x variant
           # (the merge is what turns two platform images into one multi-arch manifest).
           #
-          # `image_tag` is computed here, not in the build and merge steps, because both of
-          # them need it and two copies of a tag scheme is how a manifest ends up named
-          # differently from the images it points at. This script is executed by the tests.
+          # Every published name is computed here, not in the build and merge steps, because
+          # both of them need it and two copies of a tag scheme is how a manifest ends up
+          # named differently from the images it points at. Each merge entry therefore
+          # carries the tag it merges into (`image_tag`), the unsuffixed name a release
+          # additionally moves (`alias_tag`, empty when there is none) and whether it is the
+          # image that `latest` should point at (`promote_latest`). This script is executed
+          # by the tests.
           builds="["
           merges="["
           first_build=1
@@ -271,26 +307,65 @@ jobs:
             # On a PR the image is deliberately engine-free: no extra is installed, so
             # the build validates the Dockerfile without pulling torch.
             [ "$base_only" = "true" ] && extra=""
-            # `baked` is the default: the weights go into the image whose tag is the engine
-            # name. `-runtime` is the weightless variant, and it is only worth a second
-            # build when something consumes it (a release, or a dispatch that asks).
-            variants=(baked)
+
+            # A PR is engine-free, so it can only be the weightless variant; the job name
+            # says so. Otherwise the event decided the mode above.
+            case "$variant_mode" in
+              runtime) variants=(runtime) ;;
+              baked) variants=(baked) ;;
+              both) variants=(baked runtime) ;;
+              *)
+                echo "error: unknown variant mode '$variant_mode'." >&2
+                exit 1
+                ;;
+            esac
             if [ "$base_only" = "true" ]; then
-              # The PR build is engine-free -- no extra is installed, so there is nothing to
-              # bake with. Naming it `runtime` (weightless) keeps the job name honest.
               variants=(runtime)
-            elif [ "$runtime_variants" = "true" ] && [[ " ${bakeable[*]} " == *" $engine "* ]]; then
-              variants=(baked runtime)
             fi
             for variant in "${variants[@]}"; do
-              bake="$engine"
-              [ "$variant" = "runtime" ] && bake=""
-              image_tag="$engine"
-              [ "$variant" = "runtime" ] && image_tag="${image_tag}-runtime"
-              [ "$moving" = "latest" ] || image_tag="${image_tag}-${moving}"
+              # Baking needs weights to download. `decis download --engine <weightless id>`
+              # exits 2, so an engine without a checkpoint would fail the build halfway
+              # through rather than produce a smaller image.
+              if [ "$variant" = "baked" ] && [[ " ${bakeable[*]} " != *" $engine "* ]]; then
+                echo "error: engine '$engine' has no weights to bake, but this run asked for the baked variant." >&2
+                exit 1
+              fi
+
+              # The unsuffixed name of this variant: the engine name for the baked image,
+              # `<engine>-runtime` for the weightless one. On the default branch it IS the
+              # published tag; on a release the published tag is versioned and this name is
+              # moved alongside it (`alias_tag`); on any other ref the tag pins the commit.
+              base="$engine"
+              [ "$variant" = "runtime" ] && base="${base}-runtime"
+              bake=""
+              [ "$variant" = "baked" ] && bake="$engine"
+
+              if [ -n "$release" ]; then
+                image_tag="${base}-${release}"
+                alias_tag="$base"
+              elif [ "$moving" = "latest" ]; then
+                image_tag="$base"
+                alias_tag=""
+              else
+                image_tag="${base}-${moving}"
+                alias_tag=""
+              fi
+
+              # `latest` follows the baked `laya-multilingual` image whenever this run
+              # publishes its unsuffixed name -- a release, or a dispatch that republishes
+              # the default engine on the default branch. It is never another engine's and
+              # never the `-runtime` variant's, and a feature branch pins a commit, so
+              # nothing there is allowed to move it.
+              promote_latest=false
+              if [ "$engine" = "laya-multilingual" ] && [ "$variant" = "baked" ]; then
+                if [ -n "$release" ] || [ "$moving" = "latest" ]; then
+                  promote_latest=true
+                fi
+              fi
+
               [ $first_merge -eq 1 ] || merges+=","
               first_merge=0
-              merges+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"image_tag\":\"$image_tag\"}"
+              merges+="{\"engine\":\"$engine\",\"variant\":\"$variant\",\"image_tag\":\"$image_tag\",\"alias_tag\":\"$alias_tag\",\"promote_latest\":$promote_latest}"
               for platform in "${platforms[@]}"; do
                 # shellcheck disable=SC2086
                 set -- $platform
@@ -500,7 +575,11 @@ jobs:
           ENGINE: ${{ matrix.engine }}
           VARIANT: ${{ matrix.variant }}
           IMAGE_TAG: ${{ matrix.image_tag }}
-          MOVING_TAG: ${{ needs.plan.outputs.tag }}
+          # The unsuffixed name a release also moves, and whether this is the image `latest`
+          # should point at. Both come from the plan, which is the one place that decides a
+          # published name -- re-deriving either here is how the two drift apart.
+          ALIAS_TAG: ${{ matrix.alias_tag }}
+          PROMOTE_LATEST: ${{ matrix.promote_latest }}
         run: |
           set -euo pipefail
           namespace="$(echo "$IMAGE_NAMESPACE" | tr '[:upper:]' '[:lower:]')"
@@ -525,12 +604,23 @@ jobs:
           docker buildx imagetools create --tag "${image}:${IMAGE_TAG}" "${sources[@]}"
           docker buildx imagetools inspect "${image}:${IMAGE_TAG}"
 
+          # A release moves the unsuffixed name of the variant it just published, so
+          # `chaitin/decis:laya-multilingual` keeps meaning "the newest released baked Laya
+          # image" (and `<engine>-runtime` the newest weightless one) -- that is what
+          # `docker-compose.yml` and the README pull, and what makes `make pull` work. The
+          # alias is only created when the plan set one, so a branch push never touches a
+          # name someone could have pinned to.
+          if [ -n "$ALIAS_TAG" ]; then
+            docker buildx imagetools create --tag "${image}:${ALIAS_TAG}" "${sources[@]}"
+            docker buildx imagetools inspect "${image}:${ALIAS_TAG}"
+          fi
+
           # `laya-multilingual` is the server's default engine and the one whose install
           # the README leads with, so it is the right answer to a bare
           # `docker pull chaitin/decis`. It is the *baked* variant, not `-runtime`: the bare
           # name has to be the one that works with no network. Nothing else gets a bare
-          # `latest`, and only when this run actually moved `latest`.
-          if [ "$ENGINE" = "laya-multilingual" ] && [ "$VARIANT" = "baked" ] && [ "$MOVING_TAG" = "latest" ]; then
+          # `latest`, and only when the plan said this run publishes that moving name.
+          if [ "$PROMOTE_LATEST" = "true" ]; then
             docker buildx imagetools create --tag "${image}:latest" "${sources[@]}"
             docker buildx imagetools inspect "${image}:latest"
           fi

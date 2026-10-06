@@ -10,10 +10,13 @@ environment GitHub would provide.
 Everything asserted here is a property that would otherwise only be discovered during a
 release:
 
-* a version tag builds both variants, a branch push does not, and a PR builds neither;
-* the moving tag is `latest` only from the default branch, never from a pull request;
-* `DECIS_PREDOWNLOAD` is only ever set to an engine that has weights — `decis download
-  --engine <weightless id>` exits 2 *by design*, so that would fail the build;
+* a release tag builds both variants; a branch push (default or feature) and a pull request
+  build only the weightless `-runtime` one;
+* weights are downloaded (`DECIS_PREDOWNLOAD` non-empty) only on a release tag or a dispatch
+  that asks for `baked`/`both` — never on a branch push, never on a pull request;
+* a release moves the unsuffixed `<engine>` and `<engine>-runtime` names, a branch push moves
+  only `-runtime` names, and `latest` is only ever the release's baked `laya-multilingual`
+  image;
 * a pull request builds the Dockerfile with no engine extra at all, which is the cheap
   check now that no weight-free engine ships;
 * every engine in the matrix is a registered engine, so a rename cannot leave a stale
@@ -128,7 +131,6 @@ def test_a_branch_push_builds_every_engine_for_both_architectures(push_to_master
     arches = {build["arch"] for build in push_to_master["builds"]}
     assert arches == {"amd64", "arm64"}, arches
     assert push_to_master["push"] == "true"
-    assert push_to_master["tag"] == "latest"
 
 
 def test_the_published_engines_are_the_workflows_own_list(plan_script: str) -> None:
@@ -146,15 +148,115 @@ def test_the_published_engines_are_the_workflows_own_list(plan_script: str) -> N
     )
 
 
-def test_a_branch_push_bakes_the_weights_in(push_to_master: dict) -> None:
-    """`docker pull chaitin/decis:<engine>` has to work with no network.
+def test_a_branch_push_publishes_only_the_weightless_variant(push_to_master: dict) -> None:
+    """A branch push must not pay for a checkpoint download per architecture.
 
-    An engine's image exists to carry that engine, weights included; a published default
-    that downloads 647 MiB on first start is not what the tag promises. The weightless
-    build is the exception and only a release tag (or a dispatch) asks for it.
+    The baked image is the one whose tag carries the engine's name, and it is built only
+    where a *published* baked image is the point: a release tag, or a dispatch that asks.
+    On a branch push the engine name is exactly what would promise offline weights, so it is
+    not built at all.
     """
-    assert all(build["variant"] == "baked" for build in push_to_master["builds"])
-    assert all(build["bake"] == build["engine"] for build in push_to_master["builds"])
+    assert {build["variant"] for build in push_to_master["builds"]} == {"runtime"}, push_to_master["builds"]
+    assert all(build["bake"] == "" for build in push_to_master["builds"])
+
+
+def test_a_release_moves_the_unsuffixed_names_and_a_branch_push_does_not(tmp_path: Path, plan_script: str) -> None:
+    """The bare `<engine>` tag means "the newest *released* image", so only a release moves it.
+
+    `docker-compose.yml` and the README pull the bare names, so they have to keep existing;
+    a branch push must not repoint one, or a `docker compose up` would silently start
+    whatever commit happened to be pushed last.
+    """
+    released = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/tags/v1.2.0", REF_NAME="v1.2.0")
+    aliases = {(merge["engine"], merge["variant"]): merge["alias_tag"] for merge in released["merges"]}
+    assert aliases[("laya-multilingual", "baked")] == "laya-multilingual", aliases
+    assert aliases[("laya-multilingual", "runtime")] == "laya-multilingual-runtime", aliases
+    assert aliases[("kev-0.8b", "baked")] == "kev-0.8b", aliases
+    assert aliases[("kev-0.8b", "runtime")] == "kev-0.8b-runtime", aliases
+    # ...and `latest` is claimed by the baked default engine and by nothing else.
+    promoted = [(merge["engine"], merge["variant"]) for merge in released["merges"] if merge["promote_latest"]]
+    assert promoted == [("laya-multilingual", "baked")], promoted
+
+    for event, ref, name in (
+        ("push", "refs/heads/master", "master"),
+        ("push", "refs/heads/topic", "topic"),
+        ("pull_request", "refs/pull/7/merge", "7/merge"),
+    ):
+        plan = run_plan(plan_script, tmp_path, EVENT=event, REF=ref, REF_NAME=name)
+        assert all(merge["alias_tag"] == "" for merge in plan["merges"]), plan["merges"]
+        assert not any(merge["promote_latest"] for merge in plan["merges"]), plan["merges"]
+
+
+def test_a_branch_push_moves_only_weightless_names(push_to_master: dict) -> None:
+    """No branch push may move `latest` or a bare engine name someone could have pinned.
+
+    The bare names mean "the newest released image", so a branch push moves the `-runtime`
+    moving names and nothing else. A version tag is the pin; a branch push is not.
+    """
+    moved = {build["image_tag"] for build in push_to_master["builds"]}
+    moved |= {merge["alias_tag"] for merge in push_to_master["merges"] if merge["alias_tag"]}
+    assert moved, "the branch push publishes nothing"
+    assert all(tag.endswith("-runtime") for tag in moved), sorted(moved)
+    assert "latest" not in moved
+    assert not (moved & PUBLISHED_ENGINES), sorted(moved & PUBLISHED_ENGINES)
+    assert not any(merge["promote_latest"] for merge in push_to_master["merges"])
+
+
+def test_a_feature_branch_pins_the_commit_instead_of_moving_a_name(tmp_path: Path, plan_script: str) -> None:
+    """A topic branch must not touch a name someone could have pinned to."""
+    plan = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/heads/topic", REF_NAME="topic")
+    moved = {build["image_tag"] for build in plan["builds"]}
+    moved |= {merge["alias_tag"] for merge in plan["merges"] if merge["alias_tag"]}
+    assert moved == {
+        "laya-multilingual-runtime-sha-a1b2c3d",
+        "kev-0.8b-runtime-sha-a1b2c3d",
+        "jeff-qwen3.5-0.8b-runtime-sha-a1b2c3d",
+        "jeff-gemma4-e2b-runtime-sha-a1b2c3d",
+    }, sorted(moved)
+    assert not any(merge["promote_latest"] for merge in plan["merges"]), plan["merges"]
+
+
+def test_only_a_release_or_an_explicit_dispatch_downloads_weights(tmp_path: Path, plan_script: str) -> None:
+    """`DECIS_PREDOWNLOAD` is the whole cost of a baked image, so the event has to decide it.
+
+    `decis download` writes the checkpoint into the image at build time — 647 MiB for Laya,
+    8.65 GiB for Gemma — times two architectures. A branch push, a feature branch and a pull
+    request must never ask for that; the only ways in are a `v*` tag and a dispatch that
+    names the weights (`variants: baked` or `both`).
+    """
+
+    def baked(plan: dict) -> set[str]:
+        return {build["engine"] for build in plan["builds"] if build["bake"]}
+
+    for event, ref, name in (
+        ("push", "refs/heads/master", "master"),
+        ("push", "refs/heads/main", "main"),
+        ("push", "refs/heads/feature/x", "feature/x"),
+        ("pull_request", "refs/pull/7/merge", "7/merge"),
+    ):
+        plan = run_plan(plan_script, tmp_path, EVENT=event, REF=ref, REF_NAME=name)
+        assert not baked(plan), f"{event} on {ref} would download weights: {sorted(baked(plan))}"
+
+    released = run_plan(plan_script, tmp_path, EVENT="push", REF="refs/tags/v9.9.9", REF_NAME="v9.9.9")
+    assert baked(released) == PUBLISHED_ENGINES, sorted(baked(released))
+
+    for variants, expected in (
+        # The default: no click on the weights, no download.
+        ("runtime", set()),
+        ("baked", {"laya-multilingual"}),
+        ("both", {"laya-multilingual"}),
+    ):
+        plan = run_plan(
+            plan_script,
+            tmp_path,
+            EVENT="workflow_dispatch",
+            REF="refs/heads/master",
+            REF_NAME="master",
+            INPUT_ENGINES="laya-multilingual",
+            INPUT_VARIANTS=variants,
+            INPUT_PUSH="true",
+        )
+        assert baked(plan) == expected, f"variants={variants}: {sorted(baked(plan))}"
 
 
 def test_a_version_tag_also_builds_the_weightless_variants(tmp_path: Path, plan_script: str) -> None:
@@ -224,7 +326,7 @@ def test_dispatch_inputs_are_honoured(tmp_path: Path, plan_script: str) -> None:
         # Includes a dotted engine id: `--model-path` and the compose profile both carry
         # ids verbatim now, so nothing may quietly normalise the dot away on this path.
         INPUT_ENGINES="laya-multilingual kev-0.8b jeff-qwen3.5-0.8b",
-        INPUT_RUNTIME="true",
+        INPUT_VARIANTS="both",
         INPUT_PUSH="true",
     )
     engines = {build["engine"] for build in plan["builds"]}
@@ -233,8 +335,12 @@ def test_dispatch_inputs_are_honoured(tmp_path: Path, plan_script: str) -> None:
     assert plan["push"] == "true"
 
 
-def test_a_dispatch_without_the_runtime_flag_builds_only_the_default_images(tmp_path: Path, plan_script: str) -> None:
-    """The dispatch default is the same artifact a branch push publishes."""
+def test_a_dispatch_defaults_to_the_weightless_variant(tmp_path: Path, plan_script: str) -> None:
+    """The dispatch default is the cheap artifact a branch push publishes, not the baked one.
+
+    A manual run has to ask for the weights; forgetting to click `baked` must not quietly
+    start an 8.65 GiB download per architecture.
+    """
     plan = run_plan(
         plan_script,
         tmp_path,
@@ -242,11 +348,51 @@ def test_a_dispatch_without_the_runtime_flag_builds_only_the_default_images(tmp_
         REF="refs/heads/master",
         REF_NAME="master",
         INPUT_ENGINES="laya-multilingual",
-        INPUT_RUNTIME="false",
+        # No INPUT_VARIANTS: the `variants` input's own default has to apply.
         INPUT_PUSH="false",
     )
+    assert {build["variant"] for build in plan["builds"]} == {"runtime"}, plan["builds"]
+    assert all(build["bake"] == "" for build in plan["builds"])
+
+
+def test_a_dispatch_can_ask_for_the_baked_variant(tmp_path: Path, plan_script: str) -> None:
+    """A dispatch with `push=true` is the only manual way to publish a baked image."""
+    plan = run_plan(
+        plan_script,
+        tmp_path,
+        EVENT="workflow_dispatch",
+        REF="refs/heads/master",
+        REF_NAME="master",
+        INPUT_ENGINES="laya-multilingual",
+        INPUT_VARIANTS="baked",
+        INPUT_PUSH="true",
+    )
     assert {build["variant"] for build in plan["builds"]} == {"baked"}, plan["builds"]
-    assert plan["builds"][0]["bake"] == "laya-multilingual", plan["builds"]
+    assert all(build["bake"] == "laya-multilingual" for build in plan["builds"])
+
+
+def test_a_dispatch_with_an_unknown_variant_stops_the_plan(tmp_path: Path, plan_script: str) -> None:
+    """A typo must fail loudly rather than fall back to some variant nobody asked for."""
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    completed = run_shell(
+        plan_script,
+        tmp_path,
+        {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GITHUB_SHA": "a1b2c3d4e5f6a7b8c9d0",
+            "GITHUB_OUTPUT": str(output),
+            "HAVE_CREDENTIALS": "true",
+            "EVENT": "workflow_dispatch",
+            "REF": "refs/heads/master",
+            "REF_NAME": "master",
+            "INPUT_ENGINES": "laya-multilingual",
+            "INPUT_VARIANTS": "everything",
+            "INPUT_PUSH": "false",
+        },
+    )
+    assert completed.returncode != 0, "an unknown `variants` value was planned anyway"
+    assert "variants must be one of" in completed.stderr, completed.stderr
 
 
 def test_a_dispatch_dry_run_does_not_push(tmp_path: Path, plan_script: str) -> None:
@@ -258,7 +404,7 @@ def test_a_dispatch_dry_run_does_not_push(tmp_path: Path, plan_script: str) -> N
         REF="refs/heads/master",
         REF_NAME="master",
         INPUT_ENGINES="laya-multilingual",
-        INPUT_RUNTIME="false",
+        INPUT_VARIANTS="runtime",
         INPUT_PUSH="false",
     )
     assert plan["push"] == "false"
@@ -324,7 +470,7 @@ def test_an_engine_with_no_mapped_extra_stops_the_plan(tmp_path: Path, plan_scri
             "REF": "refs/heads/master",
             "REF_NAME": "master",
             "INPUT_ENGINES": "laya-typed-decisions",
-            "INPUT_RUNTIME": "false",
+            "INPUT_VARIANTS": "runtime",
             "INPUT_PUSH": "false",
         },
     )
@@ -474,40 +620,50 @@ def test_a_version_tag_also_creates_the_github_release(workflow: dict) -> None:
 @pytest.mark.parametrize(
     ("event", "ref", "ref_name", "expected"),
     [
-        # On a branch push the engine name IS the tag, as if the repository held one model:
-        # `docker pull chaitin/decis:laya-multilingual`. Nothing is appended, so the
-        # documented tag is a tag that exists -- `:laya-multilingual` did not, the
-        # workflow produced `:laya-multilingual-latest` while the README said otherwise.
+        # A branch push publishes the weightless variant under its moving name. The baked
+        # image is not built there at all, so the bare engine name is absent from this
+        # table: it only moves on a release.
         (
             "push",
             "refs/heads/master",
             "master",
-            {"laya-multilingual": "laya-multilingual", "kev-0.8b": "kev-0.8b"},
+            {
+                ("laya-multilingual", "runtime"): "laya-multilingual-runtime",
+                ("kev-0.8b", "runtime"): "kev-0.8b-runtime",
+            },
         ),
-        # A release tag pins, so it must say which release.
+        # A release tag pins the version for both variants...
         (
             "push",
             "refs/tags/v1.2.0",
             "v1.2.0",
-            {"laya-multilingual": "laya-multilingual-v1.2.0", "kev-0.8b": "kev-0.8b-v1.2.0"},
+            {
+                ("laya-multilingual", "baked"): "laya-multilingual-v1.2.0",
+                ("kev-0.8b", "baked"): "kev-0.8b-v1.2.0",
+                ("laya-multilingual", "runtime"): "laya-multilingual-runtime-v1.2.0",
+                ("kev-0.8b", "runtime"): "kev-0.8b-runtime-v1.2.0",
+            },
         ),
-        # A feature branch never moves a name someone could have pinned to.
+        # ...and a feature branch never moves a name someone could have pinned to.
         (
             "push",
             "refs/heads/topic",
             "topic",
-            {"laya-multilingual": "laya-multilingual-sha-a1b2c3d", "kev-0.8b": "kev-0.8b-sha-a1b2c3d"},
+            {
+                ("laya-multilingual", "runtime"): "laya-multilingual-runtime-sha-a1b2c3d",
+                ("kev-0.8b", "runtime"): "kev-0.8b-runtime-sha-a1b2c3d",
+            },
         ),
     ],
 )
-def test_the_image_tag_is_the_engine_name_on_a_branch_push(
-    tmp_path: Path, plan_script: str, event: str, ref: str, ref_name: str, expected: dict[str, str]
+def test_the_image_tag_is_decided_by_the_event(
+    tmp_path: Path, plan_script: str, event: str, ref: str, ref_name: str, expected: dict[tuple[str, str], str]
 ) -> None:
     """The tag a user types is decided by the plan script, so it is tested there."""
     planned = run_plan(plan_script, tmp_path, EVENT=event, REF=ref, REF_NAME=ref_name)
-    tags = {b["engine"]: b["image_tag"] for b in planned["builds"] if b["variant"] == "baked"}
-    for engine, tag in expected.items():
-        assert tags.get(engine) == tag, f"{engine} on {ref}: expected {tag!r}, got {tags.get(engine)!r}"
+    tags = {(b["engine"], b["variant"]): b["image_tag"] for b in planned["builds"]}
+    for key, tag in expected.items():
+        assert tags.get(key) == tag, f"{key} on {ref}: expected {tag!r}, got {tags.get(key)!r}"
 
 
 def test_the_weightless_variant_is_a_distinct_tag(tmp_path: Path, plan_script: str) -> None:
@@ -516,6 +672,27 @@ def test_the_weightless_variant_is_a_distinct_tag(tmp_path: Path, plan_script: s
     tags = {(b["engine"], b["variant"]): b["image_tag"] for b in planned["builds"]}
     assert tags[("laya-multilingual", "baked")] == "laya-multilingual-v1.2.0", tags
     assert tags[("laya-multilingual", "runtime")] == "laya-multilingual-runtime-v1.2.0", tags
+
+
+def test_no_plan_publishes_the_same_name_twice(tmp_path: Path, plan_script: str) -> None:
+    """A moving alias must not overwrite another artifact's tag.
+
+    The merge job writes the alias on top of the manifest it just built, so a release whose
+    alias collided with another engine's tag would publish one engine's image under the
+    other's name — and the per-arch images would still all be there, so nothing would look
+    wrong until someone pulled it.
+    """
+    for event, ref, name in (
+        ("push", "refs/heads/master", "master"),
+        ("push", "refs/tags/v1.2.0", "v1.2.0"),
+        ("push", "refs/heads/topic", "topic"),
+    ):
+        planned = run_plan(plan_script, tmp_path, EVENT=event, REF=ref, REF_NAME=name)
+        names = [merge["image_tag"] for merge in planned["merges"]]
+        names += [merge["alias_tag"] for merge in planned["merges"] if merge["alias_tag"]]
+        if any(merge["promote_latest"] for merge in planned["merges"]):
+            names.append("latest")
+        assert len(names) == len(set(names)), f"{ref} publishes {names} twice over"
 
 
 # --- the one non-engine image ---------------------------------------------------
@@ -698,17 +875,25 @@ def merged_tags(log: Path) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("engine", "variant", "image_tag", "moving_tag", "expected_latest"),
+    ("engine", "variant", "image_tag", "alias_tag", "promote_latest", "expected_latest"),
     [
         # `laya-multilingual` is the server's default engine and the one the README leads
         # with, so it is the right answer to a bare `docker pull chaitin/decis`. It is the
-        # *baked* variant: the bare name has to be the one that runs with no network.
-        ("laya-multilingual", "baked", "laya-multilingual", "latest", True),
-        # ...but only the image that actually moved `latest`. A version tag must not
-        # silently repoint the bare tag, and the weightless image is not the default one.
-        ("laya-multilingual", "baked", "laya-multilingual-v1.2.0", "v1.2.0", False),
-        ("laya-multilingual", "runtime", "laya-multilingual-runtime", "latest", False),
-        ("kev-0.8b", "baked", "kev-0.8b", "latest", False),
+        # *baked* variant of a release, so it is also what `latest` follows.
+        ("laya-multilingual", "baked", "laya-multilingual-v1.2.0", "laya-multilingual", "true", True),
+        # The weightless variant moves its own unsuffixed name but never `latest`...
+        (
+            "laya-multilingual",
+            "runtime",
+            "laya-multilingual-runtime-v1.2.0",
+            "laya-multilingual-runtime",
+            "false",
+            False,
+        ),
+        # ...and neither does another engine, even on a release.
+        ("kev-0.8b", "baked", "kev-0.8b-v1.2.0", "kev-0.8b", "false", False),
+        # A branch push's moving name has nothing to alias.
+        ("laya-multilingual", "runtime", "laya-multilingual-runtime", "", "false", False),
     ],
 )
 def test_only_the_default_engine_claims_the_bare_latest_tag(
@@ -717,7 +902,8 @@ def test_only_the_default_engine_claims_the_bare_latest_tag(
     engine: str,
     variant: str,
     image_tag: str,
-    moving_tag: str,
+    alias_tag: str,
+    promote_latest: str,
     expected_latest: bool,
 ) -> None:
     docker_bin, log = fake_docker(tmp_path)
@@ -728,27 +914,31 @@ def test_only_the_default_engine_claims_the_bare_latest_tag(
         ENGINE=engine,
         VARIANT=variant,
         IMAGE_TAG=image_tag,
-        MOVING_TAG=moving_tag,
+        ALIAS_TAG=alias_tag,
+        PROMOTE_LATEST=promote_latest,
     )
     assert completed.returncode == 0, completed.stderr
     tags = merged_tags(log)
     assert f"docker.io/chaitin/decis:{image_tag}" in tags, tags
+    if alias_tag:
+        assert f"docker.io/chaitin/decis:{alias_tag}" in tags, tags
     assert ("docker.io/chaitin/decis:latest" in tags) is expected_latest, tags
 
 
 def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tmp_path: Path) -> None:
     """Every source must be this commit's per-arch manifest, or a release mixes commits."""
     docker_bin, log = fake_docker(tmp_path)
-    # `kev-0.8b`, because the engine that owns the bare `latest` also gets a second
-    # `imagetools create` for it; this test is about the per-arch sources only.
+    # Without an alias or `latest` there is exactly one `imagetools create`, so the sources
+    # of the published manifest are the only ones in the log.
     completed = run_step(
         merge_script,
         tmp_path,
         docker_bin,
         ENGINE="kev-0.8b",
         VARIANT="runtime",
-        IMAGE_TAG="kev-0.8b",
-        MOVING_TAG="latest",
+        IMAGE_TAG="kev-0.8b-runtime",
+        ALIAS_TAG="",
+        PROMOTE_LATEST="false",
     )
     assert completed.returncode == 0, completed.stderr
     create = [line for line in log.read_text(encoding="utf-8").splitlines() if "imagetools create" in line]
@@ -758,9 +948,41 @@ def test_the_merge_uses_the_per_arch_images_of_this_commit(merge_script: str, tm
     skip = {words.index("--tag") + 1} if "--tag" in words else set()
     sources = [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
     assert sources == [
-        "docker.io/chaitin/decis:kev-0.8b-sha-a1b2c3d4e5f6-amd64",
-        "docker.io/chaitin/decis:kev-0.8b-sha-a1b2c3d4e5f6-arm64",
+        "docker.io/chaitin/decis:kev-0.8b-runtime-sha-a1b2c3d4e5f6-amd64",
+        "docker.io/chaitin/decis:kev-0.8b-runtime-sha-a1b2c3d4e5f6-arm64",
     ], sources
+
+
+def test_the_alias_and_latest_are_the_same_image_as_the_versioned_tag(merge_script: str, tmp_path: Path) -> None:
+    """A moving name must point at exactly the manifest it claims to stand for.
+
+    Rebuilding the manifest from something other than the sources just merged is how
+    `:laya-multilingual` and `:laya-multilingual-v1.2.0` end up different images.
+    """
+    docker_bin, log = fake_docker(tmp_path)
+    completed = run_step(
+        merge_script,
+        tmp_path,
+        docker_bin,
+        ENGINE="laya-multilingual",
+        VARIANT="baked",
+        IMAGE_TAG="laya-multilingual-v1.2.0",
+        ALIAS_TAG="laya-multilingual",
+        PROMOTE_LATEST="true",
+    )
+    assert completed.returncode == 0, completed.stderr
+    creates = [line for line in log.read_text(encoding="utf-8").splitlines() if "imagetools create" in line]
+    assert len(creates) == 3, creates
+
+    def sources_of(line: str) -> list[str]:
+        words = line.split()
+        skip = {words.index("--tag") + 1} if "--tag" in words else set()
+        return [word for i, word in enumerate(words) if word.startswith("docker.io/") and i not in skip]
+
+    first = sources_of(creates[0])
+    assert first, creates[0]
+    for line in creates[1:]:
+        assert sources_of(line) == first, (line, first)
 
 
 def test_a_missing_platform_leg_is_left_out_rather_than_faked(merge_script: str, tmp_path: Path) -> None:
@@ -787,8 +1009,9 @@ def test_a_missing_platform_leg_is_left_out_rather_than_faked(merge_script: str,
         bin_dir,
         ENGINE="laya-multilingual",
         VARIANT="runtime",
-        IMAGE_TAG="laya-multilingual",
-        MOVING_TAG="latest",
+        IMAGE_TAG="laya-multilingual-runtime",
+        ALIAS_TAG="",
+        PROMOTE_LATEST="false",
     )
     assert completed.returncode == 0, completed.stderr
     create = [line for line in log.read_text(encoding="utf-8").splitlines() if "imagetools create" in line]
@@ -810,8 +1033,9 @@ def test_merging_nothing_at_all_fails(merge_script: str, tmp_path: Path) -> None
         bin_dir,
         ENGINE="laya-multilingual",
         VARIANT="runtime",
-        IMAGE_TAG="laya-multilingual",
-        MOVING_TAG="latest",
+        IMAGE_TAG="laya-multilingual-runtime",
+        ALIAS_TAG="",
+        PROMOTE_LATEST="false",
     )
     assert completed.returncode != 0
     assert "nothing to merge" in completed.stderr, completed.stderr
@@ -862,7 +1086,7 @@ def test_a_dry_run_needs_no_credentials(plan_script: str, tmp_path: Path) -> Non
             "REF": "refs/heads/master",
             "REF_NAME": "master",
             "INPUT_ENGINES": "laya-multilingual",
-            "INPUT_RUNTIME": "false",
+            "INPUT_VARIANTS": "runtime",
             "INPUT_PUSH": "false",
         },
     )
@@ -910,8 +1134,10 @@ def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path,
     copy of the tag scheme is the defect this guards against (§2). The release leg is run
     with the version the package reports, so a guide that pins `-v<old version>` fails here
     instead of sending a reader to a tag no release made -- the versioned halves of
-    `docs/deployment.md` and `SECURITY.md` are the ones a bump forgets. `latest` is added by
-    the merge job, not the matrix.
+    `docs/deployment.md` and `SECURITY.md` are the ones a bump forgets. The unsuffixed names
+    a release moves (`<engine>`, `<engine>-runtime`) and `latest` are created by the merge
+    job from the plan's `alias_tag`/`promote_latest`, not by the matrix, so both are read
+    from the plan as well.
     """
     from decis import __version__
 
@@ -925,11 +1151,12 @@ def test_the_documented_image_tags_are_tags_the_workflow_creates(tmp_path: Path,
         directory.mkdir()
         planned = run_plan(plan_script, directory, EVENT=event, REF=ref, REF_NAME=name)
         produced |= {build["image_tag"] for build in planned["builds"]}
+        produced |= {merge["alias_tag"] for merge in planned["merges"] if merge["alias_tag"]}
+        if any(merge["promote_latest"] for merge in planned["merges"]):
+            produced.add("latest")
         # The playground is published by its own job, but under a tag computed here, so it
         # is part of "what the workflow creates" just as the engine tags are.
         produced.add(planned["playground_tag"])
-        if planned["tag"] == "latest":
-            produced.add("latest")
 
     for doc in (
         ROOT / "README.md",

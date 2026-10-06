@@ -162,9 +162,12 @@ Resolution order is described in
 
 - **Laya** checkpoints carry their own capacities, so a fine-tune with a different
   `max_len` is served with the right budget automatically.
-- **kev** references its Qwen3.5 base by Hub repo id inside the adapter's checkpoint
-  metadata, so a separately mounted copy of the base is not picked up. `decis download`
-  places the base in the Hugging Face cache, and the engine runs offline from there.
+- **kev** needs a second repository: the Qwen3.5 base its adapter was trained over, declared
+  in `WeightSpec.bases`. `decis download` fetches both, and with `--dest` (or
+  `DECIS_MODEL_DIR`) the base lands beside the adapter as `<dir>/Qwen3.5-0.8B-Base/`, so one
+  directory holds everything the engine reads. With neither configured it goes to the cache
+  of whichever Hub answered (`decis/hub.py`), and the loader is handed that directory —
+  `transformers` cannot see a ModelScope download otherwise.
 - **Jeff** checkpoints are full-weight fine-tunes, so `decis download` fetches only the one
   directory and there is no base to place beside it. Each carries its answer vocabulary and
   its sampling temperature in `decision_config.json`, and the loader refuses to start if the

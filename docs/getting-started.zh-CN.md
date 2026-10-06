@@ -54,7 +54,8 @@ token；第一次运行就该用它。要在网络上暴露服务，先设 `DECI
 decis 0.4.0
   engine    laya-multilingual
   weights   convaiinnovations/laya/multilingual@1c5edc17a7acd8701df6fc341c0d179f1c62c982
-            read from the Hugging Face cache; 646.8 MiB on a cold cache
+            fetched on first use -- from Hugging Face, or from ModelScope when that
+            cannot be reached; 646.8 MiB on a cold cache
   bind      127.0.0.1:8000
   startup   the socket opens first, so a probe can tell "starting" from "crashed":
             /readyz returns 503 and every /v1/* request is refused until the log says
@@ -163,7 +164,7 @@ curl -s localhost:8000/v1/systemone \
 
 ```bash
 uv run decis models     # 本机注册了哪些引擎、每个是否可用
-uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数
+uv run decis doctor     # 依赖、配置安全性、绑定地址、线程数，以及本机下载权重会走哪个 Hub
 ```
 
 `decis models` 对每个引擎回答一个问题——本机能不能跑它——答案是 `ready`、`deps missing`、

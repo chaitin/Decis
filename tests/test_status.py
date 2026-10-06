@@ -312,7 +312,11 @@ def test_download_accepts_an_alias(cli, tmp_path: Path, monkeypatch) -> None:
         return str(tmp_path)  # deliberately writes no checkpoint files
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
-    code, output = cli("download", "--engine", "laya-multi", "--dest", str(tmp_path), "--env-file", "")
+    # `--hub huggingface` pins the source: this test is about the alias and the layout, and a
+    # test that needed the network to *decide* would fail on the hosts the fallback is for.
+    code, output = cli(
+        "download", "--engine", "laya-multi", "--dest", str(tmp_path), "--hub", "huggingface", "--env-file", ""
+    )
 
     if "unknown engine" in output:
         raise AssertionError(f"alias was not resolved: {output}")
@@ -353,7 +357,17 @@ def test_the_downloader_writes_where_the_loader_looks(cli, tmp_path: Path, monke
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
     model_dir = tmp_path / "models"
-    code, output = cli("download", "--engine", "laya-multilingual", "--dest", str(model_dir), "--env-file", "")
+    code, output = cli(
+        "download",
+        "--engine",
+        "laya-multilingual",
+        "--dest",
+        str(model_dir),
+        "--hub",
+        "huggingface",
+        "--env-file",
+        "",
+    )
     if "`huggingface_hub` is not installed" in output:
         pytest.skip("the `laya` extra is not installed here, so no download was attempted")
 
@@ -387,7 +401,7 @@ def test_downloading_with_no_model_directory_warms_the_hub_cache(cli, tmp_path: 
         return str(snapshot)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot)
-    code, output = cli("download", "--engine", "laya-multilingual", "--env-file", "")
+    code, output = cli("download", "--engine", "laya-multilingual", "--hub", "huggingface", "--env-file", "")
     if not calls:
         pytest.skip("the `laya` extra is not installed here, so no download was attempted")
 
@@ -397,9 +411,16 @@ def test_downloading_with_no_model_directory_warms_the_hub_cache(cli, tmp_path: 
 
 
 def test_a_weighted_engine_without_huggingface_hub_says_so(cli, tmp_path: Path, monkeypatch) -> None:
-    """The remedy for a missing downloader names the extra, not a bare pip package."""
-    monkeypatch.setattr("decis.cli.has_module", lambda name: False)
+    """The remedy for a missing downloader names the extra, not a bare pip package.
+
+    The seam is `hub.client_installed` -- the question the CLI actually asks before it hands
+    the fetch over -- and the probe is stubbed to answer, so this neither reaches the network
+    nor downloads anything.
+    """
     monkeypatch.setattr("decis.paths.missing_requirements", lambda spec: [])
+    monkeypatch.setattr("decis.hub.probe_endpoint", lambda url, **kwargs: True)
+    monkeypatch.setattr("decis.hub.client_installed", lambda name: False)
     code, output = cli("download", "--engine", "laya", "--dest", str(tmp_path), "--env-file", "")
     assert code != 0
     assert "huggingface_hub" in output
+    assert "uv sync --extra laya" in output

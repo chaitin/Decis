@@ -10,6 +10,35 @@ each engine will run.
 
 ## [Unreleased]
 
+### Added
+
+- **`decis download` falls back to ModelScope when Hugging Face cannot be reached.** A fetch
+  probes `<HF_ENDPOINT>/api/models?limit=1` once (3 s timeout; any HTTP status counts as
+  reachable, so a private mirror is not mistaken for a blocked host) and only then picks a
+  client. `DECIS_HUB=auto|huggingface|modelscope` — or `--hub` on `serve`, `models`, `doctor`
+  and `download` — pins the source instead, and a pinned source never probes and never
+  substitutes. ModelScope's revisions are branch and tag names and its mirrors of these
+  repositories carry `master` only, so the commit this repository pins cannot be honored
+  there: Decis never passes it, `hub.Selection.pinned` records the deviation, `decis download`
+  says so before transferring anything and `decis doctor` reports which source this host
+  would use. `uv sync --extra download` installs both clients; every engine extra pulls it in.
+- **The base model of an adapter engine is fetched and resolved like a checkpoint.**
+  `kev-0.8b`'s Qwen3.5 base lands next to the adapter when a model directory is configured
+  (`<dir>/Qwen3.5-0.8B-Base/`), and `engines/kev.py` hands `transformers` that directory. A
+  mounted model directory is therefore self-contained, and a base fetched from ModelScope is
+  usable at all — `transformers` only ever looks in the Hugging Face cache.
+
+### Changed
+
+- **Weight-bearing images are built only at release.** A push to the default branch publishes
+  the weightless `<engine>-runtime` images, a feature branch keeps
+  `<engine>-runtime-sha-<7>`, and a pull request still builds one engine-free image, so no
+  branch push downloads weights. A release tag builds both variants, publishes
+  `<engine>-<version>` and `<engine>-<version>-runtime`, moves the unsuffixed `<engine>` and
+  `<engine>-runtime` aliases onto them, and points `latest` at that release's baked
+  `laya-multilingual` image. The manual dispatch input is now `variants: runtime|baked|both`
+  (default `runtime`) instead of a `runtime_variants` boolean.
+
 ## [0.4.0] - 2026-09-30
 
 ### Added

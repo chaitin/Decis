@@ -75,13 +75,15 @@ looks like in the log.
 | `DECIS_DEFAULT_ENGINE` | `laya-multilingual` | The engine `decis serve` loads, and the one that answers requests whose `model` is a "your default" name such as `jev-latest`. `--engine` overrides it. |
 | `DECIS_ACCEPT_FOREIGN_DEFAULTS` | `1` | Answer `jev-latest` (the official SDK's default) with the loaded engine instead of 422. This is what makes swapping `base_url` sufficient. The substitution is reported as `decis.requested_model`. |
 | `DECIS_MODEL_DIR` | unset | A directory of pre-downloaded weights. Expected layout: `<DECIS_MODEL_DIR>/<engine-id>/`. |
+| `DECIS_HUB` | `auto` | Which Hub to fetch from: `auto`, `huggingface` or `modelscope`. See [Which Hub the weights come from](#which-hub-the-weights-come-from). `--hub` overrides it on `serve`, `models`, `doctor` and `download`. |
 
 Weight resolution is a fixed order; the first hit wins, and a local directory beats the
 network:
 
 1. The directory given to `--model-path` for this engine (see below).
 2. `DECIS_MODEL_DIR/<engine-id>/`.
-3. The Hugging Face cache, downloading if needed.
+3. A Hub cache — Hugging Face, or ModelScope when Hugging Face does not answer — downloading
+   if needed.
 
 A candidate only counts if it is a *complete* checkpoint: the file the engine's
 `WeightSpec.marker` names has to be there, and for a sharded checkpoint every file its
@@ -90,9 +92,42 @@ treated as absent, so a download you interrupted half way falls through to step 
 being served and then failing to load.
 
 ```bash
-uv run decis download --engine laya-multilingual                  # into the HF cache
+uv run decis download --engine laya-multilingual                  # the Hub cache of the source it picks
 uv run decis download --engine laya-multilingual --dest ./models  # into ./models/laya-multilingual/
 DECIS_MODEL_DIR=./models uv run decis serve
+```
+
+### Which Hub the weights come from
+
+A fetch tries Hugging Face and falls back to [ModelScope] when the Hugging Face endpoint
+cannot be reached *at all*: a DNS failure, a refused connection or a timeout. An HTTP error
+status is not "unreachable" — a 401 or a 404 still proves the host answered — so a private or
+authenticated mirror is never misread as a blocked one. The fallback is for networks where
+Hugging Face is blocked; where it is reachable, nothing changes.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DECIS_HUB` | `auto` | `auto`, `huggingface` or `modelscope`. `auto` probes and falls back; a pinned value never probes and never substitutes, so `huggingface` fails loudly where `auto` would switch sources. |
+| `HF_ENDPOINT` | `https://huggingface.co` | The endpoint `huggingface_hub` uses **and** the one the probe asks, so an internal mirror (or `https://hf-mirror.com`) is treated as reachable rather than as a blocked Hugging Face. |
+
+[ModelScope]: https://modelscope.cn
+
+**A pinned revision cannot be honored on ModelScope.** Its revisions are branch and tag
+names, and the mirrors of these repositories carry `master` and nothing else. Handing it the
+Hugging Face commit sha does not fail: it logs `No files to download` and returns success
+with an empty directory, so the pinned revision becomes a silent no-op. Decis therefore never
+sends the sha there. Instead `decis download` prints which source it is about to use, why,
+and a warning naming the revision that source cannot honor; `decis doctor` reports what a
+fetch would do on this host. `DECIS_HUB=huggingface` turns the whole situation into a
+failure, which is what a deployment that needs the pin to mean something should set.
+
+`uv sync --extra download` installs both clients; every engine extra already pulls that in,
+and `decis doctor` says which of the two is missing when one is.
+
+```bash
+uv run decis doctor                                        # includes a bounded probe of the endpoint
+uv run decis download --engine laya-multilingual           # prints the source before transferring
+uv run decis download --engine kev-0.8b --hub modelscope   # skip the probe and use ModelScope
 ```
 
 ### Serving one engine from a directory of your own
@@ -114,11 +149,14 @@ prints every override that was resolved, and an unknown engine id on the command
 configuration error rather than a no-op.
 
 > **A caveat for `kev-0.8b`.** The directory you point at is the **adapter** (the LoRA and
-> pointer head), which is the part you fine-tune; the Qwen3.5 **base** model is referenced by
-> the adapter's checkpoint metadata as a Hub repo id, so a separately mounted copy of the base
-> is not picked up. `decis download` places the base in the Hugging Face cache, and the engine
-> works offline from there. The two Jeff engines are different: each is a full-weight
-> fine-tune, so one directory holds everything and nothing is fetched alongside it.
+> pointer head), which is the part you fine-tune; the Qwen3.5 **base** model is a second
+> repository, declared in `WeightSpec.bases`. `decis download` fetches both, and the engine
+> resolves both. With `--dest` (or `DECIS_MODEL_DIR`) the base lands beside the adapter as
+> `<dir>/Qwen3.5-0.8B-Base/`; with neither, it goes to the cache of whichever Hub answered
+> and is read back from there. The adapter's own metadata names the base repository, and a
+> base this build does not declare is left to the loader rather than substituted. The two
+> Jeff engines are different: each is a full-weight fine-tune, so one directory holds
+> everything and nothing is fetched alongside it.
 
 ## Compute
 

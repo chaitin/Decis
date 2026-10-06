@@ -311,7 +311,10 @@ def test_fetching_a_checkpoint_returns_a_directory_the_resolver_accepts(tmp_path
 
     landing = tmp_path / "hub" / "models--convaiinnovations--laya" / "snapshots" / ("a" * 40)
     seen = _fake_snapshot_download(monkeypatch, landing=landing)
-    root = fetch_checkpoint(SPEC)
+    # `hub="huggingface"` pins the source: the suite must not turn a reachability probe into
+    # a network call, and the pin is what the rest of this assertion is about (`test_hub.py`
+    # covers the auto case).
+    root = fetch_checkpoint(SPEC, settings_with(hub="huggingface"))
     assert seen["revision"] == "a" * 40, "the pin has to reach the Hub, not just the log line"
     assert root == landing / "multilingual"
     assert checkpoint_root(root, SPEC) == root
@@ -325,7 +328,7 @@ def test_a_download_that_lands_nothing_a_loader_can_read_is_an_error(tmp_path: P
 
     _fake_snapshot_download(monkeypatch, landing=tmp_path / "empty", ignore_patterns=True)
     with pytest.raises(FileNotFoundError, match=r"holds no rl_agent_config\.json"):
-        fetch_checkpoint(SPEC)
+        fetch_checkpoint(SPEC, settings_with(hub="huggingface"))
 
 
 def test_human_bytes_reads_sensibly() -> None:

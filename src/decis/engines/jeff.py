@@ -294,7 +294,7 @@ class JeffEngine(DecisionEngine):
             directory = source.path
         else:
             _logger.info("fetching %s (%s) -- pinned at %s", spec.repo_id, spec.expected_bytes, spec.revision)
-            directory = fetch_checkpoint(spec)
+            directory = fetch_checkpoint(spec, settings)
         assert directory is not None  # `resolve` only returns "hub" for a downloadable spec
 
         # `requested_device` is `DECIS_DEVICE` when set and legal; unset asks the machine.

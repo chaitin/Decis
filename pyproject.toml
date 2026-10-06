@@ -31,18 +31,31 @@ dependencies = [
 # Engine dependencies live here, never in [project.dependencies]: an image that
 # installs decis[laya] has no peft, and vice versa. See AGENTS.md §6.
 #
+# Every engine that publishes weights also asks for `decis[download]`: the Hub clients are
+# how those weights arrive, and "which client" is a property of the network rather than of
+# the engine (`decis/hub.py` chooses between them at build/deploy time). Declared once here
+# instead of restating `modelscope` in three extras, so a fourth engine cannot forget it.
+#
 # `laya` declares its own torch/transformers/safetensors/huggingface_hub, so this
 # deliberately does not restate them. Adding a floor Decis has not tested would be a
 # compatibility claim we cannot back; the combination that *is* tested is recorded in
 # docs/design.md §7.2.
-laya = ["laya>=0.3.5,<0.4"]
+laya = ["laya>=0.3.5,<0.4", "decis[download]"]
 # The floors are what the vendored copy actually needs, not a guess: it calls
 # `AutoModelForCausalLM.from_pretrained(..., dtype=...)` and
 # `DynamicCache(config=...)` (transformers 5) and `PeftModel.from_pretrained(...,
 # torch_device=...)` (peft 0.13+). The combination that is *tested* is recorded in
 # docs/design.md §7.2 -- a floor is a compatibility claim, and 4.44 was one we could
 # not back.
-kev = ["torch>=2.6", "transformers>=5.0", "peft>=0.18", "accelerate>=1.0", "safetensors>=0.4", "huggingface_hub>=0.30"]
+kev = [
+  "torch>=2.6",
+  "transformers>=5.0",
+  "peft>=0.18",
+  "accelerate>=1.0",
+  "safetensors>=0.4",
+  "huggingface_hub>=0.30",
+  "decis[download]",
+]
 # What the vendored copy actually calls: `AutoProcessor` / `AutoTokenizer` and
 # `...Model.from_pretrained(..., dtype=..., attn_implementation="sdpa")` (the `dtype=`
 # spelling is transformers 5), `safetensors.torch.load_file` for `readout.safetensors`,
@@ -69,6 +82,9 @@ jeff = [
   "safetensors>=0.4; python_version >= '3.12'",
   "pillow>=10; python_version >= '3.12'",
   "huggingface_hub>=0.30; python_version >= '3.12'",
+  # Unmarked on purpose: fetching a Jeff checkpoint is a `decis download` on a build host,
+  # which is allowed to run the project's floor (3.11) even though *serving* Jeff is not.
+  "decis[download]",
 ]
 # Reserved: the `remote` engine and the `/metrics` endpoint are not implemented yet
 # (see docs/design.md §11). These extras are declared so the dependency choice is
@@ -87,11 +103,15 @@ dev = [
   "ruff>=0.6",
   "typesafe-sdk>=0.7.1",
 ]
-all = ["decis[laya,kev,jeff,remote,metrics]"]
+all = ["decis[laya,kev,jeff,remote,metrics,download]"]
 
-# `decis download` needs huggingface_hub, which arrives with any engine that has
-# weights. `decis doctor` says so explicitly when it is missing.
-download = ["huggingface_hub>=0.20"]
+# The Hub clients `decis download` (and a cold-cache `serve`) can fetch through:
+# `huggingface_hub`, which can address a pinned commit, and `modelscope`, whose mirrors
+# answer on networks that cannot reach Hugging Face. Both live here rather than in each
+# engine extra because "which Hub" is a property of the deployment, not of the engine --
+# `decis/hub.py` picks at run time and `DECIS_HUB` pins the choice. `decis doctor` reports
+# which of the two is missing when one is.
+download = ["huggingface_hub>=0.20", "modelscope>=1.16"]
 
 [project.urls]
 Homepage = "https://github.com/chaitin/Decis"
